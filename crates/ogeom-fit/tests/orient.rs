@@ -11,10 +11,10 @@
     reason = "test code"
 )]
 
-use ogeom_algo::orient::{
+use ogeom_core::Tolerances;
+use ogeom_fit::orient::{
     Directions, FaceDirection, Rim, axis_of_revolution, face_directions, open_rims, principal_frame,
 };
-use ogeom_core::Tolerances;
 use ogeom_math::{Axis, Direction, Point, Transform, Vector};
 use ogeom_topo::Triangulation;
 

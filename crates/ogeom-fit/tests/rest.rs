@@ -8,10 +8,11 @@
 use core::f64::consts::PI;
 
 use ogeom_algo::{
-    Rest, make_box, make_cone, make_cylinder, make_face_with_pcurves, make_polygon,
-    make_polyhedron, make_prism, make_sphere, resting_faces, resting_faces_of,
+    make_box, make_cone, make_cylinder, make_face_with_pcurves, make_polygon, make_polyhedron,
+    make_prism, make_sphere,
 };
 use ogeom_core::Tolerances;
+use ogeom_fit::{Rest, resting_faces, resting_faces_of};
 use ogeom_geom::{PlaneSurface, SurfaceGeometry};
 use ogeom_math::{Frame, Plane, Point, Point2, Vector};
 use ogeom_topo::{Model, Shape, Triangulation};

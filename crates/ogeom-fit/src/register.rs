@@ -14,8 +14,8 @@
 //! The linear algebra is `nalgebra`'s: a symmetric eigen-decomposition for
 //! the quaternion of the closed form and for the normal matrix of each
 //! point-to-plane step. Every sum runs over the pairs in their order and the
-//! nearest-point queries are [`to_mesh`](crate::distance::to_mesh)'s or
-//! [`to_shape`](crate::distance::to_shape)'s, so
+//! nearest-point queries are [`to_mesh`](ogeom_algo::distance::to_mesh)'s or
+//! [`to_shape`](ogeom_algo::distance::to_shape)'s, so
 //! every answer is the same bit for bit on any thread count.
 //!
 //! # Iterative closest points

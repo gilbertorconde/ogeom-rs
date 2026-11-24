@@ -309,8 +309,18 @@ and the full `cargo test -p ogeom -- --include-ignored`. Each touches
    - `ogeom_algo` re-exports it for one release.
    - `ogeom-io` uses the new path.
 4. **`ogeom-fit`.**
-   - `git mv` the eleven modules. Add the crate manifest (metadata as the
-     other crates) and the `[workspace.dependencies]` entry.
+   - `git mv` ten of the eleven modules. Add the crate manifest (metadata as
+     the other crates) and the `[workspace.dependencies]` entry.
+   - `recognize` stays in `ogeom-algo` until PR 5. `mesh_solid`,
+     `recognize_patch` and `recognize_swept` use it, and they are still in
+     `ogeom-algo` here, so moving it now would be a cycle. The ten helpers
+     the fits call (`centroid`, `covariance`, `smallest_direction`,
+     `fit_sphere`, `fit_cylinder`, `fit_torus`, `circle_through`,
+     `ruled_about`, `revolution_axis`, `profile_circle`) become
+     `#[doc(hidden)] pub` in `ogeom_algo::recognize`.
+   - `distance::Target` (used by `register`) and `mesh_solid::weld::weld_points`
+     (used by `fit::grow_smooth`, added after this note) become
+     `#[doc(hidden)] pub` too.
    - `ogeom-fillet` depends on it. The facade imports from it.
    - Move `crates/ogeom-algo/tests/{fit_grow, fit_segments_2d, orient,
      primitive_fits, register, rest, zone_fits}.rs`, or their modules in the
@@ -322,6 +332,10 @@ and the full `cargo test -p ogeom -- --include-ignored`. Each touches
 5. **`ogeom-recon`.**
    - `git mv` `mesh_solid` (with its directory), `recognize_patch` and
      `recognize_swept`, and `ogeom-bool/src/mesh_region.rs`.
+   - `git mv` `recognize` to `ogeom-fit`, where the note puts it.
+   - `fit::grow_smooth` in `ogeom-fit` calls `weld_points`, so `weld` cannot
+     go up with `mesh_solid`. It moves to `ogeom-fit` (or down to
+     `ogeom-mesh`) instead.
    - Add a `test-hooks` feature. `crates/ogeom` enables it in its dev
      dependencies as it does for `ogeom-algo`.
    - Update `tools/converter-check.sh` (`-p ogeom-algo` becomes

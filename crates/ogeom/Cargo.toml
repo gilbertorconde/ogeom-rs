@@ -36,6 +36,7 @@ ogeom-math.workspace = true
 ogeom-geom.workspace = true
 ogeom-topo.workspace = true
 ogeom-algo.workspace = true
+ogeom-fit.workspace = true
 ogeom-mesh.workspace = true
 ogeom-intersect.workspace = true
 ogeom-bool.workspace = true

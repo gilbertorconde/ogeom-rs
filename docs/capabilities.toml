@@ -894,106 +894,106 @@ tests = [
 [[capability]]
 id = "algo.primitive-fits"
 title = "Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, a mesh region grown for one from clicks, its rounded rim peeled, a smooth free-form region grown from clicks across tangent seams and stopped at creases for a free-form fit, a rim circle or a crease line traced along a mesh's sharp edges from a click, and the line where the faces either side of a rounded edge meet"
-crate = "ogeom-algo"
+crate = "ogeom-fit"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::plane", "ogeom_algo::sphere", "ogeom_algo::cylinder",
-    "ogeom_algo::cone", "ogeom_algo::torus", "ogeom_algo::circle3",
-    "ogeom_algo::line3", "ogeom_algo::circle2", "ogeom_algo::line2",
-    "ogeom_algo::FitOptions", "ogeom_algo::Fit", "ogeom_algo::Cutoff",
-    "ogeom_algo::grow", "ogeom_algo::GrowOptions", "ogeom_algo::FitKind",
-    "ogeom_algo::AnyFit", "ogeom_algo::Grown", "ogeom_algo::SeedReport",
-    "ogeom_algo::Crease", "ogeom_algo::Meeting",
-    "ogeom_algo::grow_smooth", "ogeom_algo::GrownRegion",
+    "ogeom_fit::plane", "ogeom_fit::sphere", "ogeom_fit::cylinder",
+    "ogeom_fit::cone", "ogeom_fit::torus", "ogeom_fit::circle3",
+    "ogeom_fit::line3", "ogeom_fit::circle2", "ogeom_fit::line2",
+    "ogeom_fit::FitOptions", "ogeom_fit::Fit", "ogeom_fit::Cutoff",
+    "ogeom_fit::grow", "ogeom_fit::GrowOptions", "ogeom_fit::FitKind",
+    "ogeom_fit::AnyFit", "ogeom_fit::Grown", "ogeom_fit::SeedReport",
+    "ogeom_fit::Crease", "ogeom_fit::Meeting",
+    "ogeom_fit::grow_smooth", "ogeom_fit::GrownRegion",
 ]
 tests = [
-    "crates/ogeom-algo/tests/primitive_fits.rs",
-    "crates/ogeom-algo/tests/fit_grow.rs",
-    "crates/ogeom-algo/tests/fit_grow_smooth.rs",
-    "crates/ogeom-algo/src/fit/primitive.rs",
-    "crates/ogeom-algo/src/fit/tails.rs",
-    "crates/ogeom-algo/src/cutoff.rs",
+    "crates/ogeom-fit/tests/primitive_fits.rs",
+    "crates/ogeom-fit/tests/fit_grow.rs",
+    "crates/ogeom-fit/tests/fit_grow_smooth.rs",
+    "crates/ogeom-fit/src/fit/primitive.rs",
+    "crates/ogeom-fit/src/fit/tails.rs",
+    "crates/ogeom-fit/src/cutoff.rs",
 ]
 
 [[capability]]
 id = "algo.zone-fits"
 title = "Form as the standards define it: the minimum-zone flatness, circularity, cylindricity, sphericity and straightness of points, and their maximum-inscribed and minimum-circumscribed circles and cylinders, exact or certified by the Chebyshev conditions"
-crate = "ogeom-algo"
+crate = "ogeom-fit"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::flatness", "ogeom_algo::straightness", "ogeom_algo::circularity",
-    "ogeom_algo::cylindricity", "ogeom_algo::sphericity",
-    "ogeom_algo::inscribed_circle", "ogeom_algo::circumscribed_circle",
-    "ogeom_algo::inscribed_cylinder", "ogeom_algo::circumscribed_cylinder",
-    "ogeom_algo::Zone",
+    "ogeom_fit::flatness", "ogeom_fit::straightness", "ogeom_fit::circularity",
+    "ogeom_fit::cylindricity", "ogeom_fit::sphericity",
+    "ogeom_fit::inscribed_circle", "ogeom_fit::circumscribed_circle",
+    "ogeom_fit::inscribed_cylinder", "ogeom_fit::circumscribed_cylinder",
+    "ogeom_fit::Zone",
 ]
 tests = [
-    "crates/ogeom-algo/tests/zone_fits.rs",
-    "crates/ogeom-algo/src/fit/zone/lp.rs",
-    "crates/ogeom-algo/src/fit/zone/slp.rs",
-    "crates/ogeom-algo/src/fit/zone/hull.rs",
+    "crates/ogeom-fit/tests/zone_fits.rs",
+    "crates/ogeom-fit/src/fit/zone/lp.rs",
+    "crates/ogeom-fit/src/fit/zone/slp.rs",
+    "crates/ogeom-fit/src/fit/zone/hull.rs",
 ]
 
 [[capability]]
 id = "algo.fit-outline"
 title = "An outline of lines, tangent arcs and circles fitted around a 2D silhouette, every point between a play and the play plus twice a tolerance outside it, negative play inside it, optionally about the silhouette with holes and notches narrower than a width filled"
-crate = "ogeom-algo"
+crate = "ogeom-fit"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::fit_outline", "ogeom_algo::Outline",
-    "ogeom_algo::Piece2", "ogeom_algo::Wire2d",
+    "ogeom_fit::fit_outline", "ogeom_fit::Outline",
+    "ogeom_fit::Piece2", "ogeom_fit::Wire2d",
 ]
 tests = [
-    "crates/ogeom-algo/src/outline.rs",
-    "crates/ogeom-algo/src/fit/segments.rs",
+    "crates/ogeom-fit/src/outline.rs",
+    "crates/ogeom-fit/src/fit/segments.rs",
     "crates/ogeom/tests/mesh_shadow.rs::an_l_bracket_gives_its_outline_with_corners",
     "crates/ogeom/tests/mesh_shadow.rs::a_cylinder_seen_along_its_axis_gives_one_circle",
-    "crates/ogeom-algo/src/outline.rs::fill_below_fills_a_narrow_slot_and_a_small_hole",
+    "crates/ogeom-fit/src/outline.rs::fill_below_fills_a_narrow_slot_and_a_small_hole",
 ]
 
 [[capability]]
 id = "algo.fit-segments-2d"
 title = "The fewest lines and tangent or cornered arcs fitted to a 2D polyline, open or closed, every input point within a hard tolerance of its piece"
-crate = "ogeom-algo"
+crate = "ogeom-fit"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::fit_segments_2d", "ogeom_algo::Segments",
-    "ogeom_algo::Segment2",
+    "ogeom_fit::fit_segments_2d", "ogeom_fit::Segments",
+    "ogeom_fit::Segment2",
 ]
 tests = [
-    "crates/ogeom-algo/tests/fit_segments_2d.rs",
-    "crates/ogeom-algo/src/fit/segments.rs",
+    "crates/ogeom-fit/tests/fit_segments_2d.rs",
+    "crates/ogeom-fit/src/fit/segments.rs",
 ]
 
 [[capability]]
 id = "algo.mesh-orientation"
 title = "Face directions, axes of revolution, principal frames and open rims of a mesh"
-crate = "ogeom-algo"
+crate = "ogeom-fit"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::face_directions", "ogeom_algo::axis_of_revolution",
-    "ogeom_algo::principal_frame", "ogeom_algo::open_rims",
-    "ogeom_algo::Directions", "ogeom_algo::FaceDirection",
-    "ogeom_algo::Revolution", "ogeom_algo::Rim",
+    "ogeom_fit::face_directions", "ogeom_fit::axis_of_revolution",
+    "ogeom_fit::principal_frame", "ogeom_fit::open_rims",
+    "ogeom_fit::Directions", "ogeom_fit::FaceDirection",
+    "ogeom_fit::Revolution", "ogeom_fit::Rim",
 ]
 tests = [
-    "crates/ogeom-algo/tests/orient.rs",
-    "crates/ogeom-algo/src/orient.rs",
+    "crates/ogeom-fit/tests/orient.rs",
+    "crates/ogeom-fit/src/orient.rs",
     "crates/ogeom/tests/orient_corpus.rs",
 ]
 
 [[capability]]
 id = "algo.resting-faces"
 title = "The stable ways a part can lie on a flat bed: hull planes with contact area, footprint, height and stability margin"
-crate = "ogeom-algo"
+crate = "ogeom-fit"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::resting_faces", "ogeom_algo::resting_faces_of",
-    "ogeom_algo::Rest",
+    "ogeom_fit::resting_faces", "ogeom_fit::resting_faces_of",
+    "ogeom_fit::Rest",
 ]
 tests = [
-    "crates/ogeom-algo/tests/rest.rs",
-    "crates/ogeom-algo/src/hull3.rs",
+    "crates/ogeom-fit/tests/rest.rs",
+    "crates/ogeom-fit/src/hull3.rs",
 ]
 
 [[capability]]
@@ -1028,16 +1028,16 @@ tests = [
 [[capability]]
 id = "algo.rigid-registration"
 title = "Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh or a shape's exact faces with free motions, and symmetry planes"
-crate = "ogeom-algo"
+crate = "ogeom-fit"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::absolute_orientation", "ogeom_algo::icp",
-    "ogeom_algo::icp_onto_shape",
-    "ogeom_algo::symmetry_plane", "ogeom_algo::Icp",
-    "ogeom_algo::Starts", "ogeom_algo::Registration",
-    "ogeom_algo::FreeMotion", "ogeom_algo::SymmetryFit",
+    "ogeom_fit::absolute_orientation", "ogeom_fit::icp",
+    "ogeom_fit::icp_onto_shape",
+    "ogeom_fit::symmetry_plane", "ogeom_fit::Icp",
+    "ogeom_fit::Starts", "ogeom_fit::Registration",
+    "ogeom_fit::FreeMotion", "ogeom_fit::SymmetryFit",
 ]
-tests = ["crates/ogeom-algo/tests/register.rs"]
+tests = ["crates/ogeom-fit/tests/register.rs"]
 
 [[capability]]
 id = "algo.place-copy"
@@ -3037,7 +3037,7 @@ tests = [
 [[capability]]
 id = "algo.patch-network"
 title = "A network of B-spline patches fitted to a scan in one sparse least-squares system: shared curves one set of poles, curves that are not creases held tangent pole by pole, sides that may be chains of curves meeting at T-junctions, corners of other than four patches held tangent where the tolerance allows, spans raised per strip where a patch misses, optional parameter correction, built into a shell of faces sharing their edges"
-crate = "ogeom-algo"
+crate = "ogeom-fit"
 verdict = "partial"
 restriction = """Patches are four-sided, or three-sided with one side \
 shrunk to a point. A side may be a chain of curves (a T-junction), but the \
@@ -3078,15 +3078,15 @@ after refinement, at the final spans, and only through \
 `fit_network_chained`; the points are those of the region the network \
 covers."""
 symbols = [
-    "ogeom_algo::fit_network", "ogeom_algo::fit_network_chained", "ogeom_algo::Network",
-    "ogeom_algo::NetworkOptions", "ogeom_algo::PatchDef", "ogeom_algo::ChainedPatch",
-    "ogeom_algo::PatchSide", "ogeom_algo::CurveDef", "ogeom_algo::PatchFit",
-    "ogeom_algo::IrregularCorner", "ogeom_mesh::PointIndex::points",
+    "ogeom_fit::fit_network", "ogeom_fit::fit_network_chained", "ogeom_fit::Network",
+    "ogeom_fit::NetworkOptions", "ogeom_fit::PatchDef", "ogeom_fit::ChainedPatch",
+    "ogeom_fit::PatchSide", "ogeom_fit::CurveDef", "ogeom_fit::PatchFit",
+    "ogeom_fit::IrregularCorner", "ogeom_mesh::PointIndex::points",
 ]
 tests = [
     "crates/ogeom/tests/network.rs",
     "crates/ogeom/tests/network.rs::six_patches_on_a_hundred_thousand_points_in_bounded_time",
-    "crates/ogeom-algo/src/network/solve.rs",
+    "crates/ogeom-fit/src/network/solve.rs",
 ]
 
 [[capability]]

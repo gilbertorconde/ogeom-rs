@@ -1,0 +1,25 @@
+[package]
+name = "ogeom-fit"
+description = "Fitting and reading of measured points and meshes: primitive fits, zones, curve networks, registration"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+ogeom-core.workspace = true
+ogeom-math.workspace = true
+ogeom-geom.workspace = true
+ogeom-topo.workspace = true
+ogeom-mesh.workspace = true
+ogeom-algo.workspace = true
+nalgebra.workspace = true
+spade.workspace = true
+
+[lints]
+workspace = true

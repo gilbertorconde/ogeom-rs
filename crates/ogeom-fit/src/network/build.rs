@@ -7,7 +7,7 @@ use ogeom_topo::{EdgeData, Location, Model, NodeData, Shape};
 
 use super::topology::{Topology, Touch};
 use super::{ChainedPatch, IrregularCorner, Round, corner_chart, side_parts, walk_share};
-use crate::build::{
+use ogeom_algo::build::{
     attach_pcurve, make_edge_between, make_face_on, make_shell, make_vertex, make_wire,
 };
 

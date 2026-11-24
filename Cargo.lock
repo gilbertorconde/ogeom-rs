@@ -411,6 +411,7 @@ dependencies = [
  "ogeom-core",
  "ogeom-doc",
  "ogeom-fillet",
+ "ogeom-fit",
  "ogeom-geom",
  "ogeom-heal",
  "ogeom-hlr",
@@ -509,6 +510,7 @@ dependencies = [
  "ogeom-algo",
  "ogeom-bool",
  "ogeom-core",
+ "ogeom-fit",
  "ogeom-geom",
  "ogeom-heal",
  "ogeom-intersect",
@@ -517,6 +519,20 @@ dependencies = [
  "ogeom-topo",
  "proptest",
  "rustix",
+]
+
+[[package]]
+name = "ogeom-fit"
+version = "0.21.0"
+dependencies = [
+ "nalgebra",
+ "ogeom-algo",
+ "ogeom-core",
+ "ogeom-geom",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
+ "spade",
 ]
 
 [[package]]

@@ -14,8 +14,8 @@
 
 use core::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use ogeom_algo::{Piece2, Segment2, Segments, fit_segments_2d};
 use ogeom_core::OgeomError;
+use ogeom_fit::{Piece2, Segment2, Segments, fit_segments_2d};
 use ogeom_math::{Point2, Vector2};
 
 /// Gaussian noise from a fixed seed.

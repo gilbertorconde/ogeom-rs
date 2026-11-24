@@ -10,8 +10,8 @@ use ogeom_topo::Triangulation;
 
 use super::{GrowOptions, NONE, as_index};
 use crate::Cutoff;
-use crate::mesh_solid::weld::weld_points;
 use crate::orient::check_indices;
+use ogeom_algo::weld_points;
 
 /// A smooth region grown over a mesh, with no surface fitted to it.
 #[derive(Debug, Clone, PartialEq)]

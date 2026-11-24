@@ -58,7 +58,8 @@ pub fn to_shape(
 type Rings = Vec<Vec<Point2>>;
 
 /// A shape's elements gathered once, with what each point asks of them.
-pub(crate) struct Target {
+#[doc(hidden)]
+pub struct Target {
     elements: PointDistance,
     /// Each element's box, widened by the confusion distance.
     bounds: Vec<Aabb>,
@@ -94,15 +95,16 @@ pub(crate) struct Found {
     normal: Vector,
 }
 
+impl std::fmt::Debug for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Target").finish_non_exhaustive()
+    }
+}
+
 impl Target {
     /// The shape's elements gathered, with its boundary prepared for
     /// classifying where `sign` asks for signed distances.
-    pub(crate) fn of(
-        model: &Model,
-        shape: &Shape,
-        sign: bool,
-        tol: Tolerances,
-    ) -> OgeomResult<Self> {
+    pub fn of(model: &Model, shape: &Shape, sign: bool, tol: Tolerances) -> OgeomResult<Self> {
         let elements = PointDistance::of(model, shape, tol)?;
         let list = elements.elements();
         let mut places: ogeom_core::FastMap<SameKey, usize> = ogeom_core::FastMap::default();
@@ -162,7 +164,7 @@ impl Target {
 
     /// [`to_shape`]'s answers over the shape these elements were gathered
     /// from, which signed distances need gathered with `sign`.
-    pub(crate) fn closest_many(
+    pub fn closest_many(
         &self,
         model: &Model,
         points: &[Point],
@@ -188,7 +190,7 @@ impl Target {
 
     /// The box of every element, widened by the confusion distance; `None`
     /// for a shape with none.
-    pub(crate) fn extent(&self) -> Option<Aabb> {
+    pub fn extent(&self) -> Option<Aabb> {
         self.bounds.iter().copied().reduce(|a, b| a.union(&b))
     }
 

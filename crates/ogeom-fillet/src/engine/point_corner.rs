@@ -1,10 +1,10 @@
 //! The two-patch G1 opening at the endpoint of an edge left sharp.
 
 use ogeom_algo::{
-    Across, CurveDef, FillBoundary, FillRegion as Region, NetworkOptions, PatchDef, PatchSide,
-    make_filling_n_region, make_filling_n_within,
+    FillBoundary, FillRegion as Region, make_filling_n_region, make_filling_n_within,
 };
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
+use ogeom_fit::{Across, CurveDef, NetworkOptions, PatchDef, PatchSide};
 use ogeom_geom::{Continuity, Curve, Curve3d as _};
 use ogeom_math::{Point, Vector};
 use ogeom_topo::{Model, Shape};
@@ -165,7 +165,7 @@ pub(crate) fn close_through_q(
                 (2, Across::Plane(back.normal)),
             ],
         };
-        let network = ogeom_algo::fit_network(model, &patches, &curves, &index, &options, tol)?;
+        let network = ogeom_fit::fit_network(model, &patches, &curves, &index, &options, tol)?;
         // Its normal at `Q`, the limit along the shrunk side from one face's
         // to the other's, turns one way: the patch is a cone there that
         // does not fold back on itself.

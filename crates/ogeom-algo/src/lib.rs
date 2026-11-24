@@ -20,18 +20,14 @@ mod chart_cross;
 pub mod check;
 pub mod classify;
 pub mod convert;
-mod cutoff;
 pub mod derived;
 pub mod distance;
 pub mod extend;
 mod fill_n;
 mod fill_patch;
-pub mod fit;
 pub mod frames;
-pub mod held;
 pub mod history;
 pub mod hit;
-mod hull3;
 pub mod length;
 pub mod mass;
 mod mass_chart;
@@ -39,10 +35,7 @@ pub mod measure;
 pub mod medial;
 pub mod medial_graph;
 pub mod mesh_solid;
-pub mod network;
-pub mod orient;
 pub mod out_and_back;
-pub mod outline;
 pub mod pcurve_fit;
 pub mod pcurve_gap;
 pub mod place;
@@ -54,11 +47,8 @@ pub mod proximity;
 pub mod recognize;
 mod recognize_patch;
 mod recognize_swept;
-pub mod register;
 mod reshape;
-pub mod rest;
 mod seam_columns;
-pub mod segments_2d;
 mod self_cross;
 pub mod sew;
 pub mod sheet;
@@ -97,7 +87,6 @@ pub use convert::{
     CurveRestatement, SurfaceRestatement, baked_shape, baked_where_placed,
     general_transformed_shape, normals_oppose, restate_geometry, to_nurbs, to_nurbs_within,
 };
-pub use cutoff::Cutoff;
 pub use extend::{Extension, extend_face};
 pub use fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 // The blend engine's side of the filling: held inside a region, or fitted
@@ -107,7 +96,6 @@ pub use fill_n::{
     Region as FillRegion, make_filling_n_fixed, make_filling_n_region, make_filling_n_within,
 };
 pub use frames::{CurveFrame, CurveFrames, rotation_minimizing_frames};
-pub use held::{NetOutside, net_held_within};
 pub use history::{Built, History, on_own_nodes, on_own_nodes_with, unshare};
 pub use hit::{CurveHit, Hit, curve_hit};
 pub use length::{curve_length, parameter_at_length, points_by_count, points_by_spacing};
@@ -124,10 +112,6 @@ pub use mesh_solid::{
     MeshSolidReport, RegionFallback, RegionId, RegionRefusal, SurfaceKind, refine_solid,
     solid_from_mesh,
 };
-pub use network::{
-    Across, ChainedPatch, CurveDef, IrregularCorner, LoopSide, Network, NetworkOptions, PatchDef,
-    PatchFit, PatchSide, fit_loop_quads, fit_network, fit_network_chained,
-};
 /// Moved to `ogeom_geom::fit`. These paths are kept until 0.23.0, which
 /// removes them.
 pub use ogeom_geom::fit::{Spacing, approximate, approximate_within, interpolate};
@@ -136,7 +120,6 @@ pub use ogeom_mesh::single_precision_quantum;
 pub use out_and_back::{
     Notch, OutAndBack, edge_uses, is_tail, notch_of, out_and_back, placed_edge_uses,
 };
-pub use outline::{Outline, Piece2, Wire2d, fit_outline};
 pub use pcurve_gap::{
     edge_pcurve_gap, edges_apart, pcurve_gap, state_pcurve_gaps, state_pcurve_gaps_of,
 };
@@ -152,20 +135,20 @@ pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
 pub use proximity::{ClosestPair, PointDistance, ShapeDistance, distance_between_shapes};
 pub use recognize::{Canonical, Recognized, recognize_points};
 pub use reshape::Reshape;
-pub use rest::{Rest, resting_faces, resting_faces_of};
 pub use seam_columns::join_seam_columns;
-pub use segments_2d::{Segment2, Segments, fit_segments_2d};
 pub use self_cross::{SelfCrossing, self_crossings};
 // Reached from the crates above that convert and fit meshes: a wire's and an
 // edge's checks, the volume as the faces are flagged and what it keeps, the
-// face crossings on kept meshes, and distances to a mesh whose normals are
-// gathered once.
+// face crossings on kept meshes, distances to a mesh whose normals are
+// gathered once, and points welded on a grid.
 #[doc(hidden)]
 pub use check::{check_wire, edge_spanned_past};
 #[doc(hidden)]
 pub use distance::{Pseudonormals, to_mesh_with};
 #[doc(hidden)]
 pub use mass::{VolumeKept, volume_as_flagged};
+#[doc(hidden)]
+pub use mesh_solid::weld::weld_points;
 #[doc(hidden)]
 pub use self_cross::crossings as self_crossings_kept;
 pub use sew::{

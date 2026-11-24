@@ -4,14 +4,12 @@
 //! free, and a part's symmetry plane is found from a seed off it.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use ogeom_algo::Cutoff;
-use ogeom_algo::register::{
-    Icp, Starts, absolute_orientation, icp, icp_onto_shape, symmetry_plane,
-};
 use ogeom_algo::{
     attach_pcurve, make_box, make_compound, make_cylinder, make_edge_between, make_face, make_wire,
 };
 use ogeom_core::{FastMap, Tolerances};
+use ogeom_fit::Cutoff;
+use ogeom_fit::register::{Icp, Starts, absolute_orientation, icp, icp_onto_shape, symmetry_plane};
 use ogeom_geom::{BSplineSurface, Curve, Line2d, Surface as _, SurfaceGeometry};
 use ogeom_math::{
     Axis, Axis2, Direction, Direction2, Frame, Plane, Point, Point2, Transform, Vector, Vector2,

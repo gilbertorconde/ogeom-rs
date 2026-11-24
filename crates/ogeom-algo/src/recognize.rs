@@ -859,7 +859,8 @@ pub(crate) fn worst_deviation(candidate: &Canonical, points: &[Point]) -> f64 {
         .fold(0.0, f64::max)
 }
 
-pub(crate) fn centroid(points: &[Point]) -> Vector {
+#[doc(hidden)]
+pub fn centroid(points: &[Point]) -> Vector {
     let mut sum = Vector::ZERO;
     for p in points {
         sum += p.to_vector();
@@ -873,7 +874,8 @@ pub(crate) fn centroid(points: &[Point]) -> Vector {
 }
 
 /// The eigenvector of a 3×3 symmetric matrix for its smallest eigenvalue.
-pub(crate) fn smallest_direction(m: nalgebra::Matrix3<f64>) -> Vector {
+#[doc(hidden)]
+pub fn smallest_direction(m: nalgebra::Matrix3<f64>) -> Vector {
     let eigen = nalgebra::SymmetricEigen::new(m);
     let mut best = 0;
     for i in 1..3 {
@@ -885,7 +887,8 @@ pub(crate) fn smallest_direction(m: nalgebra::Matrix3<f64>) -> Vector {
     Vector::new(v[0], v[1], v[2])
 }
 
-pub(crate) fn covariance(vectors: impl Iterator<Item = Vector>) -> nalgebra::Matrix3<f64> {
+#[doc(hidden)]
+pub fn covariance(vectors: impl Iterator<Item = Vector>) -> nalgebra::Matrix3<f64> {
     let mut m = nalgebra::Matrix3::zeros();
     for v in vectors {
         let n = nalgebra::Vector3::new(v.x, v.y, v.z);
@@ -904,7 +907,8 @@ fn fit_plane(points: &[Point], tol: Tolerances) -> Option<Canonical> {
     ))))
 }
 
-pub(crate) fn fit_sphere(points: &[Point], tol: Tolerances) -> Option<Canonical> {
+#[doc(hidden)]
+pub fn fit_sphere(points: &[Point], tol: Tolerances) -> Option<Canonical> {
     // |p|² − 2p·c + Q = 0 with Q = |c|² − r²: linear in (c, Q). Taken
     // about a point of the samples: the fit is the same about any point,
     // and about a far one the squares are huge and cancel to rounding.
@@ -937,7 +941,8 @@ pub(crate) fn fit_sphere(points: &[Point], tol: Tolerances) -> Option<Canonical>
 /// least-squares null vector of those conditions, put back on the Klein
 /// quadric. A sphere's normals all meet at one point and determine no
 /// axis, which the fits after this one catch.
-pub(crate) fn revolution_axis(
+#[doc(hidden)]
+pub fn revolution_axis(
     points: &[Point],
     normals: &[Vector],
     tol: Tolerances,
@@ -1045,11 +1050,8 @@ fn centred_on(points: &[Point], through: Point, axis: Direction) -> Point {
     through + axis.vector() * (c - through).dot(axis.vector())
 }
 
-pub(crate) fn fit_cylinder(
-    points: &[Point],
-    normals: &[Vector],
-    tol: Tolerances,
-) -> Option<Canonical> {
+#[doc(hidden)]
+pub fn fit_cylinder(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Canonical> {
     let (through, axis) = revolution_axis(points, normals, tol)?;
     let rows = profile(points, through, axis);
     #[allow(
@@ -1079,7 +1081,8 @@ pub(crate) fn fit_cone(points: &[Point], normals: &[Vector], tol: Tolerances) ->
 /// radius against height fitted as a line, a cone where it leans and a
 /// cylinder where it does not, or where its lean changes the radius by no
 /// more than `flat` over the samples' own height.
-pub(crate) fn ruled_about(
+#[doc(hidden)]
+pub fn ruled_about(
     points: &[Point],
     through: Point,
     axis: Direction,
@@ -1131,10 +1134,8 @@ pub(crate) fn ruled_about(
 /// A circle through points in space: its plane from their covariance, its
 /// centre and radius from an algebraic fit in that plane, and the rms of
 /// how far the points miss it.
-pub(crate) fn circle_through(
-    points: &[Point],
-    tol: Tolerances,
-) -> Option<(Point, Direction, f64, f64)> {
+#[doc(hidden)]
+pub fn circle_through(points: &[Point], tol: Tolerances) -> Option<(Point, Direction, f64, f64)> {
     let c = centroid(points);
     let normal = Direction::new(
         smallest_direction(covariance(points.iter().map(|p| p.to_vector() - c))),
@@ -1180,7 +1181,8 @@ pub(crate) fn circle_through(
 /// distance from it against their height along it from `base`): its
 /// centre's distance and height, and its radius. A torus about the axis
 /// is that circle swept round it.
-pub(crate) fn profile_circle(pts: &[Point], base: Point, axis: Axis) -> Option<(f64, f64, f64)> {
+#[doc(hidden)]
+pub fn profile_circle(pts: &[Point], base: Point, axis: Axis) -> Option<(f64, f64, f64)> {
     let d = axis.direction.vector();
     let mut m = nalgebra::Matrix3::<f64>::zeros();
     let mut b = nalgebra::Vector3::<f64>::zeros();
@@ -1197,11 +1199,8 @@ pub(crate) fn profile_circle(pts: &[Point], base: Point, axis: Axis) -> Option<(
     (r2 > 0.0).then(|| (x[0], x[1], r2.sqrt()))
 }
 
-pub(crate) fn fit_torus(
-    points: &[Point],
-    normals: &[Vector],
-    tol: Tolerances,
-) -> Option<Canonical> {
+#[doc(hidden)]
+pub fn fit_torus(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Canonical> {
     // Every normal line of a torus passes through its spine circle, a tube
     // radius from the surface: at the right radius the points shifted back
     // along their normals lie on one circle, whose plane gives the axis.

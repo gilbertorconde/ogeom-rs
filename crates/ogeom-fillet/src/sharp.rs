@@ -18,7 +18,7 @@
 //!
 //! The patch at `Q` runs out to the middle of each of those trims, where a
 //! curve between them bounds it; it is fitted by
-//! [`ogeom_algo::fit_network`], its halves of the trims held to them and
+//! [`ogeom_fit::fit_network`], its halves of the trims held to them and
 //! held across the faces, so it is tangent to both faces exactly up to the
 //! held curves' own projection. The rest of the opening, six sides with
 //! that curve, is filled by one patch G1 to every side, the patch at `Q`
@@ -47,7 +47,7 @@ use crate::setback::{Setbacks, corner_edges};
 /// The opening is closed by two patches. At `Q`, a three-sided one bounded
 /// by the halves of the two trims from `Q` and a curve between their
 /// middles, its fourth side shrunk to `Q`: fitted by
-/// [`ogeom_algo::fit_network`] to arcs swept from `Q` that leave each trim
+/// [`ogeom_fit::fit_network`] to arcs swept from `Q` that leave each trim
 /// square across it in its face, its halves of the trims held to them and
 /// held across the two faces, so it is tangent to each face exactly up to
 /// the held curves' own projection, its normal turning at `Q` from one

@@ -1,6 +1,6 @@
 //! Best fits of primitives to point sets, with their residuals.
 //!
-//! Where [`recognize_points`](crate::recognize_points) decides whether points
+//! Where [`recognize_points`](ogeom_algo::recognize_points) decides whether points
 //! *are* a surface, these fit the surface regardless and report how well it
 //! fits: every point's signed residual, their RMS over the points kept, and
 //! the signed extremes. Each fit is orthogonal least squares, the sum of the
@@ -25,7 +25,7 @@ use ogeom_math::{
 };
 
 use crate::Cutoff;
-use crate::recognize::{self, Canonical};
+use ogeom_algo::recognize::{self, Canonical};
 
 /// Which side of a closed surface or curve the material lies on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

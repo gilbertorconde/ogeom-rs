@@ -148,13 +148,13 @@ pub fn resting_faces(mesh: &Triangulation, tol: Tolerances) -> OgeomResult<Vec<R
 /// # Errors
 ///
 /// As [`resting_faces`], and as the meshing and
-/// [`volume_properties`](crate::volume_properties) of the shape.
+/// [`volume_properties`](ogeom_algo::volume_properties) of the shape.
 pub fn resting_faces_of(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<Rest>> {
-    let mut deflection = crate::relative_deflection(model, shape, SHAPE_CHORD, tol)?;
+    let mut deflection = ogeom_algo::relative_deflection(model, shape, SHAPE_CHORD, tol)?;
     deflection.angular = deflection.angular.min(SHAPE_TURN);
     let mesh = ogeom_mesh::triangulate(model, shape, deflection, tol)?;
     let flat = in_plane(&mesh.positions, tol);
-    let centre = crate::volume_properties(model, shape, deflection, tol)?.centre;
+    let centre = ogeom_algo::volume_properties(model, shape, deflection, tol)?.centre;
     let mut rests = rests_of(&mesh.positions, &mesh.triangles, centre, flat)?;
 
     let mut planar: Vec<(Point, Vector, f64)> = Vec::new();
@@ -168,8 +168,8 @@ pub fn resting_faces_of(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomR
         ) {
             continue;
         }
-        let (at, normal) = crate::face_normal(model, &face, tol)?;
-        let area = crate::surface_properties(model, &face, deflection, tol)?.mass;
+        let (at, normal) = ogeom_algo::face_normal(model, &face, tol)?;
+        let area = ogeom_algo::surface_properties(model, &face, deflection, tol)?.mass;
         planar.push((at, normal, area));
     }
     let diagonal = diagonal(&mesh.positions);

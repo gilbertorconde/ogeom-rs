@@ -11,6 +11,7 @@ members = [
     "crates/ogeom-geom",
     "crates/ogeom-topo",
     "crates/ogeom-algo",
+    "crates/ogeom-fit",
     "crates/ogeom-mesh",
     "crates/ogeom-intersect",
     "crates/ogeom-bool",
@@ -36,7 +37,7 @@ license = "LGPL-2.1-only"
 repository = "https://github.com/gilbertorconde/ogeom-rs"
 homepage = "https://gilbertorconde.github.io/ogeom-rs/"
 # Inherited paths resolve against the workspace root, so every crate carries
-# the project's own README: fifteen crates are one kernel, and a reader
+# the project's own README: sixteen crates are one kernel, and a reader
 # arriving at any of them needs the same orientation.
 readme = "README.md"
 keywords = ["cad", "geometry", "brep", "kernel", "solid-modeling"]
@@ -63,6 +64,7 @@ ogeom-math = { path = "crates/ogeom-math", version = "0.21.0" }
 ogeom-geom = { path = "crates/ogeom-geom", version = "0.21.0" }
 ogeom-topo = { path = "crates/ogeom-topo", version = "0.21.0" }
 ogeom-algo = { path = "crates/ogeom-algo", version = "0.21.0" }
+ogeom-fit = { path = "crates/ogeom-fit", version = "0.21.0" }
 ogeom-mesh = { path = "crates/ogeom-mesh", version = "0.21.0" }
 ogeom-intersect = { path = "crates/ogeom-intersect", version = "0.21.0" }
 ogeom-bool = { path = "crates/ogeom-bool", version = "0.21.0" }
@@ -136,7 +138,7 @@ debug = 1
 opt-level = 2
 
 # `package."*"` above covers dependencies and *not* workspace members, so
-# without this the kernel's own fifteen crates compiled unoptimised for every
+# without this the kernel's own sixteen crates compiled unoptimised for every
 # `cargo test`, and a kernel is arithmetic end to end. The heaviest suite,
 # eleven real b-reps read and meshed, spent 165 s that way and spends 29 s
 # here.
