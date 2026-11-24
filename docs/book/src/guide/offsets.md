@@ -15,6 +15,7 @@ Everything here is in `ogeom::offset`.
 | `make_thick_sheet` | Thickens a face or an open shell into a solid: the sheet and its offset (or half the thickness each way), closed by side faces along the free edges. Faces meeting at a crease join on the mitre. |
 | `make_thick_sheet_sided` | `make_thick_sheet` with its own depth to each side of the sheet. |
 | `offset_wire` | 2D offset of a planar wire. The caller picks the `Join` style (arcs or intersections). Useful for tool-path-like outlines. |
+| `thicken_open_wire` | The closed outline of an open planar chain of lines and arcs thickened between two signed offsets to its left, ends closed by a `Cap`. |
 | `apply_draft` | Tilts faces by a draft angle about a neutral plane, for moulded parts. |
 
 ### Where a wire offset collapses
@@ -34,6 +35,34 @@ the wire. In detail:
   wide.
 - When the collapse cuts the region apart, the result is a compound with
   one wire per island.
+
+### Sharp corners on curved sides
+
+`Join::Intersection` carries both pieces on along their own line or
+circle to their meeting nearest the corner. A line and a circle, or two
+circles, may not meet ahead of the corner (each piece extended by less
+than half a turn); then the join is refused by name and the arc join is
+the way out.
+
+### Thickening an open chain
+
+`thicken_open_wire(model, chain, plane, left, right, cap, join, tol)`
+builds the band between two offsets of an open chain. Both offsets are
+signed to the chain's left about the plane's normal, so `(2, 0)` keeps
+the chain as the right side and `(1, -1)` straddles it. Each side is the
+chain's own offset: the parallel line, the concentric arc. A side on the
+outside of a turn is joined across the gap by `join`; a side on the
+inside is trimmed to where its pieces cross. The ends take a `Cap`:
+
+- `Flat`: a line square to the chain through its end point.
+- `Round`: a half circle across the band's width, past the end.
+- `Extended`: both sides carried on past the end by half the band's
+  width, then joined square across.
+
+Refused by name: a closed wire, a band of no width, a side that reaches
+past an arc's centre (an annular sector needs an inner radius), a chain
+that turns straight back on itself, and an outline that crosses itself
+(a thickness too great for the chain's turns).
 
 ## Sweeps
 
@@ -56,6 +85,25 @@ Feature operations combine a sketch with a solid in one step:
 - `feature_prism`: bosses and pockets.
 - `feature_revol`: revolved bosses and grooves.
 - `feature_rib` and `feature_slot`.
+- `make_rib`: a rib from an open chain, grown until the solid stops it.
+
+`make_rib(model, solid, chain, plane, thickness, along_normal, tol)`
+follows the usual rib feature:
+
+1. Each end of the chain is carried straight on along its tangent into
+   the wall it points at. An end that points at nothing stays put.
+2. The web is thickened across the plane (`along_normal` false:
+   `thickness.0` along the normal, `thickness.1` against it) and grows in
+   the plane square to the chain's chord. Or it is thickened in the plane
+   (`along_normal` true: `thickness.0` to the chain's left, `thickness.1`
+   to its right, flat ends, sharp corners) and grows along the normal.
+3. The growth is tried both ways. A way the solid does not close (the
+   web runs out past the solid) meets no wall. Where both ways close,
+   the smaller web is the rib. Where neither does, the rib is refused by
+   name.
+4. The web's sides are the lines through the chain's (carried) ends along
+   the growth, so a web next to a wall shorter than the chain ends square
+   there instead of running round the wall's end.
 
 Each is a constrained boolean internally and records history like every
 other operation.

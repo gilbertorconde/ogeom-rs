@@ -2210,8 +2210,14 @@ id = "offset.wire-offset"
 title = "Offsetting planar wires, with the join styles"
 crate = "ogeom-offset"
 verdict = "covered"
-symbols = ["ogeom_offset::offset_wire", "ogeom_offset::Join"]
-tests = ["crates/ogeom-offset/tests/wire2d.rs"]
+symbols = [
+    "ogeom_offset::offset_wire", "ogeom_offset::Join",
+    "ogeom_offset::thicken_open_wire", "ogeom_offset::Cap",
+]
+tests = [
+    "crates/ogeom-offset/tests/wire2d.rs",
+    "crates/ogeom-offset/tests/open_chain.rs",
+]
 
 [[capability]]
 id = "offset.sweeps"
@@ -2546,8 +2552,13 @@ verdict = "covered"
 symbols = [
     "ogeom_offset::feature_prism", "ogeom_offset::feature_revol",
     "ogeom_offset::feature_rib", "ogeom_offset::feature_slot",
+    "ogeom_offset::make_rib",
 ]
-tests = ["crates/ogeom/tests/features.rs::the_form_features_are_the_compositions_they_say_they_are"]
+tests = [
+    "crates/ogeom/tests/features.rs::the_form_features_are_the_compositions_they_say_they_are",
+    "crates/ogeom-offset/tests/open_chain.rs::a_rib_across_a_channel_fills_the_slot_below_its_chain",
+    "crates/ogeom-offset/tests/open_chain.rs::a_gusset_past_a_short_wall_stays_within_the_chains_end",
+]
 
 [[capability]]
 id = "offset.sweep-until"

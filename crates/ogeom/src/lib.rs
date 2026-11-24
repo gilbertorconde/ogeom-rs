@@ -258,18 +258,18 @@ pub mod mesh {
 /// Offsets, shells, sweeps, lofts and drafts.
 pub mod offset {
     pub use ogeom_offset::{
-        Feature, FillBoundary, FillSide, Filled, Join, MiddlePath, PipeContact, PipeCorners,
+        Cap, Feature, FillBoundary, FillSide, Filled, Join, MiddlePath, PipeContact, PipeCorners,
         PipeEvolution, PipeLaw, PipeLaws, PipePlacement, Projected, SpineFunction, SpineLaw, Walls,
         apply_draft, draft, feature, feature_prism, feature_revol, feature_rib, feature_slot, fill,
         loft, make_evolved, make_filling, make_filling_n, make_helical_sweep, make_loft,
         make_loft_skinned, make_loft_skinned_aligned, make_loft_skinned_closed, make_loft_solid,
         make_loft_surface, make_pipe, make_pipe_sections, make_pipe_shell,
         make_pipe_shell_evolving, make_pipe_shell_law, make_pipe_shell_laws, make_pipe_shell_with,
-        make_pipe_skinned, make_prism_until, make_revolution_until, make_ruled, make_sweep_surface,
-        make_sweep_two_rails, make_thick_sheet, make_thick_sheet_sided, make_thick_solid,
-        make_thick_solid_sided, make_thick_solid_with, middle, middle_path, move_faces,
-        normal_projection, offset_faces, offset_shape, offset_sheet, offset_wire, place_on_spine,
-        project, shape, sheet, sweep, thick, wire2d,
+        make_pipe_skinned, make_prism_until, make_revolution_until, make_rib, make_ruled,
+        make_sweep_surface, make_sweep_two_rails, make_thick_sheet, make_thick_sheet_sided,
+        make_thick_solid, make_thick_solid_sided, make_thick_solid_with, middle, middle_path,
+        move_faces, normal_projection, offset_faces, offset_shape, offset_sheet, offset_wire,
+        open_chain, place_on_spine, project, shape, sheet, sweep, thick, thicken_open_wire, wire2d,
     };
 }
 

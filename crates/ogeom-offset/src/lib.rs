@@ -14,6 +14,7 @@ pub(crate) mod fixed;
 mod freeform;
 pub mod loft;
 pub mod middle;
+pub mod open_chain;
 mod prism_until;
 pub mod project;
 pub mod shape;
@@ -27,6 +28,7 @@ pub use feature::{Feature, feature_prism, feature_revol, feature_rib, feature_sl
 pub use fill::{FillBoundary, FillSide, Filled, make_filling, make_filling_n};
 pub use loft::make_loft_solid;
 pub use middle::{MiddlePath, middle_path};
+pub use open_chain::{Cap, make_rib, thicken_open_wire};
 pub use prism_until::make_prism_until;
 pub use project::{Projected, normal_projection};
 pub use shape::{

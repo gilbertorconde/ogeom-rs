@@ -34,16 +34,17 @@ use ogeom_topo::{Filter, Model, Shape, ShapeType, explore};
 pub enum Join {
     /// An arc about the old corner, radius the offset: the rounded corner.
     Arc,
-    /// Both pieces extended to their meeting: the sharp corner. Supported
-    /// where both sides are straight; extending arcs to a meeting that may
-    /// not exist is refused.
+    /// Both pieces extended to their meeting: the sharp corner. In a
+    /// wire's offset each piece runs on along its own line or circle to
+    /// the meeting nearest the corner; curved sides that never meet ahead
+    /// of it are refused.
     #[default]
     Intersection,
 }
 
 /// A piece of the offset wire, in the plane's own coordinates.
 #[derive(Debug, Clone)]
-enum Piece {
+pub(crate) enum Piece {
     Seg {
         from: Point2,
         to: Point2,
@@ -59,7 +60,7 @@ enum Piece {
 }
 
 impl Piece {
-    fn start_point(&self) -> Point2 {
+    pub(crate) fn start_point(&self) -> Point2 {
         match self {
             Self::Seg { from, .. } => *from,
             Self::Arc {
@@ -71,7 +72,7 @@ impl Piece {
         }
     }
 
-    fn end_point(&self) -> Point2 {
+    pub(crate) fn end_point(&self) -> Point2 {
         match self {
             Self::Seg { to, .. } => *to,
             Self::Arc {
@@ -83,7 +84,7 @@ impl Piece {
         }
     }
 
-    fn mid_point(&self) -> Point2 {
+    pub(crate) fn mid_point(&self) -> Point2 {
         match self {
             Self::Seg { from, to } => from.midpoint(*to),
             Self::Arc {
@@ -96,7 +97,7 @@ impl Piece {
     }
 
     /// Unit tangent along traversal at the start or end.
-    fn tangent(&self, at_end: bool) -> Vector2 {
+    pub(crate) fn tangent(&self, at_end: bool) -> Vector2 {
         match self {
             Self::Seg { from, to } => {
                 let d = *to - *from;
@@ -121,7 +122,7 @@ impl Piece {
     }
 }
 
-fn at_angle(centre: Point2, radius: f64, angle: f64) -> Point2 {
+pub(crate) fn at_angle(centre: Point2, radius: f64, angle: f64) -> Point2 {
     Point2::new(
         radius.mul_add(angle.cos(), centre.x),
         radius.mul_add(angle.sin(), centre.y),
@@ -145,8 +146,8 @@ fn at_angle(centre: Point2, radius: f64, angle: f64) -> Point2 {
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the wire is
 /// open or not planar, an edge is neither straight nor circular, the offset
-/// consumes an edge or an arc's radius, an `Intersection` join is asked of a
-/// curved side, or the collapse consumes the wire whole.
+/// consumes an edge or an arc's radius, an `Intersection` join's curved
+/// sides never meet, or the collapse consumes the wire whole.
 pub fn offset_wire(
     model: &mut Model,
     wire: &Shape,
@@ -195,60 +196,7 @@ pub fn offset_wire(
 
     // Every edge as a piece in plane coordinates, traversal order.
     let edges = explore(model, wire, Filter::OfType(ShapeType::Edge))?;
-    let mut pieces: Vec<Piece> = Vec::with_capacity(edges.len());
-    for edge in &edges {
-        let Some((curve, range)) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
-            ogeom_bail!(Construction, "an edge has no curve to offset");
-        };
-        let Some((sv, ev)) = edge_vertices(model, edge)? else {
-            ogeom_bail!(Construction, "an edge has no bounding vertices");
-        };
-        let position = |v: &Shape| -> OgeomResult<Point> {
-            let Some(node) = model.node(v) else {
-                ogeom_bail!(Dangling, "vertex is not in this model");
-            };
-            let Some(data) = node.data().as_vertex() else {
-                ogeom_bail!(Construction, "vertex node holds no point");
-            };
-            Ok(v.transform(model.datums())?.apply(data.point))
-        };
-        let from = flat(position(&sv)?);
-        let to = flat(position(&ev)?);
-        match &curve {
-            Curve::Line(_) => pieces.push(Piece::Seg { from, to }),
-            Curve::Circle(c) => {
-                let centre = flat(c.circle().centre());
-                let radius = c.circle().radius();
-                let mid = flat(curve.point_at(f64::midpoint(range.0, range.1), tol)?);
-                // The traversal's sweep direction, read from three points of
-                // the arc rather than from flags that compose.
-                let ccw = (mid - from).cross(to - mid) > 0.0;
-                let a0 = (from - centre).y.atan2((from - centre).x);
-                let mut a1 = (to - centre).y.atan2((to - centre).x);
-                let tau = core::f64::consts::TAU;
-                if ccw {
-                    while a1 <= a0 + tol.parametric() {
-                        a1 += tau;
-                    }
-                } else {
-                    while a1 >= a0 - tol.parametric() {
-                        a1 -= tau;
-                    }
-                }
-                pieces.push(Piece::Arc {
-                    centre,
-                    radius,
-                    start: a0,
-                    end: a1,
-                });
-            }
-            _ => ogeom_bail!(
-                Construction,
-                "offsetting an edge that is neither straight nor circular \
-                 needs the offset-curve machinery; see docs/CAPABILITIES.md, offset.wire-offset"
-            ),
-        }
-    }
+    let mut pieces = read_pieces(model, &edges, &flat, tol)?;
 
     // An open wire offsets on both sides and closes over its ends: the
     // outline of the thick path. The return pass is the same pieces walked
@@ -454,22 +402,9 @@ pub fn offset_wire(
                     );
                 }
                 Join::Intersection => {
-                    let (Piece::Seg { from: f1, to: t1 }, Piece::Seg { from: f2, to: t2 }) =
-                        (chain[at_i].0.clone(), chain[at_j].0.clone())
-                    else {
-                        ogeom_bail!(
-                            Construction,
-                            "an intersection join between curved sides may \
-                             never meet; use the arc join"
-                        );
-                    };
-                    let met = intersect_lines(f1, t1, f2, t2, tol)?;
-                    if let Piece::Seg { to, .. } = &mut chain[at_i].0 {
-                        *to = met;
-                    }
-                    if let Piece::Seg { from, .. } = &mut chain[at_j].0 {
-                        *from = met;
-                    }
+                    let (a, b) = extended_to_meeting(&chain[at_i].0, &chain[at_j].0, corner, tol)?;
+                    chain[at_i].0 = a;
+                    chain[at_j].0 = b;
                 }
             }
         } else {
@@ -619,59 +554,24 @@ pub fn offset_wire(
     // Lift each loop back to space and rebuild, vertices shared along the
     // way. One loop is a wire; a collapse that split the offset into islands
     // is a compound of them.
-    let lift = |p: Point2| frame.origin() + frame.x().vector() * p.x + frame.y().vector() * p.y;
-    let normal = frame.z();
-    let x_ref = frame.x();
     let mut history = History::new();
     let mut wires: Vec<Shape> = Vec::new();
     for ring in &loops {
-        let count = ring.len();
-        let mut new_edges: Vec<Shape> = Vec::with_capacity(count);
-        let vertices: Vec<Shape> = (0..count)
-            .map(|k| make_vertex(model, lift(ring[k].0.start_point())).shape)
-            .collect();
-        for (k, (piece, provenance)) in ring.iter().enumerate() {
-            let from = &vertices[k];
-            let to = &vertices[(k + 1) % count];
-            let built = match piece {
-                Piece::Seg { from: a, to: b } => {
-                    let line = LineCurve::segment(lift(*a), lift(*b), tol)?;
-                    let curve = Curve::Line(line);
-                    let domain = curve.domain();
-                    make_edge_between(model, curve, domain, from, to, tol)?.shape
-                }
-                Piece::Arc {
-                    centre,
-                    radius,
-                    start,
-                    end,
-                } => {
-                    // Always built counter-clockwise about the plane normal;
-                    // a clockwise piece enters the wire reversed.
-                    let ccw = end > start;
-                    let circle =
-                        Circle::new(Frame::new(lift(*centre), normal, x_ref, tol)?, *radius, tol)?;
-                    let curve = Curve::Circle(CircleCurve::new(circle));
-                    let (lo, hi) = if ccw { (*start, *end) } else { (*end, *start) };
-                    let (va, vb) = if ccw { (from, to) } else { (to, from) };
-                    let edge = make_edge_between(model, curve, (lo, hi), va, vb, tol)?.shape;
-                    if ccw { edge } else { edge.reversed() }
-                }
-            };
+        let (built, new_edges) = build_ring(model, &frame, ring, tol)?;
+        for ((_, provenance), edge) in ring.iter().zip(new_edges) {
             match provenance {
-                Provenance::Offset(i) => history.modify(&edges[i % edges.len()], built.clone()),
+                Provenance::Offset(i) => history.modify(&edges[i % edges.len()], edge),
                 Provenance::Join(i) => {
                     // The join stands where the corner vertex stood; for an
                     // open path's cap, the end vertex itself.
                     if let Some((_, corner_vertex)) = edge_vertices(model, &edges[i % edges.len()])?
                     {
-                        history.generate(&corner_vertex, built.clone());
+                        history.generate(&corner_vertex, edge);
                     }
                 }
             }
-            new_edges.push(built);
         }
-        wires.push(make_wire(model, &new_edges, tol)?.shape);
+        wires.push(built);
     }
     let shape = if wires.len() == 1 {
         wires.remove(0)
@@ -682,8 +582,286 @@ pub fn offset_wire(
     Ok(Built::new(shape, history))
 }
 
+/// Every edge of `edges` as a piece in plane coordinates, in the order given.
+pub(crate) fn read_pieces(
+    model: &Model,
+    edges: &[Shape],
+    flat: &dyn Fn(Point) -> Point2,
+    tol: Tolerances,
+) -> OgeomResult<Vec<Piece>> {
+    let mut pieces: Vec<Piece> = Vec::with_capacity(edges.len());
+    for edge in edges {
+        let Some((curve, range)) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
+            ogeom_bail!(Construction, "an edge has no curve to offset");
+        };
+        let Some((sv, ev)) = edge_vertices(model, edge)? else {
+            ogeom_bail!(Construction, "an edge has no bounding vertices");
+        };
+        let position = |v: &Shape| -> OgeomResult<Point> {
+            let Some(node) = model.node(v) else {
+                ogeom_bail!(Dangling, "vertex is not in this model");
+            };
+            let Some(data) = node.data().as_vertex() else {
+                ogeom_bail!(Construction, "vertex node holds no point");
+            };
+            Ok(v.transform(model.datums())?.apply(data.point))
+        };
+        let from = flat(position(&sv)?);
+        let to = flat(position(&ev)?);
+        match &curve {
+            Curve::Line(_) => pieces.push(Piece::Seg { from, to }),
+            Curve::Circle(c) => {
+                let centre = flat(c.circle().centre());
+                let radius = c.circle().radius();
+                let mid = flat(curve.point_at(f64::midpoint(range.0, range.1), tol)?);
+                // The traversal's sweep direction, read from three points of
+                // the arc rather than from flags that compose.
+                let ccw = (mid - from).cross(to - mid) > 0.0;
+                let a0 = (from - centre).y.atan2((from - centre).x);
+                let mut a1 = (to - centre).y.atan2((to - centre).x);
+                let tau = core::f64::consts::TAU;
+                if ccw {
+                    while a1 <= a0 + tol.parametric() {
+                        a1 += tau;
+                    }
+                } else {
+                    while a1 >= a0 - tol.parametric() {
+                        a1 -= tau;
+                    }
+                }
+                pieces.push(Piece::Arc {
+                    centre,
+                    radius,
+                    start: a0,
+                    end: a1,
+                });
+            }
+            _ => ogeom_bail!(
+                Construction,
+                "offsetting an edge that is neither straight nor circular \
+                 needs the offset-curve machinery; see docs/CAPABILITIES.md, offset.wire-offset"
+            ),
+        }
+    }
+    Ok(pieces)
+}
+
+/// Lift a closed ring of pieces back to space as a wire, vertices shared
+/// along the way. Returns the wire and its edges, one per piece in order.
+pub(crate) fn build_ring<P>(
+    model: &mut Model,
+    frame: &Frame,
+    ring: &[(Piece, P)],
+    tol: Tolerances,
+) -> OgeomResult<(Shape, Vec<Shape>)> {
+    let lift = |p: Point2| frame.origin() + frame.x().vector() * p.x + frame.y().vector() * p.y;
+    let normal = frame.z();
+    let x_ref = frame.x();
+    let count = ring.len();
+    let mut new_edges: Vec<Shape> = Vec::with_capacity(count);
+    let vertices: Vec<Shape> = (0..count)
+        .map(|k| make_vertex(model, lift(ring[k].0.start_point())).shape)
+        .collect();
+    for (k, (piece, _)) in ring.iter().enumerate() {
+        let from = &vertices[k];
+        let to = &vertices[(k + 1) % count];
+        let built = match piece {
+            Piece::Seg { from: a, to: b } => {
+                let line = LineCurve::segment(lift(*a), lift(*b), tol)?;
+                let curve = Curve::Line(line);
+                let domain = curve.domain();
+                make_edge_between(model, curve, domain, from, to, tol)?.shape
+            }
+            Piece::Arc {
+                centre,
+                radius,
+                start,
+                end,
+            } => {
+                // Always built counter-clockwise about the plane normal;
+                // a clockwise piece enters the wire reversed.
+                let ccw = end > start;
+                let circle =
+                    Circle::new(Frame::new(lift(*centre), normal, x_ref, tol)?, *radius, tol)?;
+                let curve = Curve::Circle(CircleCurve::new(circle));
+                let (lo, hi) = if ccw { (*start, *end) } else { (*end, *start) };
+                let (va, vb) = if ccw { (from, to) } else { (to, from) };
+                let edge = make_edge_between(model, curve, (lo, hi), va, vb, tol)?.shape;
+                if ccw { edge } else { edge.reversed() }
+            }
+        };
+        new_edges.push(built);
+    }
+    let wire = make_wire(model, &new_edges, tol)?.shape;
+    Ok((wire, new_edges))
+}
+
+/// Extend `a`'s end and `b`'s start along their own line or circle to where
+/// the two meet, the meeting nearest `corner`: the sharp corner across a
+/// gap. Two lines meet where they cross; a line and a circle, or two
+/// circles, may not meet at all, and then the join is refused by name.
+pub(crate) fn extended_to_meeting(
+    a: &Piece,
+    b: &Piece,
+    corner: Point2,
+    tol: Tolerances,
+) -> OgeomResult<(Piece, Piece)> {
+    if let (Piece::Seg { from: f1, to: t1 }, Piece::Seg { from: f2, to: t2 }) = (a, b) {
+        let met = intersect_lines(*f1, *t1, *f2, *t2, tol)?;
+        return Ok((
+            Piece::Seg { from: *f1, to: met },
+            Piece::Seg { from: met, to: *t2 },
+        ));
+    }
+    support_meetings(a, b, tol)
+        .into_iter()
+        .filter_map(|p| Some((p, extended_end(a, p, tol)?, extended_start(b, p, tol)?)))
+        .min_by(|x, y| {
+            x.0.distance(corner)
+                .partial_cmp(&y.0.distance(corner))
+                .unwrap_or(core::cmp::Ordering::Equal)
+        })
+        .map(|(_, a, b)| (a, b))
+        .ok_or_else(|| {
+            ogeom_core::ogeom_err!(
+                Construction,
+                "an intersection join finds no meeting: the curved sides, \
+                 extended along their circles, never cross ahead of the corner; \
+                 use the arc join"
+            )
+        })
+}
+
+/// Where the unbounded supports of two pieces (a line, a full circle)
+/// meet. A tangency within tolerance counts once.
+fn support_meetings(a: &Piece, b: &Piece, tol: Tolerances) -> Vec<Point2> {
+    let eps = tol.confusion();
+    let line_circle = |from: Point2, to: Point2, centre: Point2, radius: f64| -> Vec<Point2> {
+        let d = (to - from) / (to - from).magnitude();
+        let w = from - centre;
+        let along = -w.dot(d);
+        let foot = from + d * along;
+        let off = foot.distance(centre);
+        if off > radius + eps {
+            return Vec::new();
+        }
+        let half = (radius * radius - off * off).max(0.0).sqrt();
+        if half <= eps {
+            return vec![foot];
+        }
+        vec![foot - d * half, foot + d * half]
+    };
+    match (a, b) {
+        (Piece::Seg { from, to }, Piece::Arc { centre, radius, .. })
+        | (Piece::Arc { centre, radius, .. }, Piece::Seg { from, to }) => {
+            line_circle(*from, *to, *centre, *radius)
+        }
+        (
+            Piece::Arc {
+                centre: c1,
+                radius: r1,
+                ..
+            },
+            Piece::Arc {
+                centre: c2,
+                radius: r2,
+                ..
+            },
+        ) => {
+            let span = c2.distance(*c1);
+            if span <= eps || span > r1 + r2 + eps || span < (r1 - r2).abs() - eps {
+                return Vec::new();
+            }
+            let u = (*c2 - *c1) / span;
+            let along = (r1 * r1 - r2 * r2 + span * span) / (2.0 * span);
+            let foot = *c1 + u * along;
+            let half = (r1 * r1 - along * along).max(0.0).sqrt();
+            let normal = Vector2::new(-u.y, u.x);
+            if half <= eps {
+                return vec![foot];
+            }
+            vec![foot - normal * half, foot + normal * half]
+        }
+        (Piece::Seg { .. }, Piece::Seg { .. }) => Vec::new(),
+    }
+}
+
+/// `piece` with its end carried forward along its support to `p`, if `p`
+/// lies on the support ahead of the end (less than half a turn ahead on a
+/// circle).
+fn extended_end(piece: &Piece, p: Point2, tol: Tolerances) -> Option<Piece> {
+    match piece {
+        Piece::Seg { from, to } => {
+            let d = (*to - *from) / (*to - *from).magnitude();
+            ((p - *to).dot(d) >= -tol.confusion()).then_some(Piece::Seg { from: *from, to: p })
+        }
+        Piece::Arc {
+            centre,
+            radius,
+            start,
+            end,
+        } => {
+            let sense = (end - start).signum();
+            let ahead = arc_advance(*centre, p, *end, sense, *radius, tol)?;
+            let end = end + sense * ahead;
+            ((end - start).abs() < core::f64::consts::TAU).then_some(Piece::Arc {
+                centre: *centre,
+                radius: *radius,
+                start: *start,
+                end,
+            })
+        }
+    }
+}
+
+/// `piece` with its start carried back along its support to `p`, if `p`
+/// lies on the support behind the start.
+fn extended_start(piece: &Piece, p: Point2, tol: Tolerances) -> Option<Piece> {
+    match piece {
+        Piece::Seg { from, to } => {
+            let d = (*to - *from) / (*to - *from).magnitude();
+            ((*from - p).dot(d) >= -tol.confusion()).then_some(Piece::Seg { from: p, to: *to })
+        }
+        Piece::Arc {
+            centre,
+            radius,
+            start,
+            end,
+        } => {
+            let sense = (end - start).signum();
+            let behind = arc_advance(*centre, p, *start, -sense, *radius, tol)?;
+            let start = start - sense * behind;
+            ((end - start).abs() < core::f64::consts::TAU).then_some(Piece::Arc {
+                centre: *centre,
+                radius: *radius,
+                start,
+                end: *end,
+            })
+        }
+    }
+}
+
+/// How far, in angle, `p` stands from the angle `from` on a circle about
+/// `centre`, turning in `sense`; `None` past half a turn.
+fn arc_advance(
+    centre: Point2,
+    p: Point2,
+    from: f64,
+    sense: f64,
+    radius: f64,
+    tol: Tolerances,
+) -> Option<f64> {
+    let tau = core::f64::consts::TAU;
+    let a = (p - centre).y.atan2((p - centre).x);
+    let mut ahead = ((a - from) * sense).rem_euclid(tau);
+    if (tau - ahead) * radius <= tol.confusion() {
+        ahead = 0.0;
+    }
+    (ahead < core::f64::consts::PI).then_some(ahead)
+}
+
 /// Split a piece at the given points on it, in traversal order.
-fn split_at(piece: &Piece, points: &[Point2]) -> Vec<Piece> {
+pub(crate) fn split_at(piece: &Piece, points: &[Point2]) -> Vec<Piece> {
     if points.is_empty() {
         return vec![piece.clone()];
     }
@@ -762,13 +940,13 @@ fn split_at(piece: &Piece, points: &[Point2]) -> Vec<Piece> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Provenance {
+pub(crate) enum Provenance {
     Offset(usize),
     Join(usize),
 }
 
 /// Where two infinite lines through the segments meet.
-fn intersect_lines(
+pub(crate) fn intersect_lines(
     f1: Point2,
     t1: Point2,
     f2: Point2,
@@ -786,7 +964,12 @@ fn intersect_lines(
 }
 
 /// The crossing of two pieces nearest `corner`.
-fn nearest_crossing(a: &Piece, b: &Piece, corner: Point2, tol: Tolerances) -> OgeomResult<Point2> {
+pub(crate) fn nearest_crossing(
+    a: &Piece,
+    b: &Piece,
+    corner: Point2,
+    tol: Tolerances,
+) -> OgeomResult<Point2> {
     let candidates = crossings(a, b, tol)?;
     candidates
         .into_iter()
@@ -805,7 +988,7 @@ fn nearest_crossing(a: &Piece, b: &Piece, corner: Point2, tol: Tolerances) -> Og
 }
 
 /// All crossings of the two pieces' supports.
-fn crossings(a: &Piece, b: &Piece, tol: Tolerances) -> OgeomResult<Vec<Point2>> {
+pub(crate) fn crossings(a: &Piece, b: &Piece, tol: Tolerances) -> OgeomResult<Vec<Point2>> {
     let support = |p: &Piece| -> OgeomResult<PlanarCurve> {
         Ok(match p {
             Piece::Seg { from, to } => ogeom_geom::Line2d::segment(*from, *to, tol)?.into(),
@@ -831,7 +1014,7 @@ fn crossings(a: &Piece, b: &Piece, tol: Tolerances) -> OgeomResult<Vec<Point2>> 
 /// How far `p` stands from a piece: from a segment, to its nearest point;
 /// from an arc, radially when `p`'s angle falls within the arc's span, else
 /// to the nearer end.
-fn distance_to_piece(piece: &Piece, p: Point2) -> f64 {
+pub(crate) fn distance_to_piece(piece: &Piece, p: Point2) -> f64 {
     match piece {
         Piece::Seg { from, to } => {
             let d = *to - *from;
@@ -867,7 +1050,7 @@ fn distance_to_piece(piece: &Piece, p: Point2) -> f64 {
 }
 
 /// Whether two pieces lie on one line, or on one circle.
-fn same_support(a: &Piece, b: &Piece, tol: Tolerances) -> bool {
+pub(crate) fn same_support(a: &Piece, b: &Piece, tol: Tolerances) -> bool {
     let eps = tol.confusion() * 100.0;
     match (a, b) {
         (Piece::Seg { from, to }, Piece::Seg { .. }) => {
@@ -893,13 +1076,13 @@ fn same_support(a: &Piece, b: &Piece, tol: Tolerances) -> bool {
 }
 
 /// Whether `p` lies on the piece, strictly between its ends.
-fn lies_inside(piece: &Piece, p: Point2, tol: Tolerances) -> bool {
+pub(crate) fn lies_inside(piece: &Piece, p: Point2, tol: Tolerances) -> bool {
     distance_to_piece(piece, p) <= tol.confusion() * 100.0 && within(piece, p, tol)
 }
 
 /// Whether a support crossing lands within the piece's own span, endpoints
 /// excluded.
-fn within(piece: &Piece, p: Point2, tol: Tolerances) -> bool {
+pub(crate) fn within(piece: &Piece, p: Point2, tol: Tolerances) -> bool {
     let margin = tol.confusion() * 100.0;
     match piece {
         Piece::Seg { from, to } => {
@@ -931,7 +1114,7 @@ fn within(piece: &Piece, p: Point2, tol: Tolerances) -> bool {
 }
 
 /// Trim a piece's end back to `at`.
-fn trim_end(piece: &mut Piece, at: Point2, tol: Tolerances) -> OgeomResult<()> {
+pub(crate) fn trim_end(piece: &mut Piece, at: Point2, tol: Tolerances) -> OgeomResult<()> {
     match piece {
         Piece::Seg { from, to } => {
             let d = (*to - *from).magnitude();
@@ -955,7 +1138,7 @@ fn trim_end(piece: &mut Piece, at: Point2, tol: Tolerances) -> OgeomResult<()> {
 }
 
 /// Trim a piece's start forward to `at`.
-fn trim_start(piece: &mut Piece, at: Point2, tol: Tolerances) -> OgeomResult<()> {
+pub(crate) fn trim_start(piece: &mut Piece, at: Point2, tol: Tolerances) -> OgeomResult<()> {
     match piece {
         Piece::Seg { from, to } => {
             let d = (*to - *from).magnitude();
@@ -980,7 +1163,7 @@ fn trim_start(piece: &mut Piece, at: Point2, tol: Tolerances) -> OgeomResult<()>
 
 /// Fold `angle` next to the span so the sweep from `anchor` keeps its sense
 /// and stays non-empty.
-fn align_angle(
+pub(crate) fn align_angle(
     angle: f64,
     anchor: f64,
     replaced: f64,
