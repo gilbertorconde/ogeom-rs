@@ -897,3 +897,87 @@ fn a_concave_round_capped_by_its_end_faces_builds_with_every_option_off() {
         );
     }
 }
+
+/// The plate's rim rounded 1 beside the pocket, with the pocket's four
+/// floor edges rounded 0.05 or 0.1 in the same request. The rim's
+/// round trims through the pocket's walls; the floor rounds fill its
+/// concave edges, each pair of fills overlapping in a corner. Checked
+/// against the volume in closed form: the solid less the rim's spandrel
+/// swept about the axis (Pappus) with the part the pocket already took
+/// added back, plus the four fills less their corner overlaps.
+#[test]
+fn a_rim_round_with_the_pocket_floor_rounds_builds_to_its_volume() {
+    // The rim's spandrel above `(x, y)`: the ball's centre circle at
+    // radius 4 and height 8, the spandrel standing over the ring 4 to 5.
+    let spandrel = |x: f64, y: f64| {
+        let d = x.hypot(y) - 4.0;
+        1.0 - (1.0 - d * d).sqrt()
+    };
+    // Composite Simpson over the pocket's opening, where `spandrel` is
+    // smooth (the opening stands off the ring's inner circle).
+    let n = 400;
+    let (hx, hy) = (0.5 / f64::from(n), 0.5 / f64::from(n));
+    let weight = |i: i32| match i {
+        0 => 1.0,
+        i if i == n => 1.0,
+        i if i % 2 == 1 => 4.0,
+        _ => 2.0,
+    };
+    let mut taken = 0.0;
+    for i in 0..=n {
+        for j in 0..=n {
+            let (x, y) = (4.3 + hx * f64::from(i), -0.25 + hy * f64::from(j));
+            taken += weight(i) * weight(j) * spandrel(x, y);
+        }
+    }
+    taken *= hx * hy / 9.0;
+    let sharp = 40.0 * 40.0 * 4.0 + PI * 25.0 * 5.0 - 0.5 * 0.5 * 3.0;
+    let fill = 1.0 - PI / 4.0;
+    let centroid = (10.0 - 3.0 * PI) / (3.0 * (4.0 - PI));
+    let rim = TAU * (5.0 - centroid) * fill;
+    // Two fills of unit radius at a square corner share
+    // `integral (1 - sqrt(1 - (1 - z)^2))^2 dz` over `[0, 1]`.
+    let corner = 5.0 / 3.0 - FRAC_PI_2;
+    for floor in [0.05, 0.1] {
+        let mut m = Model::new();
+        let plate = ogeom_algo::make_box(&mut m, at(-20.0, -20.0, 0.0), (40.0, 40.0, 4.0), T)
+            .unwrap()
+            .shape;
+        let boss = ogeom_algo::make_cylinder(&mut m, at(0.0, 0.0, 4.0), 5.0, 5.0, T)
+            .unwrap()
+            .shape;
+        let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+        let pocket = ogeom_algo::make_box(&mut m, at(4.3, -0.25, 6.0), (0.5, 0.5, 4.0), T)
+            .unwrap()
+            .shape;
+        let s = ogeom_bool::cut(&mut m, &s, &pocket, T).unwrap().shape;
+        let rim_edges = edges_where(&m, &s, |p| {
+            (p.z - 9.0).abs() < 1e-6 && (p.x.hypot(p.y) - 5.0).abs() < 1e-6
+        });
+        let floor_edges = edges_where(&m, &s, |p| {
+            (p.z - 6.0).abs() < 1e-9 && (4.3 - 1e-9..=4.8 + 1e-9).contains(&p.x)
+        });
+        assert_eq!(floor_edges.len(), 4, "the pocket's floor edges");
+        let blends: Vec<(Shape, Blend)> = rim_edges
+            .iter()
+            .map(|e| (e.clone(), Blend::Round(1.0)))
+            .chain(floor_edges.iter().map(|e| (e.clone(), Blend::Round(floor))))
+            .collect();
+        let built = blend_edges_overflow(
+            &mut m,
+            &s,
+            &blends,
+            ChamferCorner::Facet,
+            Overflow::default(),
+            T,
+        )
+        .unwrap();
+        let fills = 4.0 * 0.5 * floor * floor * fill - 4.0 * corner * floor.powi(3);
+        let want = sharp - (rim - taken) + fills;
+        let got = volume(&m, &built.shape);
+        assert!(
+            (got - want).abs() < 1e-7,
+            "floor {floor}: {got} against {want}"
+        );
+    }
+}
