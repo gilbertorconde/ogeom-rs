@@ -36,6 +36,8 @@ use ogeom_topo::{Location, Model, Orientation, Shape, ShapeType};
 use crate::Built;
 use crate::build::{attach_pcurve, make_edge};
 
+mod inverse;
+
 /// How the flat sheet is carried away from its origin.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
@@ -389,7 +391,10 @@ impl SurfaceSheet {
     }
 
     /// The `(u, v)` of the surface a sheet point lands on, to the model's
-    /// confusion distance in space.
+    /// confusion distance in space; where the surface's geodesics are
+    /// integrated, to a thousandth of it, so that
+    /// [`SurfaceSheet::sheet_point`] takes the point back to the sheet
+    /// point well within the confusion distance.
     ///
     /// # Errors
     ///
@@ -398,7 +403,7 @@ impl SurfaceSheet {
     /// chart, runs off a bounded surface's domain, or where the geodesics
     /// from the origin cross before reaching it.
     pub fn chart_point(&self, p: Point2) -> OgeomResult<Point2> {
-        self.landed(p, self.tol.confusion())
+        self.landed(p, self.tol.confusion() * 1e-3)
     }
 
     /// A planar curve over `range` of its parameter carried onto the
@@ -690,8 +695,13 @@ impl SurfaceSheet {
 
     /// An edge on the surface along a planar curve carried by
     /// [`SurfaceSheet::chart_curve`]: its curve the chart curve on the
-    /// surface, and, on a face standing unplaced, the chart curve its
-    /// pcurve on the face's surface.
+    /// surface, and the chart curve its pcurve on every face of `model`
+    /// whose surface is the sheet's: the face the sheet was laid on, where
+    /// it stands unplaced, and every face on the same surface or on an
+    /// equal one, placed by the face's own location, that lifts the chart
+    /// curve to the same points (two faces of one cylinder split apart, a
+    /// bore cut in two). The edge can then cut any of those faces without
+    /// its trace being fitted again.
     ///
     /// # Errors
     ///
@@ -730,9 +740,10 @@ impl SurfaceSheet {
         Ok(edge)
     }
 
-    /// On a face standing unplaced, `pcurve` attached to `edge` on the
-    /// face's own surface, and the edge stated same-parameter: its curve is
-    /// that pcurve on that surface, so the two agree at every parameter.
+    /// `pcurve` attached to `edge` on every surface of the model that is
+    /// the sheet's own (see [`SurfaceSheet::sharing_surfaces`]), and the
+    /// edge stated same-parameter: its curve is that pcurve on the sheet's
+    /// surface, and each such surface lifts the pcurve onto it.
     fn own_pcurve(
         &self,
         model: &mut Model,
@@ -740,10 +751,20 @@ impl SurfaceSheet {
         pcurve: PlanarCurve,
         range: (f64, f64),
     ) -> OgeomResult<()> {
-        let Some(surface) = self.own else {
+        let surfaces = self.sharing_surfaces(model, &pcurve, range)?;
+        if surfaces.is_empty() {
             return Ok(());
-        };
-        attach_pcurve(model, edge, pcurve, surface, Location::identity(), range)?;
+        }
+        for surface in surfaces {
+            attach_pcurve(
+                model,
+                edge,
+                pcurve.clone(),
+                surface,
+                Location::identity(),
+                range,
+            )?;
+        }
         let Some(node) = model.node_mut(edge) else {
             ogeom_bail!(Dangling, "edge is not in this model");
         };
@@ -752,6 +773,75 @@ impl SurfaceSheet {
         };
         data.assert_same_parameter(true);
         Ok(())
+    }
+
+    /// The surfaces of the model's faces that `pcurve` over `range` is a
+    /// pcurve on as it is on the sheet's surface: the face the sheet was
+    /// laid on, where it stands unplaced, and every face whose surface,
+    /// placed by the face's own location, is the same kind of surface as
+    /// the sheet's and lifts the pcurve's samples and the sheet's origin to
+    /// the same points in space, to the confusion distance. Two faces of
+    /// one cylinder split apart, or a copy of the sheet's surface on
+    /// another face, share the sheet's chart, so the pcurve carries over
+    /// unchanged.
+    fn sharing_surfaces(
+        &self,
+        model: &Model,
+        pcurve: &PlanarCurve,
+        range: (f64, f64),
+    ) -> OgeomResult<Vec<ogeom_topo::SurfaceId>> {
+        const SAMPLES: u32 = 16;
+        let tol = self.tol;
+        let mut probes = vec![self.origin];
+        for k in 0..=SAMPLES {
+            let t = (range.1 - range.0).mul_add(f64::from(k) / f64::from(SAMPLES), range.0);
+            probes.push(pcurve.point_at(t, tol)?);
+        }
+        let lifted = probes
+            .iter()
+            .map(|uv| self.surface.point_at(uv.x, uv.y, tol))
+            .collect::<OgeomResult<Vec<_>>>()?;
+        let kind = core::mem::discriminant(&self.surface);
+        let mut out: Vec<ogeom_topo::SurfaceId> = Vec::new();
+        let mut passed: Vec<ogeom_topo::SurfaceId> = Vec::new();
+        for (_, node) in model.nodes() {
+            let Some(face) = node.data().as_face() else {
+                continue;
+            };
+            let id = face.surface;
+            if out.contains(&id) || passed.contains(&id) {
+                continue;
+            }
+            if self.own == Some(id) {
+                out.push(id);
+                continue;
+            }
+            let Some(stored) = model.geometry().surface(id) else {
+                continue;
+            };
+            if core::mem::discriminant(stored) != kind {
+                passed.push(id);
+                continue;
+            }
+            let placed;
+            let surface = if face.location.is_identity() {
+                stored
+            } else {
+                placed = stored.transformed(&face.location.composed(model.datums())?, tol)?;
+                &placed
+            };
+            let same = probes.iter().zip(&lifted).all(|(uv, at)| {
+                surface
+                    .point_at(uv.x, uv.y, tol)
+                    .is_ok_and(|q| q.distance(*at) <= tol.confusion())
+            });
+            if same {
+                out.push(id);
+            } else if face.location.is_identity() {
+                passed.push(id);
+            }
+        }
+        Ok(out)
     }
 
     /// How far the sheet has stretched, over every sheet point carried so
@@ -968,6 +1058,19 @@ impl SurfaceSheet {
         if r == 0.0 {
             return Ok((self.origin, 1.0));
         }
+        let state = self.integrated_state(t, r, accuracy, p)?;
+        Ok((Point2::new(state[0], state[1]), state[4] / r))
+    }
+
+    /// The state `(u, v, u', v', J, J')` the geodesic leaving the origin
+    /// along `t / r` reaches after length `r > 0`, to `accuracy` in space.
+    fn integrated_state(
+        &self,
+        t: Vector,
+        r: f64,
+        accuracy: f64,
+        p: Point2,
+    ) -> OgeomResult<[f64; 6]> {
         let tol = self.tol;
         let (su, sv) = self.surface.d1_at(self.origin.x, self.origin.y, tol)?;
         let velocity = in_chart(su, sv, t * (1.0 / r))?;
@@ -979,11 +1082,23 @@ impl SurfaceSheet {
             0.0,
             1.0,
         ];
+        let lines = knot_lines(&self.surface);
+        // How near a knot line a step may end and still cross it: a step
+        // reaching past the line by `d` errs by about `d` times the jump in
+        // the equations' slope there, so the line is closed on to well
+        // under the accuracy asked, but no nearer than the arithmetic
+        // resolves a length along the geodesic.
+        let slack = (accuracy * 1e-3).max(r * 1e3 * f64::EPSILON);
         let mut s = 0.0;
         let mut h = r;
+        // The step the search had reached before it was cut to a knot
+        // line, taken up again past the line.
+        let mut resume: Option<f64> = None;
         while s < r {
             h = h.min(r - s);
-            if h <= tol.confusion() && s + h < r {
+            // A step cut short to end on a knot line may be as short as it
+            // needs to be.
+            if h <= tol.confusion() && s + h < r && resume.is_none() {
                 ogeom_bail!(
                     Construction,
                     "the geodesic to the sheet point {p:?} cannot be followed past \
@@ -995,13 +1110,31 @@ impl SurfaceSheet {
             let whole = self.rk4(&state, h, p)?;
             let first = self.rk4(&state, h / 2.0, p)?;
             let both = self.rk4(&first, h / 2.0, p)?;
+            // Across a knot line of a spline the surface's derivatives jump,
+            // the steps lose their order and the doubling no longer
+            // estimates their error: a step crossing one is cut to end on
+            // it, by the fraction of its chart step the line stands at,
+            // until the line stands within `slack` of one of its ends.
+            if let Some(f) = lines.crossing(&self.surface, [state[0], state[1]], [both[0], both[1]])
+                && f * h > slack
+                && (1.0 - f) * h > slack
+            {
+                resume.get_or_insert(h);
+                h *= f;
+                continue;
+            }
             let (du, dv) = self.surface.d1_at(both[0], both[1], tol)?;
             // Step doubling: the two halves' error is a fifteenth of their
             // difference from the whole step, the classical fourth order's
-            // Richardson estimate.
+            // Richardson estimate. An error in the geodesic's direction, or
+            // in the Jacobi field's slope, turns into one in where it lands
+            // over the length still to go, and is weighed by it.
+            let ahead = (r - s - h).max(0.0);
             let miss = (du * (both[0] - whole[0]) + dv * (both[1] - whole[1]))
                 .magnitude()
                 .max((both[4] - whole[4]).abs())
+                .max((du * (both[2] - whole[2]) + dv * (both[3] - whole[3])).magnitude() * ahead)
+                .max((both[5] - whole[5]).abs() * ahead)
                 / 15.0;
             let allowed = accuracy * h / r;
             // A last remnant no longer than the confusion distance is taken
@@ -1013,6 +1146,10 @@ impl SurfaceSheet {
                     *value += (both[k] - whole[k]) / 15.0;
                 }
                 s += h;
+                if let Some(before) = resume.take() {
+                    h = before;
+                    continue;
+                }
             }
             // The step that would just meet the allowance, its error
             // growing with its fifth power, its allowance with its first;
@@ -1025,7 +1162,7 @@ impl SurfaceSheet {
             };
             h *= grow.clamp(0.25, 2.0) * if miss > allowed { 0.9 } else { 1.0 };
         }
-        Ok((Point2::new(state[0], state[1]), state[4] / r))
+        Ok(state)
     }
 
     /// One classical Runge-Kutta step of length `h`.
@@ -1103,6 +1240,84 @@ impl SurfaceSheet {
         let gaussian = l.mul_add(n, -m * m) / det;
         Ok([a, b, accel_u, accel_v, y[5], -gaussian * y[4]])
     }
+}
+
+/// The interior knot lines of a surface's chart, where a spline's
+/// derivatives may jump: values of `u`, then of `v`.
+struct KnotLines([Vec<f64>; 2]);
+
+impl KnotLines {
+    /// The least fraction of the chart step from `a` to `b`, taken
+    /// straight, at which it crosses a knot line, every period of a
+    /// periodic parameter included; `None` where it crosses none.
+    fn crossing(&self, surface: &SurfaceGeometry, a: [f64; 2], b: [f64; 2]) -> Option<f64> {
+        let ((ua, ub), (va, vb)) = surface.domain();
+        let periods = [
+            surface.is_periodic_u().then_some(ub - ua),
+            surface.is_periodic_v().then_some(vb - va),
+        ];
+        let mut least: Option<f64> = None;
+        for axis in 0..2 {
+            let (from, to) = (a[axis], b[axis]);
+            if from == to {
+                continue;
+            }
+            let (lo, hi) = (from.min(to), from.max(to));
+            for &knot in &self.0[axis] {
+                let shifts = match periods[axis] {
+                    Some(period) if period > 0.0 => {
+                        let first = ((lo - knot) / period).ceil();
+                        let last = ((hi - knot) / period).floor();
+                        if last < first {
+                            continue;
+                        }
+                        // The step spans a few periods at most: its first
+                        // crossing is the one nearest `from`.
+                        let n = if to > from { first } else { last };
+                        vec![n.mul_add(period, knot)]
+                    }
+                    _ => vec![knot],
+                };
+                for line in shifts {
+                    if line > lo && line < hi {
+                        let f = (line - from) / (to - from);
+                        least = Some(least.map_or(f, |l: f64| l.min(f)));
+                    }
+                }
+            }
+        }
+        least
+    }
+}
+
+/// A surface's knot lines: a spline patch's own interior knots, a trimmed
+/// or offset surface's basis's, and a swept surface's generating curve's
+/// along its parameter.
+fn knot_lines(surface: &SurfaceGeometry) -> KnotLines {
+    fn interior(knots: &KnotVector) -> Vec<f64> {
+        let (a, b) = knots.domain();
+        knots
+            .distinct()
+            .into_iter()
+            .map(|(value, _)| value)
+            .filter(|value| *value > a && *value < b)
+            .collect()
+    }
+    fn of_curve(curve: &Curve) -> Vec<f64> {
+        match curve {
+            Curve::BSpline(b) => interior(b.knots()),
+            Curve::Trimmed(t) => of_curve(t.basis()),
+            _ => Vec::new(),
+        }
+    }
+    KnotLines(match surface {
+        SurfaceGeometry::BSpline(b) => [interior(b.u_knots()), interior(b.v_knots())],
+        SurfaceGeometry::Trimmed(t) => knot_lines(t.basis()).0,
+        SurfaceGeometry::Offset(o) => knot_lines(o.basis()).0,
+        SurfaceGeometry::Revolution(r) => [Vec::new(), of_curve(r.curve())],
+        SurfaceGeometry::Extrusion(e) => [of_curve(e.curve()), Vec::new()],
+        _ => [Vec::new(), Vec::new()],
+    })
 }
 
 /// Whether the chart's side `(axis, bound)` collapses to one point in
@@ -1357,5 +1572,51 @@ mod tests {
         let (e, i) = (exact.distortion(), integrated.distortion());
         assert!((e.area.0 - 0.9_f64.sin() / 0.9).abs() <= 1e-12, "{e:?}");
         assert!((i.area.0 - e.area.0).abs() <= 1e-6, "{i:?} {e:?}");
+    }
+
+    #[test]
+    fn integrated_geodesics_on_a_spline_hold_their_accuracy_across_its_knots() {
+        // A bicubic patch fitted through a twisted saddle, its knot lines a
+        // twentieth of its chart apart: every ray out to the rim lands, at
+        // the accuracy a sheet point is landed to, where the same geodesic
+        // integrated a hundred times tighter does. A step straddling a knot
+        // line, where the patch's third derivatives jump, loses its order
+        // and fools the step doubling's estimate, by twenty times and more
+        // on this patch.
+        let saddle = |x: f64, y: f64| Point::new(x, y, (x * x - y * y) / 40.0 + x * y / 60.0);
+        let n = 21;
+        let rows: Vec<Vec<Point>> = (0..n)
+            .map(|j| {
+                let y = -10.0 + 20.0 * f64::from(j) / f64::from(n - 1);
+                (0..n)
+                    .map(|i| saddle(-10.0 + 20.0 * f64::from(i) / f64::from(n - 1), y))
+                    .collect()
+            })
+            .collect();
+        let patch = ogeom_geom::fit::fit_surface_grid(&rows, 3, 1e-8, T)
+            .unwrap()
+            .curve;
+        let mut model = Model::new();
+        let face = crate::make_natural_face(&mut model, patch.into())
+            .unwrap()
+            .shape;
+        let placement = SheetPlacement {
+            at: saddle(0.0, 0.0),
+            x_direction: Direction::X,
+            method: SheetMethod::Geodesic,
+        };
+        let sheet = SurfaceSheet::new(&model, &face, &placement, 6.0, T).unwrap();
+        let asked = T.confusion() * 1e-3;
+        let mut worst: f64 = 0.0;
+        for k in 0..12 {
+            let angle = f64::from(k).mul_add(0.5, 0.1);
+            let p = Point2::new(6.0 * angle.cos(), 6.0 * angle.sin());
+            let lift = |accuracy: f64| {
+                let (uv, _) = sheet.geodesic(p, accuracy).unwrap();
+                sheet.surface.point_at(uv.x, uv.y, T).unwrap()
+            };
+            worst = worst.max(lift(asked).distance(lift(asked / 100.0)));
+        }
+        assert!(worst <= asked, "{worst}");
     }
 }
