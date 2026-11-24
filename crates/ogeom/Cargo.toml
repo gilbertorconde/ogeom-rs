@@ -56,6 +56,7 @@ approx.workspace = true
 ogeom-algo = { workspace = true, features = ["test-hooks"] }
 ogeom-bool = { workspace = true, features = ["test-hooks"] }
 proptest.workspace = true
+stats_alloc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix.workspace = true

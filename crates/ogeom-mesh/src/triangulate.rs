@@ -109,57 +109,392 @@ pub fn triangulate_face_kept(
 /// A face matches a kept one only where every one of these is the same to
 /// the bit, and the kept mesh is the one drawing it again gives. A face
 /// whose content cannot be read is drawn and not kept.
+///
+/// An edited face reads differently, so its old mesh is never handed back
+/// for it; what an edit leaves behind is the meshes of faces that no
+/// longer exist. Two ways keep that bounded:
+///
+/// - [`Self::retain_used`] after each mesh of a body drops every face not
+///   asked for since the call before, so a cache serving one build chain
+///   holds the faces of the body meshed last;
+/// - [`Self::with_byte_limit`] and [`Self::with_face_limit`] cap what is
+///   held, dropping the least recently used face first once a store would
+///   pass either cap.
+///
+/// Entries are per face: a face drawn at several deflections, or in both
+/// passes of the shape-wide mesher, is one entry holding each mesh, and is
+/// used, counted and dropped as one. [`Self::bytes`] is the heap the
+/// entries own (keys, meshes, chords, and the hash table and recency order
+/// that index them), which is what the byte cap bounds. A mesh larger than
+/// the cap on its own is drawn and not kept.
+///
+/// Recency is an access counter, not a clock, and the cache is one mutex,
+/// so it behaves alike on targets with no clock or threads. Meshes are
+/// drawn outside the lock: two threads missing the same face both draw it,
+/// and the second store replaces the first with the same mesh.
 #[derive(Debug, Default)]
 pub struct FaceMeshCache {
-    held: std::sync::Mutex<ogeom_core::FastMap<Vec<u8>, (Triangulation, Verdict)>>,
-    /// The chords a face that came up short asked its edges to be drawn
-    /// at, under the same key as its mesh: each edge's in the order the
-    /// face's wires walk them, `None` for one it did not name.
-    chords: std::sync::Mutex<ogeom_core::FastMap<Vec<u8>, Vec<Option<f64>>>>,
+    store: std::sync::Mutex<Store>,
+}
+
+/// What a [`FaceMeshCache`] holds and has done, as [`FaceMeshCache::stats`]
+/// reads it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FaceMeshCacheStats {
+    /// Faces held.
+    pub faces: usize,
+    /// The heap the held faces own, as the byte cap counts it.
+    pub bytes: usize,
+    /// Mesh lookups answered from the cache.
+    pub hits: u64,
+    /// Mesh lookups that drew the face.
+    pub misses: u64,
+    /// Faces dropped to stay under a cap (a mesh refused for being larger
+    /// than the cap on its own counts as one).
+    pub evicted: u64,
+    /// Faces dropped by [`FaceMeshCache::retain_used`],
+    /// [`FaceMeshCache::forget`] or [`FaceMeshCache::clear`].
+    pub dropped: u64,
+}
+
+/// The kept faces and the counters, behind the cache's one lock.
+#[derive(Debug, Default)]
+struct Store {
+    faces: ogeom_core::FastMap<std::sync::Arc<[u8]>, Held>,
+    /// The faces by when they were last used, oldest first.
+    order: std::collections::BTreeMap<u64, std::sync::Arc<[u8]>>,
+    /// Counts every use; a face's `used` is the count at its last.
+    tick: u64,
+    /// Advanced by each [`FaceMeshCache::retain_used`].
+    generation: u64,
+    bytes: usize,
+    byte_limit: Option<usize>,
+    face_limit: Option<usize>,
+    hits: u64,
+    misses: u64,
+    evicted: u64,
+    dropped: u64,
+}
+
+/// One face's kept meshes and chords, each under the rest of its key (the
+/// deflection, tolerances, pass and edge chords it was drawn with).
+#[derive(Debug)]
+struct Held {
+    used: u64,
+    generation: u64,
+    bytes: usize,
+    meshes: Vec<(Vec<u8>, (Triangulation, Verdict))>,
+    /// The chords the face asked its edges to be drawn at when it came up
+    /// short: each edge's in the order the face's wires walk them, `None`
+    /// for one it did not name.
+    chords: Vec<(Vec<u8>, Vec<Option<f64>>)>,
+}
+
+/// The share of a face's bytes outside its own data and its map slot: its
+/// node in the recency order (a node is at least half full, and the inner
+/// nodes add less than a leaf's share again) and the key's reference counts.
+const ORDER_BYTES: usize =
+    4 * std::mem::size_of::<(u64, std::sync::Arc<[u8]>)>() + 2 * std::mem::size_of::<usize>();
+
+/// The heap a mesh owns.
+#[allow(deprecated, reason = "the deprecated parameters still hold memory")]
+fn mesh_bytes(mesh: &Triangulation) -> usize {
+    use std::mem::size_of;
+    mesh.positions.capacity() * size_of::<Point>()
+        + mesh.normals.capacity() * size_of::<Vector>()
+        + mesh.parameters.capacity() * size_of::<(f64, f64)>()
+        + mesh.triangles.capacity() * size_of::<[u32; 3]>()
+        + mesh.corner_parameters.capacity() * size_of::<[(f64, f64); 3]>()
+        + mesh.corner_normals.capacity() * size_of::<[Vector; 3]>()
+        + mesh.findings.capacity() * size_of::<MeshFinding>()
+}
+
+impl Held {
+    /// The bytes this face holds, as [`FaceMeshCacheStats::bytes`] counts.
+    fn measure(&self, key: &[u8]) -> usize {
+        use std::mem::size_of;
+        let meshes: usize = self
+            .meshes
+            .iter()
+            .map(|(rest, (mesh, _))| rest.capacity() + mesh_bytes(mesh))
+            .sum();
+        let chords: usize = self
+            .chords
+            .iter()
+            .map(|(rest, c)| rest.capacity() + c.capacity() * size_of::<Option<f64>>())
+            .sum();
+        ORDER_BYTES
+            + key.len()
+            + meshes
+            + chords
+            + self.meshes.capacity() * size_of::<(Vec<u8>, (Triangulation, Verdict))>()
+            + self.chords.capacity() * size_of::<(Vec<u8>, Vec<Option<f64>>)>()
+    }
+}
+
+impl Store {
+    /// Marks `face` used now, if held.
+    fn touch(&mut self, face: &[u8]) -> Option<&mut Held> {
+        self.tick += 1;
+        let (tick, generation) = (self.tick, self.generation);
+        let (key, held) = self.faces.get_key_value_mut(face)?;
+        self.order.remove(&held.used);
+        self.order.insert(tick, std::sync::Arc::clone(key));
+        held.used = tick;
+        held.generation = generation;
+        Some(held)
+    }
+
+    /// Stores into `face`'s entry by `fill`, making the entry if it is
+    /// new, then drops the least recently used faces until under the caps.
+    fn store(&mut self, face: &[u8], fill: impl FnOnce(&mut Held)) {
+        if self.touch(face).is_none() {
+            let key: std::sync::Arc<[u8]> = face.into();
+            self.order.insert(self.tick, std::sync::Arc::clone(&key));
+            self.faces.insert(
+                key,
+                Held {
+                    used: self.tick,
+                    generation: self.generation,
+                    bytes: 0,
+                    meshes: Vec::new(),
+                    chords: Vec::new(),
+                },
+            );
+        }
+        if let Some(held) = self.faces.get_mut(face) {
+            fill(held);
+            let now = held.measure(face);
+            self.bytes = self.bytes - held.bytes + now;
+            held.bytes = now;
+        }
+        self.evict();
+    }
+
+    /// The faces' bytes, the recency order's root and the hash table's: a
+    /// table of `capacity` slots has a power of two buckets, each a slot and
+    /// a control byte, and a group of control bytes over.
+    fn total(&self) -> usize {
+        let root = if self.order.is_empty() {
+            0
+        } else {
+            11 * std::mem::size_of::<(u64, std::sync::Arc<[u8]>)>() + 16
+        };
+        let capacity = self.faces.capacity();
+        if capacity == 0 {
+            return self.bytes + root;
+        }
+        let buckets = if capacity < 8 {
+            capacity + 1
+        } else {
+            capacity / 7 * 8
+        };
+        let slot = std::mem::size_of::<(std::sync::Arc<[u8]>, Held)>() + 1;
+        self.bytes + root + buckets * slot + 32
+    }
+
+    fn over(&self) -> bool {
+        self.byte_limit.is_some_and(|limit| self.total() > limit)
+            || self
+                .face_limit
+                .is_some_and(|limit| self.faces.len() > limit)
+    }
+
+    /// Drops the least recently used faces until under the caps, and
+    /// gives back a table left mostly empty.
+    fn evict(&mut self) {
+        while self.over() {
+            let Some((_, key)) = self.order.pop_first() else {
+                self.faces.shrink_to_fit();
+                break;
+            };
+            if let Some(held) = self.faces.remove(&key) {
+                self.bytes -= held.bytes;
+                self.evicted += 1;
+            }
+            self.release();
+        }
+    }
+
+    /// Gives back a table left mostly empty, and an empty order's root.
+    fn release(&mut self) {
+        if self.faces.len() * 4 < self.faces.capacity() {
+            self.faces.shrink_to(self.faces.len() * 2);
+        }
+        if self.order.is_empty() {
+            self.order = std::collections::BTreeMap::new();
+        }
+    }
+
+    fn remove(&mut self, face: &[u8]) -> bool {
+        let Some(held) = self.faces.remove(face) else {
+            return false;
+        };
+        self.order.remove(&held.used);
+        self.bytes -= held.bytes;
+        self.dropped += 1;
+        self.release();
+        true
+    }
 }
 
 impl FaceMeshCache {
-    /// An empty cache.
+    /// An empty cache with no cap.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    fn get(&self, key: &[u8]) -> Option<(Triangulation, Verdict)> {
-        self.held
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(key)
-            .cloned()
+    /// This cache, holding at most `bytes` as [`Self::bytes`] counts them:
+    /// a store that would pass it drops the least recently used faces
+    /// first.
+    #[must_use]
+    pub fn with_byte_limit(self, bytes: usize) -> Self {
+        let mut store = self.lock();
+        store.byte_limit = Some(bytes);
+        store.evict();
+        drop(store);
+        self
     }
 
-    fn put(&self, key: Vec<u8>, found: (Triangulation, Verdict)) {
-        self.held
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, found);
+    /// This cache, holding at most `faces` faces: a store of one more
+    /// drops the least recently used face.
+    #[must_use]
+    pub fn with_face_limit(self, faces: usize) -> Self {
+        let mut store = self.lock();
+        store.face_limit = Some(faces);
+        store.evict();
+        drop(store);
+        self
     }
 
-    fn chords(&self, key: &[u8]) -> Option<Vec<Option<f64>>> {
-        self.chords
+    fn lock(&self) -> std::sync::MutexGuard<'_, Store> {
+        self.store
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(key)
-            .cloned()
     }
 
-    fn keep_chords(&self, key: Vec<u8>, found: Vec<Option<f64>>) {
-        self.chords
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(key, found);
+    /// Faces held.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.lock().faces.len()
+    }
+
+    /// Whether no face is held.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.lock().faces.is_empty()
+    }
+
+    /// The heap the held faces own: their keys, meshes and chords, and the
+    /// hash table and recency order indexing them.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.lock().total()
+    }
+
+    /// What is held and the counts of lookups and drops so far.
+    #[must_use]
+    pub fn stats(&self) -> FaceMeshCacheStats {
+        let store = self.lock();
+        FaceMeshCacheStats {
+            faces: store.faces.len(),
+            bytes: store.total(),
+            hits: store.hits,
+            misses: store.misses,
+            evicted: store.evicted,
+            dropped: store.dropped,
+        }
+    }
+
+    /// Drops every face not looked up or stored since the last call (a
+    /// generation sweep): called once after meshing a body, it keeps only
+    /// that body's faces.
+    pub fn retain_used(&self) {
+        let mut store = self.lock();
+        let generation = store.generation;
+        let stale: Vec<std::sync::Arc<[u8]>> = store
+            .faces
+            .iter()
+            .filter(|(_, held)| held.generation != generation)
+            .map(|(key, _)| std::sync::Arc::clone(key))
+            .collect();
+        for key in stale {
+            store.remove(&key);
+        }
+        store.generation += 1;
+    }
+
+    /// Drops `face`'s meshes, so the next lookup draws it again. Whether
+    /// it was held; a face whose content cannot be read never is.
+    pub fn forget(&self, model: &Model, face: &Shape) -> bool {
+        ogeom_topo::face_content(model, face).is_some_and(|key| self.lock().remove(&key))
+    }
+
+    /// Drops every face. The counters stand.
+    pub fn clear(&self) {
+        let mut store = self.lock();
+        store.dropped += u64::try_from(store.faces.len()).unwrap_or(u64::MAX);
+        store.faces = ogeom_core::FastMap::default();
+        store.order = std::collections::BTreeMap::new();
+        store.bytes = 0;
+    }
+
+    fn get(&self, key: &MeshKey) -> Option<(Triangulation, Verdict)> {
+        let mut store = self.lock();
+        let found = store.touch(&key.face).and_then(|held| {
+            held.meshes
+                .iter()
+                .find(|(rest, _)| *rest == key.rest)
+                .map(|(_, found)| found.clone())
+        });
+        if found.is_some() {
+            store.hits += 1;
+        } else {
+            store.misses += 1;
+        }
+        found
+    }
+
+    fn put(&self, key: MeshKey, found: (Triangulation, Verdict)) {
+        self.lock().store(&key.face, |held| {
+            match held.meshes.iter_mut().find(|(rest, _)| *rest == key.rest) {
+                Some((_, slot)) => *slot = found,
+                None => held.meshes.push((key.rest, found)),
+            }
+        });
+    }
+
+    fn chords(&self, key: &MeshKey) -> Option<Vec<Option<f64>>> {
+        self.lock().touch(&key.face).and_then(|held| {
+            held.chords
+                .iter()
+                .find(|(rest, _)| *rest == key.rest)
+                .map(|(_, found)| found.clone())
+        })
+    }
+
+    fn keep_chords(&self, key: MeshKey, found: Vec<Option<f64>>) {
+        self.lock().store(&key.face, |held| {
+            match held.chords.iter_mut().find(|(rest, _)| *rest == key.rest) {
+                Some((_, slot)) => *slot = found,
+                None => held.chords.push((key.rest, found)),
+            }
+        });
     }
 }
 
-/// The key a face's mesh is kept under: see [`FaceMeshCache`]. `finer` is
-/// the shared chord map the face is drawn to, or `None` where it works out
-/// its own from its content alone; `pass` is whether the face is drawn
-/// again if it comes up short.
+/// The key a face's mesh is kept under: see [`FaceMeshCache`]. The face's
+/// content names its entry; the rest names one mesh in it.
+struct MeshKey {
+    face: Vec<u8>,
+    rest: Vec<u8>,
+}
+
+/// [`MeshKey`] for `face`. `finer` is the shared chord map the face is
+/// drawn to, or `None` where it works out its own from its content alone;
+/// `pass` is whether the face is drawn again if it comes up short.
 fn mesh_key(
     model: &Model,
     face: &Shape,
@@ -167,9 +502,9 @@ fn mesh_key(
     finer: Option<&EdgeChords>,
     pass: Pass,
     tol: Tolerances,
-) -> Option<Vec<u8>> {
-    let mut key = ogeom_topo::face_content(model, face)?;
-    key.extend_from_slice(format!("{deflection:?}{tol:?}{pass:?}").as_bytes());
+) -> Option<MeshKey> {
+    let content = ogeom_topo::face_content(model, face)?;
+    let mut key = format!("{deflection:?}{tol:?}{pass:?}").into_bytes();
     match finer {
         None => key.push(b'o'),
         Some(finer) => {
@@ -187,7 +522,10 @@ fn mesh_key(
             }
         }
     }
-    Some(key)
+    Some(MeshKey {
+        face: content,
+        rest: key,
+    })
 }
 
 /// [`triangulate_reporting_from`], through `kept` where there is one.

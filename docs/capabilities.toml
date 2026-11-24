@@ -638,6 +638,23 @@ tests = [
 ]
 
 [[capability]]
+id = "mesh.face-mesh-cache"
+title = "Face meshes kept across models by what each face is made of, bounded by bytes or faces with least-recently-used eviction, swept to the faces of the body meshed last, with hit, miss and eviction counts"
+crate = "ogeom-mesh"
+verdict = "covered"
+symbols = [
+    "ogeom_mesh::FaceMeshCache", "ogeom_mesh::FaceMeshCacheStats",
+    "ogeom_mesh::FaceMeshCache::retain_used", "ogeom_mesh::FaceMeshCache::with_byte_limit",
+    "ogeom_mesh::FaceMeshCache::with_face_limit", "ogeom_mesh::FaceMeshCache::forget",
+    "ogeom_mesh::FaceMeshCache::stats", "ogeom_mesh::triangulate_face_kept",
+]
+tests = [
+    "crates/ogeom/tests/face_mesh_cache.rs",
+    "crates/ogeom/tests/face_mesh_cache_bytes.rs::a_byte_capped_cache_never_holds_more_than_its_cap",
+    "crates/ogeom/tests/face_meshes.rs::kept_face_meshes_answer_as_each_face_drawn_anew",
+]
+
+[[capability]]
 id = "topo.triangulation-store"
 title = "Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner"
 crate = "ogeom-topo"
