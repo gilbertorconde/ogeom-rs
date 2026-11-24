@@ -5,7 +5,7 @@ use ogeom_core::{OgeomResult, ogeom_bail, parallel};
 use ogeom_math::{Direction, Plane, Point, Vector};
 use ogeom_mesh::Bvh;
 
-use super::icp::{Mesh, Pair, Pose, Samples, rms};
+use super::icp::{Onto, Pair, Pose, Samples, rms};
 use super::{Icp, SymmetryFit};
 
 /// The plane the points are the mirror image of the mesh `target` was
@@ -47,7 +47,7 @@ pub fn symmetry_plane(
     if seeds.is_empty() {
         ogeom_bail!(Domain, "no seed planes to start from");
     }
-    let mesh = Mesh::of(target)?;
+    let mesh = Onto::mesh(target)?;
     let samples = Samples::of(points, Some(normals), opts)?;
     let fits = parallel::map_ordered(seeds, |_, seed| from_seed(&mesh, &samples, *seed, opts));
     let mut best: Option<SymmetryFit> = None;
@@ -61,7 +61,7 @@ pub fn symmetry_plane(
 }
 
 /// The rounds from one seed, and the fit of the plane they end at.
-fn from_seed(mesh: &Mesh, samples: &Samples, seed: Plane, opts: &Icp) -> OgeomResult<SymmetryFit> {
+fn from_seed(mesh: &Onto, samples: &Samples, seed: Plane, opts: &Icp) -> OgeomResult<SymmetryFit> {
     let reach = opts.tol.confusion();
     let mut plane = Mirror::of(&seed);
     let mut converged = false;

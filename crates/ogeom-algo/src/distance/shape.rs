@@ -49,21 +49,9 @@ pub fn to_shape(
     options: &DistanceOptions,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Option<Closest<ShapeFeature>>>> {
-    let facing = options.checked(points.len(), normals)?;
+    options.checked(points.len(), normals)?;
     let target = Target::of(model, shape, options.signed, tol)?;
-    let answers = parallel::map_ordered(points, |i, &p| {
-        let wanted = match (facing, normals) {
-            (Some(cos), Some(normals)) => match unit(normals[i]) {
-                Some(m) => Some((m, cos)),
-                None => return Ok(None),
-            },
-            _ => None,
-        };
-        let faces = wanted.map(|(m, cos)| move |n: Vector| n.dot(m) >= cos);
-        let faces = faces.as_ref().map(|f| f as &dyn Fn(Vector) -> bool);
-        target.closest(model, p, faces, options, tol)
-    });
-    answers.into_iter().collect()
+    target.closest_many(model, points, normals, options, tol)
 }
 
 /// A face's trimming rings in its chart.
@@ -170,6 +158,38 @@ impl Target {
             chords,
             solid,
         })
+    }
+
+    /// [`to_shape`]'s answers over the shape these elements were gathered
+    /// from, which signed distances need gathered with `sign`.
+    pub(crate) fn closest_many(
+        &self,
+        model: &Model,
+        points: &[Point],
+        normals: Option<&[Vector]>,
+        options: &DistanceOptions,
+        tol: Tolerances,
+    ) -> OgeomResult<Vec<Option<Closest<ShapeFeature>>>> {
+        let facing = options.checked(points.len(), normals)?;
+        let answers = parallel::map_ordered(points, |i, &p| {
+            let wanted = match (facing, normals) {
+                (Some(cos), Some(normals)) => match unit(normals[i]) {
+                    Some(m) => Some((m, cos)),
+                    None => return Ok(None),
+                },
+                _ => None,
+            };
+            let faces = wanted.map(|(m, cos)| move |n: Vector| n.dot(m) >= cos);
+            let faces = faces.as_ref().map(|f| f as &dyn Fn(Vector) -> bool);
+            self.closest(model, p, faces, options, tol)
+        });
+        answers.into_iter().collect()
+    }
+
+    /// The box of every element, widened by the confusion distance; `None`
+    /// for a shape with none.
+    pub(crate) fn extent(&self) -> Option<Aabb> {
+        self.bounds.iter().copied().reduce(|a, b| a.union(&b))
     }
 
     /// The oriented unit normal of face element `face` at `(u, v)` on its
