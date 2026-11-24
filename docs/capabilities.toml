@@ -686,18 +686,21 @@ tests = [
 
 [[capability]]
 id = "mesh.self_intersections"
-title = "Finding the triangles where a mesh crosses itself, decided exactly, and resolving a closed mesh into the embedded boundary of what it winds about"
+title = "Finding the triangles where a mesh crosses itself, decided exactly, and resolving a closed mesh into the embedded boundary of what it winds about, embedded still on a single-precision or fixed grid"
 crate = "ogeom-mesh"
 verdict = "covered"
 symbols = [
     "ogeom_mesh::self_intersections", "ogeom_mesh::resolve_self_intersections",
-    "ogeom_mesh::Resolved",
+    "ogeom_mesh::Resolved", "ogeom_mesh::resolve_self_intersections_with",
+    "ogeom_mesh::Quantum",
 ]
 tests = [
     "crates/ogeom-mesh/src/boolean/selfcross/tests.rs",
     "crates/ogeom-mesh/src/boolean/selfcross/tests.rs::two_overlapping_cubes_cross_one_from_each_and_resolve_to_their_union",
     "crates/ogeom-mesh/src/boolean/selfcross/tests.rs::grid_aligned_cubes_resolve_to_the_cells_they_wind_about",
     "crates/ogeom-mesh/src/boolean/selfcross/tests.rs::spheres_resolve_to_the_volume_the_two_operand_union_gives",
+    "crates/ogeom-mesh/src/boolean/selfcross/tests.rs::the_kernel_fixtures_rounded_to_single_precision_never_cross",
+    "crates/ogeom-mesh/src/boolean/selfcross/tests.rs::boxes_whose_faces_lie_closer_than_a_single_step_round_to_one_solid",
 ]
 
 # --- ogeom-hlr ------------------------------------------------------------
