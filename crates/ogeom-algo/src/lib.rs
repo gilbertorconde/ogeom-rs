@@ -122,7 +122,7 @@ pub use medial_graph::{MedialBranch, MedialGraph, MedialSite, MedialVertex, medi
 pub use mesh_solid::{
     FallbackReason, FitConstraints, MeshRegion, MeshRegions, MeshSolid, MeshSolidOptions,
     MeshSolidReport, RegionFallback, RegionId, RegionRefusal, SurfaceKind, refine_solid,
-    single_precision_quantum, solid_from_mesh,
+    solid_from_mesh,
 };
 pub use network::{
     Across, ChainedPatch, CurveDef, IrregularCorner, LoopSide, Network, NetworkOptions, PatchDef,
@@ -131,6 +131,8 @@ pub use network::{
 /// Moved to `ogeom_geom::fit`. These paths are kept until 0.23.0, which
 /// removes them.
 pub use ogeom_geom::fit::{Spacing, approximate, approximate_within, interpolate};
+/// Moved to `ogeom_mesh`. This path is kept until 0.23.0, which removes it.
+pub use ogeom_mesh::single_precision_quantum;
 pub use out_and_back::{
     Notch, OutAndBack, edge_uses, is_tail, notch_of, out_and_back, placed_edge_uses,
 };

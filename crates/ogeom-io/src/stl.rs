@@ -233,7 +233,7 @@ fn read_binary(bytes: &[u8], tol: Tolerances) -> OgeomResult<(Triangulation, f64
         });
         push(&mut mesh, corners[0], corners[1], corners[2]);
     }
-    let quantum = ogeom_algo::single_precision_quantum(&mesh);
+    let quantum = ogeom_mesh::single_precision_quantum(&mesh);
     mesh.set_vertex_parameters(vec![(0.0, 0.0); mesh.positions.len()]);
     Ok((mesh.welded(tol), quantum))
 }
@@ -336,7 +336,7 @@ fn read_ascii(bytes: &[u8], tol: Tolerances) -> OgeomResult<(Triangulation, f64)
         let place = magnitude.log10().floor() - digits + 1.0;
         10.0_f64.powf(place) * 3.0_f64.sqrt() / 2.0
     } else {
-        ogeom_algo::single_precision_quantum(&mesh)
+        ogeom_mesh::single_precision_quantum(&mesh)
     };
     mesh.set_vertex_parameters(vec![(0.0, 0.0); mesh.positions.len()]);
     Ok((mesh.welded(tol), quantum))

@@ -77,15 +77,16 @@ pub mod algo {
         recognize_points, reduce_tolerances, refine_solid, register, relative_deflection, rest,
         restate_geometry, resting_faces, resting_faces_of, restore_containment,
         rings_are_parallels, rotation_minimizing_frames, same_domain, segments_2d, self_crossings,
-        sew, sew_around, sew_around_within, sew_within, shape_bounds, sheet,
-        single_precision_quantum, solid_from_mesh, split_ring_on_column, state_pcurve_gaps,
-        state_pcurve_gaps_of, surface_bounds, surface_iso_u_curve, surface_properties, sweep, text,
-        thickness, thickness_of_shape, tight, tight_bounds, to_nurbs, to_nurbs_within,
-        torus_face_seamed_at, traced, transformed, trimmed_or_fitted_where_bare, unify_same_domain,
-        unify_same_domain_around, unify_same_domain_with, unshare, vertex_bounds,
-        volume_difference, volume_properties, widened_to_hold,
+        sew, sew_around, sew_around_within, sew_within, shape_bounds, sheet, solid_from_mesh,
+        split_ring_on_column, state_pcurve_gaps, state_pcurve_gaps_of, surface_bounds,
+        surface_iso_u_curve, surface_properties, sweep, text, thickness, thickness_of_shape, tight,
+        tight_bounds, to_nurbs, to_nurbs_within, torus_face_seamed_at, traced, transformed,
+        trimmed_or_fitted_where_bare, unify_same_domain, unify_same_domain_around,
+        unify_same_domain_with, unshare, vertex_bounds, volume_difference, volume_properties,
+        widened_to_hold,
     };
     pub use ogeom_geom::fit::{Spacing, approximate, approximate_within, interpolate};
+    pub use ogeom_mesh::single_precision_quantum;
 }
 
 /// Booleans, sections, splits and face removal.
@@ -254,9 +255,10 @@ pub mod mesh {
         hatch_face, hollow, inside_boundary, inside_boundary_with, is_straight, is_straight_planar,
         open_chart_ring, parity, planar, point_index, polyline_of, polyline_of_edge, region,
         resolve_self_intersections, resolve_self_intersections_with, section, sections,
-        self_intersections, shadow, simplify, tessellate, thicken, triangulate, triangulate_face,
-        triangulate_face_kept, triangulate_face_with, triangulate_with_chords,
-        triangulate_with_face_meshes, triangulate_with_faces, triangulation_of,
+        self_intersections, shadow, simplify, single_precision_quantum, tessellate, thicken,
+        triangulate, triangulate_face, triangulate_face_kept, triangulate_face_with,
+        triangulate_with_chords, triangulate_with_face_meshes, triangulate_with_faces,
+        triangulation_of,
     };
 }
 
