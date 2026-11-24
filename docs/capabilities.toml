@@ -1027,11 +1027,12 @@ tests = [
 
 [[capability]]
 id = "algo.rigid-registration"
-title = "Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh with free motions, and symmetry planes"
+title = "Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh or a shape's exact faces with free motions, and symmetry planes"
 crate = "ogeom-algo"
 verdict = "covered"
 symbols = [
     "ogeom_algo::absolute_orientation", "ogeom_algo::icp",
+    "ogeom_algo::icp_onto_shape",
     "ogeom_algo::symmetry_plane", "ogeom_algo::Icp",
     "ogeom_algo::Starts", "ogeom_algo::Registration",
     "ogeom_algo::FreeMotion", "ogeom_algo::SymmetryFit",

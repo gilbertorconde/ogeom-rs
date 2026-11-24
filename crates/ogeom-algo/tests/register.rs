@@ -5,11 +5,19 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_algo::Cutoff;
-use ogeom_algo::register::{Icp, Starts, absolute_orientation, icp, symmetry_plane};
+use ogeom_algo::register::{
+    Icp, Starts, absolute_orientation, icp, icp_onto_shape, symmetry_plane,
+};
+use ogeom_algo::{
+    attach_pcurve, make_box, make_compound, make_cylinder, make_edge_between, make_face, make_wire,
+};
 use ogeom_core::{FastMap, Tolerances};
-use ogeom_math::{Axis, Direction, Plane, Point, Transform, Vector};
-use ogeom_mesh::Bvh;
-use ogeom_topo::Triangulation;
+use ogeom_geom::{BSplineSurface, Curve, Line2d, Surface as _, SurfaceGeometry};
+use ogeom_math::{
+    Axis, Axis2, Direction, Direction2, Frame, Plane, Point, Point2, Transform, Vector, Vector2,
+};
+use ogeom_mesh::{Bvh, Deflection};
+use ogeom_topo::{Location, Model, NodeData, Shape, Triangulation};
 
 const T: Tolerances = Tolerances::millimetres();
 
@@ -246,7 +254,7 @@ fn diagonal(mesh: &Triangulation) -> f64 {
 }
 
 /// A set of points drawn from a generator.
-type Shape = fn(&mut Seeded) -> Point;
+type Cloud = fn(&mut Seeded) -> Point;
 
 /// Noise-free pairs are carried exactly: generic sets, sets far from the
 /// origin, coplanar and collinear sets (where an unfixed singular-value
@@ -256,7 +264,7 @@ type Shape = fn(&mut Seeded) -> Point;
 #[test]
 fn absolute_orientation_carries_noise_free_pairs_exactly() {
     let mut rng = Seeded(0x0ab5_017e);
-    let shapes: [(&str, Shape); 6] = [
+    let shapes: [(&str, Cloud); 6] = [
         ("generic", |r| {
             Point::new(
                 r.range(-50.0, 50.0),
@@ -858,4 +866,410 @@ fn throughput_on_a_million_triangles() {
         }
     }
     ogeom_core::parallel::set_threads(0);
+}
+
+/// A face over the whole of a B-spline patch, bounded by its own iso-curves
+/// with straight trims.
+fn patch_face(model: &mut Model, patch: &BSplineSurface) -> Shape {
+    let ((u0, u1), (v0, v1)) = patch.domain();
+    let corners = [(u0, v0), (u1, v0), (u1, v1), (u0, v1)];
+    let vertices: Vec<Shape> = corners
+        .iter()
+        .map(|(u, v)| model.add_point(patch.point_at(*u, *v, T).unwrap()))
+        .collect();
+    let unit = |x: f64, y: f64| Direction2::new(Vector2::new(x, y), T).unwrap();
+    // Each side as (fixed u?, fixed value, range, stored start, end).
+    let sides = [
+        (false, v0, (u0, u1), 0, 1),
+        (true, u1, (v0, v1), 1, 2),
+        (false, v1, (u0, u1), 3, 2),
+        (true, u0, (v0, v1), 0, 3),
+    ];
+    let mut built = Vec::new();
+    for (fixed_u, at, range, a, b) in sides {
+        let curve = Curve::BSpline(if fixed_u {
+            patch.iso_u_curve(at, T).unwrap()
+        } else {
+            patch.iso_v_curve(at, T).unwrap()
+        });
+        let edge = make_edge_between(model, curve, range, &vertices[a], &vertices[b], T)
+            .unwrap()
+            .shape;
+        let (location, direction) = if fixed_u {
+            (Point2::new(at, 0.0), unit(0.0, 1.0))
+        } else {
+            (Point2::new(0.0, at), unit(1.0, 0.0))
+        };
+        let axis = Axis2 {
+            location,
+            direction,
+        };
+        built.push((edge, Line2d::over(axis, range.0, range.1).unwrap(), range));
+    }
+    let ring = vec![
+        built[0].0.clone(),
+        built[1].0.clone(),
+        built[2].0.reversed(),
+        built[3].0.reversed(),
+    ];
+    let wire = make_wire(model, &ring, T).unwrap().shape;
+    let surface = SurfaceGeometry::BSpline(patch.clone());
+    let face = make_face(model, surface, &[wire], T).unwrap().shape;
+    let Some(NodeData::Face(data)) = model.node(&face).map(|n| n.data()) else {
+        panic!("not a face");
+    };
+    let id = data.surface;
+    for (edge, trim, range) in built {
+        attach_pcurve(model, &edge, trim.into(), id, Location::identity(), range).unwrap();
+    }
+    face
+}
+
+/// A cubic patch fitted through a lopsided dish over `[-10, 10]` squared:
+/// no motion carries it into itself.
+fn fitted_dish() -> BSplineSurface {
+    let rows: Vec<Vec<Point>> = (0..9)
+        .map(|j| {
+            (0..9)
+                .map(|i| {
+                    let (x, y) = (-10.0 + 2.5 * f64::from(i), -10.0 + 2.5 * f64::from(j));
+                    let z = 0.05 * x * x - 0.03 * y * y + 0.01 * x * y + 0.001 * x * x * x;
+                    Point::new(x, y, z)
+                })
+                .collect()
+        })
+        .collect();
+    ogeom_geom::fit::fit_surface_grid(&rows, 3, 1e-7, T)
+        .unwrap()
+        .curve
+}
+
+/// Draws an exact point of a part with the face's outward normal there.
+type Draw = Box<dyn Fn(&mut Seeded) -> (Point, Vector)>;
+
+/// A part to register onto, and how to draw from it.
+struct Part {
+    name: &'static str,
+    model: Model,
+    shape: Shape,
+    draw: Draw,
+}
+
+/// A 40 × 25 × 15 box with its corner at the origin.
+fn box_part() -> Part {
+    let mut model = Model::new();
+    let shape = make_box(&mut model, Frame::WORLD, (40.0, 25.0, 15.0), T)
+        .unwrap()
+        .shape;
+    let size = [40.0, 25.0, 15.0];
+    let draw = Box::new(move |rng: &mut Seeded| {
+        // A face chosen by area, then a point on it.
+        let areas = [size[1] * size[2], size[0] * size[2], size[0] * size[1]];
+        let total = 2.0 * (areas[0] + areas[1] + areas[2]);
+        let mut at = rng.range(0.0, total);
+        let mut axis = 0;
+        while at > 2.0 * areas[axis] && axis < 2 {
+            at -= 2.0 * areas[axis];
+            axis += 1;
+        }
+        let high = at > areas[axis];
+        let mut p = [0.0; 3];
+        for (k, x) in p.iter_mut().enumerate() {
+            *x = rng.range(0.0, size[k]);
+        }
+        p[axis] = if high { size[axis] } else { 0.0 };
+        let mut n = [0.0; 3];
+        n[axis] = if high { 1.0 } else { -1.0 };
+        (Point::new(p[0], p[1], p[2]), Vector::new(n[0], n[1], n[2]))
+    });
+    Part {
+        name: "box",
+        model,
+        shape,
+        draw,
+    }
+}
+
+/// A cylinder of radius 10 and height 30 on the z axis, from z = 0.
+fn cylinder_part() -> Part {
+    let mut model = Model::new();
+    let shape = make_cylinder(&mut model, Frame::WORLD, 10.0, 30.0, T)
+        .unwrap()
+        .shape;
+    let draw = Box::new(|rng: &mut Seeded| {
+        let side = std::f64::consts::TAU * 10.0 * 30.0;
+        let cap = std::f64::consts::PI * 100.0;
+        let at = rng.range(0.0, side + 2.0 * cap);
+        let angle = rng.range(0.0, std::f64::consts::TAU);
+        let (s, c) = angle.sin_cos();
+        if at < side {
+            (
+                Point::new(10.0 * c, 10.0 * s, rng.range(0.0, 30.0)),
+                Vector::new(c, s, 0.0),
+            )
+        } else {
+            let r = 10.0 * rng.range(0.0, 1.0).sqrt();
+            let top = at > side + cap;
+            (
+                Point::new(r * c, r * s, if top { 30.0 } else { 0.0 }),
+                Vector::new(0.0, 0.0, if top { 1.0 } else { -1.0 }),
+            )
+        }
+    });
+    Part {
+        name: "cylinder",
+        model,
+        shape,
+        draw,
+    }
+}
+
+/// The fitted dish as one face.
+fn dish_part() -> Part {
+    let mut model = Model::new();
+    let patch = fitted_dish();
+    let shape = patch_face(&mut model, &patch);
+    let draw = Box::new(move |rng: &mut Seeded| {
+        let ((u0, u1), (v0, v1)) = patch.domain();
+        let (u, v) = (rng.range(u0, u1), rng.range(v0, v1));
+        let n = Vector::from(patch.normal_at(u, v, T).unwrap());
+        (patch.point_at(u, v, T).unwrap(), n)
+    });
+    Part {
+        name: "dish",
+        model,
+        shape,
+        draw,
+    }
+}
+
+/// How far `error` leaves the cylinder's axis: the farthest it moves a
+/// point of the axis, and the angle it turns the axis by. A spin about the
+/// axis is no error, the cylinder being its own image under one.
+fn off_axis(error: &Transform) -> (f64, f64) {
+    let (a, b) = (Point::ORIGIN, Point::new(0.0, 0.0, 30.0));
+    let moved = (error.apply(a) - a)
+        .magnitude()
+        .max((error.apply(b) - b).magnitude());
+    let z = Vector::new(0.0, 0.0, 1.0);
+    let turned = error.apply_vector(z).cross(z).magnitude().asin();
+    (moved, turned)
+}
+
+/// Exact points of a box, a cylinder and a fitted patch, moved by random
+/// rigid motions of up to 20° and 3 mm, register back onto the exact faces
+/// from the identity, the same at one thread and at eight: within 1e-9 mm
+/// and 1e-9 rad, the RMS residual below 1e-9 mm. The cylinder reports its
+/// spin about its axis free, and comes back to its axis. The same points
+/// registered onto the cylinder's mesh at the default deflection floor at
+/// the chord.
+#[test]
+fn exact_points_register_back_onto_the_exact_faces() {
+    let mut rng = Seeded(0x0b_1252);
+    for part in [box_part(), cylinder_part(), dish_part()] {
+        let points: Vec<Point> = (0..1500).map(|_| (part.draw)(&mut rng).0).collect();
+        for _ in 0..2 {
+            let displaced = rng.motion(Point::new(5.0, 5.0, 5.0), 20_f64.to_radians(), 3.0);
+            let source: Vec<Point> = points.iter().map(|&p| displaced.apply(p)).collect();
+            let opts = Icp::default();
+            let mut answers = Vec::new();
+            for threads in [1, 8] {
+                ogeom_core::parallel::set_threads(threads);
+                answers.push(
+                    icp_onto_shape(&source, None, &part.model, &part.shape, &opts, T).unwrap(),
+                );
+            }
+            ogeom_core::parallel::set_threads(0);
+            assert_eq!(answers[0], answers[1], "{}: thread count", part.name);
+            let found = &answers[0];
+            assert!(found.converged, "{}: not converged: {found:?}", part.name);
+            let error = found.transform * displaced;
+            let (moved, turn) = if part.name == "cylinder" {
+                assert_eq!(found.free_directions.len(), 1, "{found:?}");
+                let spin = found.free_directions[0];
+                // A spin about the z axis, seen from the samples' centroid:
+                // the centroid moves as the axis turns it.
+                let slide = spin.rotation.cross(spin.about.to_vector());
+                let rate = spin.rotation.magnitude();
+                assert!(
+                    (spin.translation - slide).magnitude() <= 1e-6 * rate * spin.radius
+                        && spin.rotation.cross(Vector::new(0.0, 0.0, 1.0)).magnitude()
+                            <= 1e-6 * rate,
+                    "{spin:?}"
+                );
+                off_axis(&error)
+            } else {
+                assert!(found.free_directions.is_empty(), "{found:?}");
+                (farthest_move(&error, &points), turn_of(&error))
+            };
+            eprintln!(
+                "{}: back to within {moved:.1e} mm and {turn:.1e} rad, rms {:.1e} mm, {}/{} kept",
+                part.name, found.rms, found.inliers, found.sampled
+            );
+            assert!(
+                moved <= 1e-9 && turn <= 1e-9 && found.rms <= 1e-9,
+                "{}: back to within {moved:e} mm and {turn:e} rad, rms {:e}",
+                part.name,
+                found.rms
+            );
+        }
+        if part.name == "cylinder" {
+            let mesh = ogeom_mesh::triangulate(&part.model, &part.shape, Deflection::default(), T)
+                .unwrap();
+            let index = Bvh::build(&mesh).unwrap();
+            let displaced = rng.motion(Point::new(5.0, 5.0, 5.0), 20_f64.to_radians(), 3.0);
+            let source: Vec<Point> = points.iter().map(|&p| displaced.apply(p)).collect();
+            let found = icp(&source, None, &index, &Icp::default()).unwrap();
+            let (moved, _) = off_axis(&(found.transform * displaced));
+            let chord = Deflection::default().chord;
+            eprintln!(
+                "cylinder's mesh at chord {chord}: rms {:.1e} mm, axis off by {moved:.1e} mm",
+                found.rms
+            );
+            assert!(found.rms >= 0.05 * chord, "rms {}", found.rms);
+        }
+    }
+}
+
+/// With noise of 0.01 mm along the normals the residual reads the noise
+/// (within 0.7 and 1.1 of it: the cutoff trims the tails) and the pose
+/// comes back within four deviations of what the noise leaves any
+/// registration of these samples; on the cylinder, which spins freely,
+/// within 2e-3 mm and 1e-4 rad of its axis.
+#[test]
+fn noisy_points_register_back_to_the_noise() {
+    let mut rng = Seeded(0x5_1252);
+    let sigma = 0.01;
+    for part in [box_part(), cylinder_part(), dish_part()] {
+        let (points, normals): (Vec<Point>, Vec<Vector>) = (0..1500)
+            .map(|_| {
+                let (p, n) = (part.draw)(&mut rng);
+                (p + n * (sigma * rng.gaussian()), n)
+            })
+            .unzip();
+        let displaced = rng.motion(Point::new(5.0, 5.0, 5.0), 20_f64.to_radians(), 3.0);
+        let source: Vec<Point> = points.iter().map(|&p| displaced.apply(p)).collect();
+        let turned: Vec<Vector> = normals.iter().map(|&n| displaced.apply_vector(n)).collect();
+        let found = icp_onto_shape(
+            &source,
+            Some(&turned),
+            &part.model,
+            &part.shape,
+            &Icp::default(),
+            T,
+        )
+        .unwrap();
+        assert!(found.converged, "{}: not converged: {found:?}", part.name);
+        let error = found.transform * displaced;
+        let ratio = found.rms / sigma;
+        if part.name == "cylinder" {
+            let (moved, turn) = off_axis(&error);
+            eprintln!(
+                "{} σ {sigma}: axis within {moved:.1e} mm and {turn:.1e} rad, rms {ratio:.3} σ",
+                part.name
+            );
+            assert!(moved <= 2e-3 && turn <= 1e-4, "{moved:e} mm, {turn:e} rad");
+        } else {
+            let (turn_floor, shift_floor) = noise_floor(&points, &normals, sigma);
+            let radius = farthest_from_centroid(&points);
+            let (moved, turn) = (farthest_move(&error, &points), turn_of(&error));
+            let floor = turn_floor * radius + shift_floor;
+            eprintln!(
+                "{} σ {sigma}: within {moved:.1e} mm (floor {floor:.1e}) and {turn:.1e} rad \
+                 (floor {turn_floor:.1e}), rms {ratio:.3} σ",
+                part.name
+            );
+            assert!(
+                turn <= 4.0 * turn_floor,
+                "{turn:e} rad, floor {turn_floor:e}"
+            );
+            assert!(moved <= 4.0 * floor, "{moved:e} mm, floor {floor:e}");
+        }
+        assert!((0.7..=1.1).contains(&ratio), "{}: rms {ratio} σ", part.name);
+    }
+}
+
+/// A half turn the identity cannot undo is found from the principal axes'
+/// starts, onto the shape as onto its mesh: the same options rank the
+/// starts the same, and the exact faces land within 1e-9 mm where the mesh
+/// lands within its chord.
+#[test]
+fn the_principal_starts_rank_alike_on_the_shape_and_its_mesh() {
+    let mut rng = Seeded(0x24_1252);
+    let part = dish_part();
+    let points: Vec<Point> = (0..400).map(|_| (part.draw)(&mut rng).0).collect();
+    let half = Transform::rotation(
+        Axis::new(
+            Point::ORIGIN,
+            Direction::new(Vector::new(0.0, 0.0, 1.0), T).unwrap(),
+        ),
+        std::f64::consts::PI,
+    );
+    let displaced = Transform::translation(Vector::new(2.0, -1.0, 0.5)) * half;
+    let source: Vec<Point> = points.iter().map(|&p| displaced.apply(p)).collect();
+    let alone =
+        icp_onto_shape(&source, None, &part.model, &part.shape, &Icp::default(), T).unwrap();
+    assert!(farthest_move(&(alone.transform * displaced), &points) > 1.0);
+    let opts = Icp {
+        starts: Starts::PrincipalAxes24,
+        ..Icp::default()
+    };
+    let exact = icp_onto_shape(&source, None, &part.model, &part.shape, &opts, T).unwrap();
+    let moved = farthest_move(&(exact.transform * displaced), &points);
+    eprintln!(
+        "dish, 24 starts: back within {moved:.1e} mm, rms {:.1e} mm",
+        exact.rms
+    );
+    // A sample within the confusion distance of the trim may be measured
+    // to the edge, so the residual is held to that distance here.
+    assert!(
+        moved <= 1e-9 && exact.rms <= T.confusion(),
+        "{moved:e} mm, {exact:?}"
+    );
+    let fine = Deflection {
+        chord: 1e-3,
+        ..Deflection::default()
+    };
+    let mesh = ogeom_mesh::triangulate(&part.model, &part.shape, fine, T).unwrap();
+    let meshed = icp(&source, None, &Bvh::build(&mesh).unwrap(), &opts).unwrap();
+    let apart = farthest_move(
+        &(meshed.transform * exact.transform.inverse().unwrap()),
+        &source,
+    );
+    assert!(apart <= 1e-2, "the mesh lands {apart:e} mm from the shape");
+}
+
+/// Rounds that run out report it: one round from 20° off is not converged
+/// and says so, with the pose it reached. A shape with nothing to register
+/// onto, no points, and a facing limit without normals are refused.
+#[test]
+fn non_convergence_is_reported_and_bad_input_refused() {
+    let mut rng = Seeded(0xbad_1252);
+    let part = box_part();
+    let points: Vec<Point> = (0..500).map(|_| (part.draw)(&mut rng).0).collect();
+    let displaced = rng.motion(Point::new(5.0, 5.0, 5.0), 20_f64.to_radians(), 3.0);
+    let source: Vec<Point> = points.iter().map(|&p| displaced.apply(p)).collect();
+    let opts = Icp {
+        max_iter: 1,
+        ..Icp::default()
+    };
+    let found = icp_onto_shape(&source, None, &part.model, &part.shape, &opts, T).unwrap();
+    assert!(!found.converged, "{found:?}");
+    assert!(found.rms > 1e-6, "{found:?}");
+    let far = Icp {
+        max_distance: Some(1e-6),
+        ..Icp::default()
+    };
+    let unpaired = icp_onto_shape(&source, None, &part.model, &part.shape, &far, T).unwrap();
+    assert!(!unpaired.converged && unpaired.inliers == 0, "{unpaired:?}");
+    let mut model = Model::new();
+    let empty = make_compound(&mut model, &[]).unwrap().shape;
+    let opts = Icp::default();
+    assert!(icp_onto_shape(&source, None, &model, &empty, &opts, T).is_err());
+    assert!(icp_onto_shape(&[], None, &part.model, &part.shape, &opts, T).is_err());
+    let facing = Icp {
+        facing_limit: Some(0.5),
+        ..Icp::default()
+    };
+    assert!(icp_onto_shape(&source, None, &part.model, &part.shape, &facing, T).is_err());
 }

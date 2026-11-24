@@ -1,0 +1,5 @@
+- **Added: registration onto a shape's exact faces** (#1252).
+  - `icp_onto_shape` registers points onto a B-rep as `icp` does onto a mesh: each sample pairs with its foot on the nearest face as trimmed (or on an edge or at a vertex where it leaves every face), measured on the surfaces themselves with the face's normal for the point-to-plane step. Residuals, score and pose no longer floor at a tessellation's chord: exact points on a box, a cylinder and a fitted patch come back within 1e-9 mm and 1e-9 rad.
+  - The options, cutoff, score, starts and free motions are `icp`'s; the score's cap is the shape's box diagonal, and the principal-axes starts read the shape's triangulation only to place the starts.
+  - `icp`, `icp_onto_shape` and `symmetry_plane` never cut a pair within the confusion distance: on noise-free points the median cutoff otherwise cut by rounding, and could drop a whole face's samples.
+  - Facade: `ogeom::algo::register::icp_onto_shape`.

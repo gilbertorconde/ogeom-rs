@@ -45,7 +45,7 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.primitive-fits**: Best fits of planes, spheres, cylinders, cones, tori, circles and lines to points, with residuals, a mesh region grown for one from clicks, its rounded rim peeled, a smooth free-form region grown from clicks across tangent seams and stopped at creases for a free-form fit, a rim circle or a crease line traced along a mesh's sharp edges from a click, and the line where the faces either side of a rounded edge meet · `covered`
 - **algo.primitives**: The primitive solids: box, wedge, cylinder, cone, sphere, torus, half-space, prism, revolution · `covered`
 - **algo.resting-faces**: The stable ways a part can lie on a flat bed: hull planes with contact area, footprint, height and stability margin · `covered`
-- **algo.rigid-registration**: Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh with free motions, and symmetry planes · `covered`
+- **algo.rigid-registration**: Rigid registration: closed-form absolute orientation, point-to-plane ICP onto a mesh or a shape's exact faces with free motions, and symmetry planes · `covered`
 - **algo.rotation-minimizing-frames**: Rotation-minimizing frames along a curve or a wire at shares of its length, with a closed path's holonomy, the frames the pipe sweeps use · `covered`
 - **algo.sewing**: Sewing faces into shells along coincident edges, or across a gap asked for, with spatial acceleration · `covered`
 - **algo.shape-distance**: Distance, proximity and overlap between whole shapes, and self-intersection · `covered`
@@ -352,4 +352,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: fd5fb7b2fc1a47b3 -->
+<!-- ledger-checksum: 7594cfde042c516f -->

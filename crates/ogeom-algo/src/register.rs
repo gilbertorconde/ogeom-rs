@@ -1,17 +1,21 @@
 //! Rigid registration: the rotation and translation that best carry one set
-//! of points onto another, onto a mesh, or a part onto its own mirror image.
+//! of points onto another, onto a mesh or a shape, or a part onto its own
+//! mirror image.
 //!
 //! - [`absolute_orientation`] is the closed form for paired points.
 //! - [`icp`](fn@icp) registers points onto a mesh through its [`Bvh`], pairing each
 //!   point with its nearest point on the mesh and solving again until the
 //!   pairs stop moving.
+//! - [`icp_onto_shape`] registers them so onto a shape's exact faces, edges
+//!   and vertices, each nearest point measured on its own surface or curve.
 //! - [`symmetry_plane`] finds the plane a part is the mirror image of
 //!   itself in.
 //!
 //! The linear algebra is `nalgebra`'s: a symmetric eigen-decomposition for
 //! the quaternion of the closed form and for the normal matrix of each
 //! point-to-plane step. Every sum runs over the pairs in their order and the
-//! nearest-point queries are [`to_mesh`](crate::distance::to_mesh)'s, so
+//! nearest-point queries are [`to_mesh`](crate::distance::to_mesh)'s or
+//! [`to_shape`](crate::distance::to_shape)'s, so
 //! every answer is the same bit for bit on any thread count.
 //!
 //! # Iterative closest points
@@ -20,8 +24,8 @@
 //! nearest point on the mesh (within [`Icp::max_distance`], and with
 //! [`Icp::facing_limit`] among the triangles facing within the limit of the
 //! sample's own normal), keeps the pairs within [`Icp::cutoff`]'s threshold
-//! over the round's distances, and solves for an increment from the kept
-//! pairs:
+//! over the round's distances or within the confusion distance, and solves
+//! for an increment from the kept pairs:
 //!
 //! - **point to plane** (the default): the small rotation and translation
 //!   that minimise the squared distances of the samples to the planes
@@ -65,7 +69,7 @@ use ogeom_mesh::Bvh;
 
 use crate::Cutoff;
 
-pub use icp::icp;
+pub use icp::{icp, icp_onto_shape};
 pub use symmetry::symmetry_plane;
 
 /// Where [`icp`](fn@icp) starts from.
@@ -95,7 +99,8 @@ pub struct Icp {
     /// Whether a step minimises the distances to the planes through the
     /// nearest points rather than to the points themselves.
     pub point_to_plane: bool,
-    /// Which pairs a round keeps, by their distances.
+    /// Which pairs a round keeps, by their distances; a pair within the
+    /// confusion distance is always kept.
     pub cutoff: Cutoff,
     /// The farthest a sample's nearest point may be for the two to pair;
     /// `None` pairs at any distance.

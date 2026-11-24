@@ -1,13 +1,14 @@
-//! Iterative closest points onto a mesh, from one start or many.
+//! Iterative closest points onto a mesh or a shape, from one start or
+//! many.
 
 use nalgebra::{Matrix6, SymmetricEigen, Vector6};
-use ogeom_core::{OgeomResult, ogeom_bail, parallel};
+use ogeom_core::{OgeomResult, Tolerances, ogeom_bail, parallel};
 use ogeom_math::{Matrix3, Point, Quaternion, Transform, Vector};
-use ogeom_mesh::Bvh;
-use ogeom_topo::Triangulation;
+use ogeom_mesh::{Bvh, Deflection};
+use ogeom_topo::{Model, Shape, Triangulation};
 
 use super::{FreeMotion, Icp, Registration, Starts, is_finite, orientation, rigid};
-use crate::distance::{DistanceOptions, Pseudonormals, to_mesh_with};
+use crate::distance::{DistanceOptions, Pseudonormals, Target, to_mesh_with};
 
 /// Register `source` onto the mesh `target` was built over: the rigid
 /// transform carrying the points onto it, from each of [`Icp::starts`],
@@ -32,14 +33,57 @@ pub fn icp(
     target: &Bvh,
     opts: &Icp,
 ) -> OgeomResult<Registration> {
-    let mesh = Mesh::of(target)?;
+    let onto = Onto::mesh(target)?;
     let samples = Samples::of(source, source_normals, opts)?;
-    let starts = starts(&samples, target, opts)?;
-    // The starts run in parallel, each on one worker, and are ranked in
-    // their order.
+    register_from_starts(&onto, &samples, opts)
+}
+
+/// As [`icp`](fn@icp), the target the exact faces of `shape`: each sample's
+/// nearest point is the foot on the nearest face as trimmed (or on an edge
+/// or at a vertex of it, where the foot leaves every face), and its normal
+/// the face's there, or at an edge or a vertex the unit sum of the normals
+/// of the faces holding it. The nearest points are
+/// [`to_shape`](crate::distance::to_shape)'s, unsigned, so the residuals,
+/// the score and the pose answer to the surfaces themselves and a fit
+/// converges below any tessellation's chord.
+///
+/// The rounds, the cutoff, the score, the starts and the free motions are
+/// [`icp`](fn@icp)'s, the same options giving the same ranking of starts:
+/// the score's cap is the farthest pairing distance or the diagonal of the
+/// shape's box, and [`Starts::PrincipalAxes24`] reads the shape's area
+/// centroid and axes from its triangulation at the default deflection,
+/// which only places the starts. `tol` measures the geometry (the
+/// projections and the trim tests); [`Icp::tol`] says when the rounds have
+/// converged.
+///
+/// # Errors
+///
+/// As [`icp`](fn@icp), with
+/// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) for a shape with
+/// no vertex, edge or face; as
+/// [`PointDistance::of`](crate::PointDistance::of) for the shape, and as
+/// the projections report; and as
+/// [`triangulate`](fn@ogeom_mesh::triangulate) for the principal axes.
+pub fn icp_onto_shape(
+    source: &[Point],
+    source_normals: Option<&[Vector]>,
+    model: &Model,
+    shape: &Shape,
+    opts: &Icp,
+    tol: Tolerances,
+) -> OgeomResult<Registration> {
+    let samples = Samples::of(source, source_normals, opts)?;
+    let onto = Onto::shape(model, shape, tol)?;
+    register_from_starts(&onto, &samples, opts)
+}
+
+/// Each start of `opts` run, in parallel, each on one worker, and the
+/// least scored kept, ties going to the earlier start.
+fn register_from_starts(onto: &Onto, samples: &Samples, opts: &Icp) -> OgeomResult<Registration> {
+    let starts = starts(samples, onto, opts)?;
     let runs = parallel::map_ordered(&starts, |_, &start| {
-        mesh.register(&samples, opts, start)
-            .map(|run| run.registration(&samples))
+        onto.register(samples, opts, start)
+            .map(|run| run.registration(samples))
     });
     let mut best: Option<Registration> = None;
     for found in runs {
@@ -51,31 +95,134 @@ pub fn icp(
     best.map_or_else(|| ogeom_bail!(Domain, "no start to register from"), Ok)
 }
 
-/// The mesh registered onto: its hierarchy, its normals and the cap on a
-/// sample's distance in a score.
-pub(super) struct Mesh<'a> {
-    index: &'a Bvh,
-    normals: Pseudonormals,
+/// What is registered onto: a mesh or a shape, with the cap on a sample's
+/// distance in a score.
+pub(super) struct Onto<'a> {
+    kind: Kind<'a>,
     cap: f64,
 }
 
-impl<'a> Mesh<'a> {
-    pub(super) fn of(index: &'a Bvh) -> OgeomResult<Self> {
+enum Kind<'a> {
+    /// A mesh's hierarchy and its normals.
+    Mesh {
+        index: &'a Bvh,
+        normals: Pseudonormals,
+    },
+    /// A shape's elements, measured with `tol`.
+    Shape {
+        model: &'a Model,
+        shape: &'a Shape,
+        target: Target,
+        tol: Tolerances,
+    },
+}
+
+/// A moved sample's nearest point: where, the unit normal there (zero
+/// where it has none) and how far.
+struct Foot {
+    point: Point,
+    normal: Vector,
+    distance: f64,
+}
+
+impl<'a> Onto<'a> {
+    pub(super) fn mesh(index: &'a Bvh) -> OgeomResult<Self> {
         if index.is_empty() {
             ogeom_bail!(Domain, "an empty mesh registers nothing");
         }
         Ok(Self {
-            index,
-            normals: Pseudonormals::of(index),
+            kind: Kind::Mesh {
+                index,
+                normals: Pseudonormals::of(index),
+            },
             cap: index.bounds().diagonal(),
         })
     }
 
+    fn shape(model: &'a Model, shape: &'a Shape, tol: Tolerances) -> OgeomResult<Self> {
+        let target = Target::of(model, shape, false, tol)?;
+        let Some(extent) = target.extent() else {
+            ogeom_bail!(
+                Domain,
+                "a shape with no vertex, edge or face registers nothing"
+            );
+        };
+        Ok(Self {
+            kind: Kind::Shape {
+                model,
+                shape,
+                target,
+                tol,
+            },
+            cap: extent.diagonal(),
+        })
+    }
+
     /// The score's cap: the farthest pairing distance, or the diagonal of
-    /// the mesh's box, past which no point of the mesh lies from a sample
-    /// inside it.
+    /// the target's box, past which no point of the target lies from a
+    /// sample inside it.
     fn cap(&self, opts: &Icp) -> f64 {
         opts.max_distance.unwrap_or(self.cap)
+    }
+
+    /// Each moved sample's nearest point on the target, within the
+    /// farthest pairing distance and the facing limit.
+    fn feet(
+        &self,
+        moved: &[Point],
+        normals: Option<&[Vector]>,
+        opts: &Icp,
+    ) -> OgeomResult<Vec<Option<Foot>>> {
+        let options = DistanceOptions {
+            max: opts.max_distance.unwrap_or(f64::INFINITY),
+            facing_limit: opts.facing_limit,
+            signed: false,
+        };
+        Ok(match &self.kind {
+            Kind::Mesh { index, normals: n } => to_mesh_with(index, n, moved, normals, &options)?
+                .into_iter()
+                .map(|c| {
+                    c.map(|c| Foot {
+                        point: c.point,
+                        normal: c.normal,
+                        distance: c.distance,
+                    })
+                })
+                .collect(),
+            Kind::Shape {
+                model, target, tol, ..
+            } => target
+                .closest_many(model, moved, normals, &options, *tol)?
+                .into_iter()
+                .map(|c| {
+                    c.map(|c| Foot {
+                        point: c.point,
+                        normal: c.normal,
+                        distance: c.distance,
+                    })
+                })
+                .collect(),
+        })
+    }
+
+    /// The target as triangles, to read its principal axes from.
+    fn triangles(&self) -> OgeomResult<Triangulation> {
+        match &self.kind {
+            Kind::Mesh { index, .. } => {
+                let mut soup = Triangulation::new();
+                for t in 0..u32::try_from(index.triangle_count()).unwrap_or(u32::MAX) {
+                    if let Some(corners) = index.triangle(t) {
+                        let first = u32::try_from(soup.positions.len()).unwrap_or(u32::MAX);
+                        soup.positions.extend(corners);
+                        soup.triangles.push([first, first + 1, first + 2]);
+                    }
+                }
+                Ok(soup)
+            }
+            Kind::Shape {
+                model, shape, tol, ..
+            } => ogeom_mesh::triangulate(model, shape, Deflection::default(), *tol),
+        }
     }
 
     /// The samples moved by `pose`, paired with the mesh, and the pairs
@@ -87,18 +234,7 @@ impl<'a> Mesh<'a> {
             .normals
             .as_ref()
             .map(|n| n.iter().map(|&v| m * v).collect());
-        let options = DistanceOptions {
-            max: opts.max_distance.unwrap_or(f64::INFINITY),
-            facing_limit: opts.facing_limit,
-            signed: false,
-        };
-        let found = to_mesh_with(
-            self.index,
-            &self.normals,
-            &moved,
-            normals.as_deref(),
-            &options,
-        )?;
+        let found = self.feet(&moved, normals.as_deref(), opts)?;
         let cap = self.cap(opts);
         let mut capped = 0.0;
         let mut pairs = Vec::with_capacity(found.len());
@@ -118,7 +254,9 @@ impl<'a> Mesh<'a> {
             }
         }
         let distances: Vec<f64> = pairs.iter().map(|p| p.distance).collect();
-        let threshold = opts.cutoff.threshold(&distances);
+        // A pair within the confusion distance lies on the target, and is
+        // never cut: residuals at rounding would otherwise cut by rounding.
+        let threshold = opts.cutoff.threshold(&distances).max(opts.tol.confusion());
         pairs.retain(|p| p.distance <= threshold);
         #[allow(
             clippy::cast_precision_loss,
@@ -478,26 +616,19 @@ impl NormalMatrix {
 }
 
 /// The poses `opts.starts` names.
-fn starts(samples: &Samples, target: &Bvh, opts: &Icp) -> OgeomResult<Vec<Pose>> {
+fn starts(samples: &Samples, onto: &Onto, opts: &Icp) -> OgeomResult<Vec<Pose>> {
     match &opts.starts {
         Starts::Identity => Ok(vec![Pose::IDENTITY]),
         Starts::Given(given) => given.iter().map(|t| Pose::of(t, opts)).collect(),
-        Starts::PrincipalAxes24 => principal_starts(samples, target, opts),
+        Starts::PrincipalAxes24 => principal_starts(samples, onto, opts),
     }
 }
 
-/// The 24 rotations carrying the samples' principal axes onto the mesh's,
-/// each with the samples' centroid moved onto the mesh's area centroid.
-fn principal_starts(samples: &Samples, target: &Bvh, opts: &Icp) -> OgeomResult<Vec<Pose>> {
-    let mut soup = Triangulation::new();
-    for t in 0..u32::try_from(target.triangle_count()).unwrap_or(u32::MAX) {
-        if let Some(corners) = target.triangle(t) {
-            let first = u32::try_from(soup.positions.len()).unwrap_or(u32::MAX);
-            soup.positions.extend(corners);
-            soup.triangles.push([first, first + 1, first + 2]);
-        }
-    }
-    let frame = crate::orient::principal_frame(&soup, opts.tol)?;
+/// The 24 rotations carrying the samples' principal axes onto the
+/// target's, each with the samples' centroid moved onto the target's area
+/// centroid.
+fn principal_starts(samples: &Samples, onto: &Onto, opts: &Icp) -> OgeomResult<Vec<Pose>> {
+    let frame = crate::orient::principal_frame(&onto.triangles()?, opts.tol)?;
     let to = frame.to_matrix();
     let (centre, from) = point_axes(&samples.points);
     let mut poses = Vec::with_capacity(24);
