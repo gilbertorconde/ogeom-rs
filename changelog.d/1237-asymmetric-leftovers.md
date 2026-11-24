@@ -1,0 +1,5 @@
+- **Added: the asymmetric rounds #1188 left refused by name** (#1237).
+  - A concave edge ending at a cylinder: the fill runs on, its laws held level, and the cylinder trims it, as a plane not square to it does. The constant fill used to stop square there, leaving a notch where the drum leans out and failing with folded faces where it leans in.
+  - A round on an open arc of a rim, circular or asymmetric, meets an asymmetric band beside an edge left sharp by intersection, where the arc ends in planes through its axis.
+  - A bevel and an asymmetric round of opposite sense beside an edge left sharp: the bevel is cut first and the round ends in its plane.
+  - Still refused by name: a fill ending at a face that is neither a plane nor a cylinder, varying distances at a cylinder that does not span the fill's end, and a convex and a concave band beside a concave sharp edge. The rule is in ADR 0001, amendment "asymmetric rounds' last leftovers".
