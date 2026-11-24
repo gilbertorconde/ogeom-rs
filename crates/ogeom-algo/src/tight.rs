@@ -9,7 +9,7 @@
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::{Curve3d as _, Surface as _};
-use ogeom_math::{Aabb, Point, Point2, Vector, solve};
+use ogeom_math::{Aabb, Axis, Frame, Point, Point2, Transform, Vector, solve};
 use ogeom_mesh::Deflection;
 use ogeom_topo::{EdgeRepr, Model, NodeData, SameKey, Shape, ShapeType, explore_unique};
 
@@ -40,25 +40,64 @@ fn ruled(surface: &ogeom_geom::SurfaceGeometry) -> bool {
 /// does not resolve; [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// if the shape holds nothing to bound, or as the face meshes report.
 pub fn tight_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Aabb> {
+    bounds_seen_by(model, shape, Transform::IDENTITY, tol)
+}
+
+/// The exact interval `shape` covers along `axis`: the least and greatest of
+/// `(p - axis.location) . axis.direction` over every point `p` of it, to
+/// within `tol`.
+///
+/// Each end is found where the shape reaches it, as [`tight_bounds`] finds
+/// a side of its box: on an edge, at a vertex or inside a face. A face on a
+/// cylinder or a cone reaches its ends on its boundary, so its interval is
+/// that of its edges, found on their exact curves.
+///
+/// # Errors
+///
+/// As [`tight_bounds`].
+pub fn extent_along(
+    model: &Model,
+    shape: &Shape,
+    axis: Axis,
+    tol: Tolerances,
+) -> OgeomResult<(f64, f64)> {
+    let view = Transform::to_frame(&Frame::about(axis.location, axis.direction));
+    let bound = bounds_seen_by(model, shape, view, tol)?;
+    match (bound.low(), bound.high()) {
+        (Some(low), Some(high)) => Ok((low.z, high.z)),
+        _ => ogeom_bail!(Construction, "the shape holds nothing to bound"),
+    }
+}
+
+/// The tight box of `shape` as seen through `view`: every point of it
+/// carried by `view` before it is bounded.
+fn bounds_seen_by(
+    model: &Model,
+    shape: &Shape,
+    view: Transform,
+    tol: Tolerances,
+) -> OgeomResult<Aabb> {
     let mut edges = EdgeBoxes::default();
     let mut bound = Aabb::EMPTY;
-    let keep = tol == model.tolerances();
+    let keep = tol == model.tolerances() && view.kind() == ogeom_math::TransformKind::Identity;
     for face in explore_unique(model, shape, ShapeType::Face)? {
         let placement = face.transform(model.datums())?;
         let found = if keep && keeps_axes(&placement) {
-            let kept = model.kept_face_box(&face, |bare| face_box(model, bare, tol, &mut edges))?;
+            let kept = model.kept_face_box(&face, |bare| {
+                face_box(model, bare, Transform::IDENTITY, tol, &mut edges)
+            })?;
             kept.transformed(&placement)
         } else {
-            face_box(model, &face, tol, &mut edges)?
+            face_box(model, &face, view, tol, &mut edges)?
         };
         bound = bound.union(&found);
     }
     let (loose_edges, loose_vertices) = outside_faces(model, shape)?;
     for edge in &loose_edges {
-        bound = bound.union(&edge_box(model, edge, tol, &mut edges)?);
+        bound = bound.union(&edge_box(model, edge, view, tol, &mut edges)?);
     }
     for vertex in &loose_vertices {
-        if let Some(point) = vertex_point(model, vertex)? {
+        if let Some(point) = vertex_point(model, vertex, view)? {
             bound = bound.with_point(point);
         }
     }
@@ -85,12 +124,14 @@ pub fn tight_bounds(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResul
 pub fn face_bounds(model: &Model, face: &Shape) -> OgeomResult<Aabb> {
     let tol = model.tolerances();
     let mut edges = EdgeBoxes::default();
-    model.kept_face_box(face, |bare| face_box(model, bare, tol, &mut edges))?;
+    model.kept_face_box(face, |bare| {
+        face_box(model, bare, Transform::IDENTITY, tol, &mut edges)
+    })?;
     if let Some(kept) = model.face_bounds(face) {
         return Ok(kept);
     }
     let tolerance = model.tolerance_of(face)?.map_or(0.0, |t| t.get());
-    Ok(face_box(model, face, tol, &mut edges)?.expanded(tolerance))
+    Ok(face_box(model, face, Transform::IDENTITY, tol, &mut edges)?.expanded(tolerance))
 }
 
 /// Whether a placement carries a box onto a box: no turn off the axes.
@@ -105,29 +146,33 @@ fn keeps_axes(placement: &ogeom_math::Transform) -> bool {
 /// Each edge's box, found once for every face it bounds.
 type EdgeBoxes = ogeom_core::FastMap<SameKey, Aabb>;
 
-/// The box of a face: its edges' boxes and the extremes inside it.
+/// The box of a face seen through `view`: its edges' boxes and the
+/// extremes inside it.
 fn face_box(
     model: &Model,
     face: &Shape,
+    view: Transform,
     tol: Tolerances,
     edges: &mut EdgeBoxes,
 ) -> OgeomResult<Aabb> {
     let mut bound = Aabb::EMPTY;
     for edge in explore_unique(model, face, ShapeType::Edge)? {
-        bound = bound.union(&edge_box(model, &edge, tol, edges)?);
+        bound = bound.union(&edge_box(model, &edge, view, tol, edges)?);
     }
     let mut points = Vec::new();
-    face_extremes(model, face, tol, &mut points)?;
+    face_extremes(model, face, view, tol, &mut points)?;
     for point in points {
         bound = bound.with_point(point);
     }
     Ok(bound)
 }
 
-/// The box of an edge: its vertices and its curve's extremes.
+/// The box of an edge seen through `view`: its vertices and its curve's
+/// extremes.
 fn edge_box(
     model: &Model,
     edge: &Shape,
+    view: Transform,
     tol: Tolerances,
     edges: &mut EdgeBoxes,
 ) -> OgeomResult<Aabb> {
@@ -137,22 +182,24 @@ fn edge_box(
     }
     let mut points = Vec::new();
     for vertex in model.children_of(edge)? {
-        if let Some(point) = vertex_point(model, &vertex)? {
+        if let Some(point) = vertex_point(model, &vertex, view)? {
             points.push(point);
         }
     }
-    edge_extremes(model, edge, tol, &mut points)?;
+    edge_extremes(model, edge, view, tol, &mut points)?;
     let found = Aabb::of_points(&points);
     edges.insert(key, found);
     Ok(found)
 }
 
-/// Where a vertex stands, placed.
-fn vertex_point(model: &Model, vertex: &Shape) -> OgeomResult<Option<Point>> {
+/// Where a vertex stands, placed and seen through `view`.
+fn vertex_point(model: &Model, vertex: &Shape, view: Transform) -> OgeomResult<Option<Point>> {
     let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
         return Ok(None);
     };
-    Ok(Some(vertex.transform(model.datums())?.apply(data.point)))
+    Ok(Some(
+        (view * vertex.transform(model.datums())?).apply(data.point),
+    ))
 }
 
 /// The edges and vertices of `shape` that no face of it holds.
@@ -188,6 +235,7 @@ fn outside_faces(model: &Model, shape: &Shape) -> OgeomResult<(Vec<Shape>, Vec<S
 fn edge_extremes(
     model: &Model,
     edge: &Shape,
+    view: Transform,
     tol: Tolerances,
     points: &mut Vec<Point>,
 ) -> OgeomResult<()> {
@@ -204,7 +252,7 @@ fn edge_extremes(
     if matches!(geometry, ogeom_geom::Curve::Line(_)) {
         return Ok(());
     }
-    let placement = edge.transform(model.datums())?;
+    let placement = view * edge.transform(model.datums())?;
     let at = |t: f64| -> OgeomResult<Point> { Ok(placement.apply(geometry.point_at(t, tol)?)) };
     // A circle leads along each side at the angle its frame names, or
     // half a turn on: those angles, either way round the circle, are
@@ -276,6 +324,7 @@ fn edge_extremes(
 fn face_extremes(
     model: &Model,
     face: &Shape,
+    view: Transform,
     tol: Tolerances,
     points: &mut Vec<Point>,
 ) -> OgeomResult<()> {
@@ -292,7 +341,7 @@ fn face_extremes(
     if ruled(surface) {
         return Ok(());
     }
-    let placement = face.transform(model.datums())?;
+    let placement = view * face.transform(model.datums())?;
     // A sphere's and a torus's extreme along each side is closed form,
     // and where it falls inside the face it is the face's extreme; the
     // descent below can stall short of it in a general frame.
@@ -380,15 +429,18 @@ fn face_extremes(
             points.push(p);
         }
     }
+    // The mesh stands where the face is placed; the search reads it as
+    // `view` sees it.
+    let seen: Vec<Point> = mesh.positions.iter().map(|p| view.apply(*p)).collect();
     for axis in AXES {
         for sense in [1.0, -1.0] {
             let score = |p: Point| p.to_vector().dot(axis) * sense;
-            let Some(best) = (0..mesh.positions.len())
-                .max_by(|a, b| score(mesh.positions[*a]).total_cmp(&score(mesh.positions[*b])))
+            let Some(best) =
+                (0..seen.len()).max_by(|a, b| score(seen[*a]).total_cmp(&score(seen[*b])))
             else {
                 continue;
             };
-            points.push(mesh.positions[best]);
+            points.push(seen[best]);
             let Some((u, v)) = at_vertex[best] else {
                 continue;
             };

@@ -21,6 +21,7 @@ pub mod shape;
 pub mod sheet;
 pub mod sweep;
 pub mod thick;
+pub mod thread;
 pub mod wire2d;
 
 pub use draft::apply_draft;
@@ -44,4 +45,5 @@ pub use sweep::{
     make_pipe_shell_with, make_pipe_skinned, make_revolution_until, place_on_spine,
 };
 pub use thick::{make_thick_sheet, make_thick_sheet_sided, offset_sheet};
+pub use thread::{ThreadForm, make_thread};
 pub use wire2d::{Join, offset_wire};

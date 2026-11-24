@@ -2606,6 +2606,29 @@ tests = [
 ]
 
 [[capability]]
+id = "offset.thread"
+title = "Screw threads cut on a cylindrical face: external or internal, either hand, multi-start, run-out and lead-in chamfer"
+crate = "ogeom-offset"
+verdict = "partial"
+restriction = """Threads are cut on cylindrical faces only; a tapered \
+(pipe) thread on a cone is refused. The section is a symmetric \
+trapezoid (crest, root, depth and one flank angle closing one pitch), so \
+rounded roots and buttress forms are not built. A thread longer than its \
+face is refused rather than run on into the neighbouring faces."""
+symbols = [
+    "ogeom_offset::make_thread", "ogeom_offset::ThreadForm",
+    "ogeom_algo::extent_along",
+]
+tests = [
+    "crates/ogeom/tests/make_thread.rs::an_m8_thread_over_a_whole_shaft_measures_its_closed_form",
+    "crates/ogeom/tests/make_thread.rs::an_m8_thread_with_a_run_out_measures_its_closed_form",
+    "crates/ogeom/tests/make_thread.rs::an_internal_thread_stays_inside_the_plate",
+    "crates/ogeom/tests/make_thread.rs::a_two_start_left_hand_thread_measures_its_closed_form",
+    "crates/ogeom/tests/make_thread.rs::a_chamfered_thread_measures_its_closed_form",
+    "crates/ogeom/tests/make_thread.rs::a_thread_against_a_shoulder_ends_in_its_plane",
+]
+
+[[capability]]
 id = "offset.projection"
 title = "Projecting wires normally onto faces, pcurves riding along"
 crate = "ogeom-offset"
@@ -2693,10 +2716,14 @@ symbols = [
     "ogeom_algo::shape_bounds", "ogeom_algo::curve_bounds",
     "ogeom_algo::surface_bounds", "ogeom_algo::oriented_bounds",
     "ogeom_algo::Obb", "ogeom_math::Aabb", "ogeom_algo::tight_bounds",
+    "ogeom_algo::extent_along",
 ]
 tests = [
     "crates/ogeom-algo/src/measure.rs::every_curves_bound_contains_the_curve",
     "crates/ogeom/tests/tight_bounds.rs",
+    "crates/ogeom/tests/make_thread.rs::a_cylinder_face_extends_its_height_along_its_axis",
+    "crates/ogeom/tests/make_thread.rs::a_cone_face_extends_between_its_end_circles",
+    "crates/ogeom/tests/make_thread.rs::a_slanted_cut_cylinder_extends_to_its_ellipse",
 ]
 
 [[capability]]
