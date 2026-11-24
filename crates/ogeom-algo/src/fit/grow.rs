@@ -15,6 +15,9 @@ use crate::orient::{check_indices, edge_uses, key};
 
 mod meeting;
 mod rim;
+mod smooth;
+
+pub use smooth::{GrownRegion, grow_smooth};
 
 /// The surface kinds a region is grown for, and the curve kinds a crease is
 /// traced for.
@@ -91,12 +94,18 @@ pub struct GrowOptions {
     /// noise turns an edge by about the noise over the triangles' size,
     /// which the limit must clear.
     pub crease_limit: f64,
+    /// Rounds of smoothing [`grow_smooth`] gives each triangle's normal
+    /// before comparing it with its neighbours'; zero compares the
+    /// triangles' own normals.
+    pub smoothing_rounds: u32,
 }
 
 impl Default for GrowOptions {
     /// A 3σ cutoff, which keeps 99.7 % of Gaussian noise, and a normal
     /// limit and a crease limit of π/6, which the noise of a mesh whose
-    /// triangles are ten times the noise across turns past rarely.
+    /// triangles are ten times the noise across turns past rarely; and
+    /// three rounds of smoothing, which reach each triangle's neighbours
+    /// three edges out.
     fn default() -> Self {
         Self {
             cutoff: Cutoff::Sigma(3.0),
@@ -106,6 +115,7 @@ impl Default for GrowOptions {
             fixed: FitFixed::default(),
             side: None,
             crease_limit: core::f64::consts::FRAC_PI_6,
+            smoothing_rounds: 3,
         }
     }
 }

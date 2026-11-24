@@ -50,7 +50,7 @@ mod seams;
 mod segment;
 mod snap;
 mod steps;
-mod weld;
+pub(crate) mod weld;
 
 pub use steps::{
     FallbackReason, FitConstraints, MeshRegion, MeshRegions, RegionFallback, RegionId,

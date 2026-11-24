@@ -54,7 +54,9 @@
 //! [`grow`](fn@grow) takes clicks on a surface, grows the region of the mesh a kind
 //! of surface covers around them, and fits it. For a circle or a line it
 //! traces the crease nearest the click instead, along edges where the
-//! surface turns sharply: a bore's rim, a box's edge.
+//! surface turns sharply: a bore's rim, a box's edge. For a free-form
+//! surface, [`grow_smooth`] grows the region the surface stays smooth over
+//! and fits nothing, leaving its points for a free-form fit.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_geom::BSplineCurve;
@@ -66,7 +68,10 @@ pub(crate) mod segments;
 mod tails;
 pub mod zone;
 
-pub use grow::{AnyFit, Crease, FitKind, GrowOptions, Grown, Meeting, SeedReport, grow};
+pub use grow::{
+    AnyFit, Crease, FitKind, GrowOptions, Grown, GrownRegion, Meeting, SeedReport, grow,
+    grow_smooth,
+};
 pub use primitive::{
     Fit, FitFixed, FitOptions, Side, circle2, circle3, cone, cylinder, line2, line3, plane, sphere,
     torus,

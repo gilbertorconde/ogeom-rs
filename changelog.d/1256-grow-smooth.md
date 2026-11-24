@@ -1,0 +1,6 @@
+- **Added: a smooth free-form region grown over a mesh from clicks** (#1256).
+  - `grow_smooth(mesh, index, seeds, crease, options, tol)` floods from the triangles nearest the seeds across edges where the smoothed normals turn by no more than `crease`, and returns the region's triangles, vertices and points with no surface fitted, for a free-form fit. Seeds on separate smooth parts give their union.
+  - Normals are smoothed by bilateral filtering whose range is set from the mesh's own median edge turn, so a scan's noise is averaged out while creases keep their turn. Tangent seams join whatever the curvature does across them; vertices within the confusion distance are one, so patches meshed apart join along a shared border.
+  - `GrowOptions::peel` takes back rim triangles that turn past every turn inside the region, the rows of a scanner's rounded edge the region climbed; `max_triangles` caps growth.
+  - `GrowOptions` gains `smoothing_rounds` (default 3), which only `grow_smooth` reads.
+  - Facade: `ogeom::algo::fit::{grow_smooth, GrownRegion}`.
