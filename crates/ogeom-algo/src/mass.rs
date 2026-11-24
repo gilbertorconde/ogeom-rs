@@ -254,7 +254,8 @@ pub fn volume_properties(
 /// # Errors
 ///
 /// As [`volume_properties`].
-pub(crate) fn volume_as_flagged(
+#[doc(hidden)]
+pub fn volume_as_flagged(
     model: &Model,
     shape: &Shape,
     deflection: Deflection,
@@ -270,8 +271,9 @@ pub(crate) fn volume_as_flagged(
 /// each region's closed-form integrals about a reference point. A face is
 /// known by its content (see [`ogeom_topo::face_content`]), which is
 /// everything any of these reads.
+#[doc(hidden)]
 #[derive(Default)]
-pub(crate) struct VolumeKept {
+pub struct VolumeKept {
     meshes: ogeom_mesh::FaceMeshCache,
     /// By the face's content and the tolerances: its regions, or `None`
     /// where the closed forms cannot take it.
@@ -282,9 +284,15 @@ pub(crate) struct VolumeKept {
     integrals: std::sync::Mutex<ogeom_core::FastMap<Vec<u8>, Option<Moments>>>,
 }
 
+impl std::fmt::Debug for VolumeKept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VolumeKept").finish_non_exhaustive()
+    }
+}
+
 impl VolumeKept {
     /// The face meshes kept, for a caller meshing the same faces.
-    pub(crate) const fn meshes(&self) -> &ogeom_mesh::FaceMeshCache {
+    pub const fn meshes(&self) -> &ogeom_mesh::FaceMeshCache {
         &self.meshes
     }
 

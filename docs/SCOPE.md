@@ -59,6 +59,17 @@ Recognition meets the kernel's standard, not a heuristic's:
 
 This is what makes recognition a construction the kernel can stand behind.
 
+It has two crates of its own, above `ogeom-algo` (#1264):
+
+- `ogeom-fit` fits surfaces to measured points, meshes and curve networks,
+  fits outlines, and registers and orients meshes (`fit`, `network`,
+  `recognize`, `register`, `orient`).
+- `ogeom-recon` builds the solid from a mesh (`solid_from_mesh`,
+  `cut_by_mesh_region`).
+
+Splitting the code out adds no capability, so the scope does not change.
+Until the move lands, the code is in `ogeom-algo` and `ogeom-bool`.
+
 Neighbouring surfaces may be built from each other where a geometric
 relation between them holds within the tolerance: a constant-radius fillet
 is built from its two supports and a radius, so it meets them tangentially

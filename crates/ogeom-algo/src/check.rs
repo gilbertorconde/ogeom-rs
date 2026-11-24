@@ -970,11 +970,8 @@ fn check_spanned(
 ///
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) if the edge
 /// or its geometry is not in `model`; as the curve's evaluation.
-pub(crate) fn edge_spanned_past(
-    model: &Model,
-    edge: &Shape,
-    tol: Tolerances,
-) -> OgeomResult<Option<f64>> {
+#[doc(hidden)]
+pub fn edge_spanned_past(model: &Model, edge: &Shape, tol: Tolerances) -> OgeomResult<Option<f64>> {
     let Some(data) = model.node(edge).and_then(|n| n.data().as_edge()) else {
         ogeom_bail!(Dangling, "edge is not in this model");
     };
@@ -1222,7 +1219,8 @@ pub(crate) fn pcurve_off_curve(
 }
 
 /// A wire's edges must meet end to end.
-pub(crate) fn check_wire(
+#[doc(hidden)]
+pub fn check_wire(
     model: &Model,
     wire: &Shape,
     tol: Tolerances,

@@ -35,6 +35,14 @@ INTERNAL: set[str] = {
     # The upgrade's steps the healing and the many-operand union call.
     "ogeom_algo::merge_edges_at",
     "ogeom_algo::measure_edge",
+    # The core's steps the mesh conversion and the fitting reach from above.
+    "ogeom_algo::check_wire",
+    "ogeom_algo::edge_spanned_past",
+    "ogeom_algo::volume_as_flagged",
+    "ogeom_algo::VolumeKept",
+    "ogeom_algo::self_crossings_kept",
+    "ogeom_algo::to_mesh_with",
+    "ogeom_algo::Pseudonormals",
 }
 
 LEXEME = re.compile(

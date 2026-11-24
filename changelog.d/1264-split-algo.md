@@ -1,0 +1,4 @@
+- **Changed: mesh conversion and fitting are moving out of `ogeom-algo`** (#1264).
+  - `docs/SCOPE.md` names the two crates that will hold them, `ogeom-fit` and `ogeom-recon`. No public path moves yet, and every `ogeom::` path stays as it is when they do.
+  - `ogeom_algo::{check_wire, edge_spanned_past, volume_as_flagged, VolumeKept, self_crossings_kept, to_mesh_with, Pseudonormals}` are reachable for those crates. They are `#[doc(hidden)]` and not part of the API.
+  - Behaviour is unchanged.

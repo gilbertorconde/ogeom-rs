@@ -189,10 +189,16 @@ all its items.
 pattern `FillRegion` and `merge_edges_at` already use.
 
 - `check::check_wire` and `check::edge_spanned_past` (used by `mesh_solid`)
-- `mass::volume_as_flagged` and `mass::VolumeKept` (used by `mesh_solid`)
+- `mass::volume_as_flagged` and `mass::VolumeKept`, with
+  `VolumeKept::meshes` (used by `mesh_solid`)
 - `self_cross::crossings` (used by `mesh_solid`)
 - `distance::to_mesh_with` and `distance::Pseudonormals`, with
   `Pseudonormals::of` (used by `register`)
+
+Each is re-exported at the `ogeom_algo` root under `#[doc(hidden)]`, as
+`check_wire`, `edge_spanned_past`, `volume_as_flagged`, `VolumeKept`,
+`self_crossings_kept` (beside the public `self_crossings`), `to_mesh_with`
+and `Pseudonormals`. Those root names are what `INTERNAL` lists.
 
 ### Dependency graph after
 
@@ -286,9 +292,11 @@ and the full `cargo test -p ogeom -- --include-ignored`. Each touches
      "one addition" section names `ogeom-recon` as where it lives.
    - Widen the seven items above to `#[doc(hidden)] pub`, and add them to
      `INTERNAL`.
-   - Move the `classify.rs` test that builds through `solid_from_mesh` to
-     `crates/ogeom/tests/`. It tests classification of a converted solid, and
-     the facade crate sees both.
+   - The `classify.rs` test that builds through `solid_from_mesh` builds its
+     convex solid with `make_polyhedron` instead, and stays where it is. It
+     asserts on private items (`cast`, `count_crossings`, `wound`), so it
+     cannot move to `crates/ogeom/tests/` unchanged, and the solid is the
+     same eight planar triangles either way.
    - Record the baseline build times (method under "Verification").
 2. **Curve fitting down.**
    - Move the curve-fitting part of `fit.rs` to `ogeom_geom::fit`.
@@ -374,6 +382,23 @@ Also:
   - the wall time and the list of crates recompiled (`cargo build -v`) are
     recorded;
   - the same edit in `build.rs` shows the core's cost is unchanged.
+
+### Baseline
+
+Measured in PR 1 on `e649d4c2`. Method as above: `cargo build -v -p ogeom
+--tests` (dev profile), `CARGO_BUILD_JOBS=4`, after a one-line comment
+appended to the file, from a warm build.
+
+| Edited | Crates recompiled | Wall, run 1 | Wall, run 2 |
+|---|---|---|---|
+| `mesh_solid/regions.rs` | algo, bool, heal, fillet, io, hlr, offset, ogeom | 19 m 51 s | 5 m 28 s |
+| `fit/grow.rs` | the same eight | 6 m 01 s | 20 m 07 s |
+| `build.rs` | the same eight | 5 m 42 s | 9 m 02 s |
+
+The machine was shared with other builds (load average near 19), so the wall
+times vary by up to four times for the same work. The recompiled set is the
+reliable part. PR 4 and PR 5 compare their sets against it and measure the
+times again on a quiet machine, before and after, in the same session.
 
 ## Questions decided
 

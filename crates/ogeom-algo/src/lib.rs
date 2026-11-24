@@ -152,6 +152,18 @@ pub use rest::{Rest, resting_faces, resting_faces_of};
 pub use seam_columns::join_seam_columns;
 pub use segments_2d::{Segment2, Segments, fit_segments_2d};
 pub use self_cross::{SelfCrossing, self_crossings};
+// Reached from the crates above that convert and fit meshes: a wire's and an
+// edge's checks, the volume as the faces are flagged and what it keeps, the
+// face crossings on kept meshes, and distances to a mesh whose normals are
+// gathered once.
+#[doc(hidden)]
+pub use check::{check_wire, edge_spanned_past};
+#[doc(hidden)]
+pub use distance::{Pseudonormals, to_mesh_with};
+#[doc(hidden)]
+pub use mass::{VolumeKept, volume_as_flagged};
+#[doc(hidden)]
+pub use self_cross::crossings as self_crossings_kept;
 pub use sew::{
     Agreement, Sewn, agreeing_orientation, make_wire_unordered, order_edges, sew, sew_around,
     sew_around_within, sew_within,
