@@ -774,6 +774,29 @@ symbols = [
 tests = ["crates/ogeom-algo/src/primitive.rs", "crates/ogeom/tests/built_by_hand.rs"]
 
 [[capability]]
+id = "algo.multiface-sweeps"
+title = "Prisms and revolutions of a profile of several faces sharing edges, a solid per face glued on shared walls"
+crate = "ogeom-algo"
+verdict = "partial"
+restriction = """`make_prism` and `make_revolution` take a shell or compound of \
+planar faces in one plane (for a revolution, a plane through the axis with \
+every face on one side): each face sweeps a solid of its own, an edge two \
+faces share sweeps one wall held by both solids from opposite sides, and \
+the solids glued that way come back as a compsolid (side by side in a \
+compound where some share no wall). `outer_solid` makes the compsolid one \
+solid without its inner walls. Refused: faces out of one plane, boundaries \
+that cross or run along each other without sharing their edges and \
+vertices (an edge not split where another ends on it), one face holding \
+part of another, a revolution's faces on both sides of the axis. Not yet \
+taken by `make_revolution_until`, `make_helical_sweep` or \
+`make_pipe_shell_with`, which sweep one face."""
+symbols = [
+    "ogeom_algo::make_prism", "ogeom_algo::make_revolution",
+    "ogeom_algo::outer_solid", "ogeom_algo::make_compsolid",
+]
+tests = ["crates/ogeom-algo/tests/multiface_sweep.rs"]
+
+[[capability]]
 id = "geom.adaptors"
 title = "Evaluating topology as geometry: an edge's curve and a face's surface, placed"
 crate = "ogeom-geom"
