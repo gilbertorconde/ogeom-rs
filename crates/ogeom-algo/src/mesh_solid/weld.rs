@@ -10,7 +10,7 @@ use super::MeshSolidReport;
 
 /// Weld points on a grid of the weld distance, looking in the neighbouring
 /// cells too, so two points either side of a cell wall still meet.
-pub(super) fn weld_points(positions: &[Point], weld: f64) -> (Vec<Point>, Vec<u32>) {
+pub(crate) fn weld_points(positions: &[Point], weld: f64) -> (Vec<Point>, Vec<u32>) {
     // A cast saturates, so a coordinate past `i64`'s cells shares the last
     // one and is still compared by distance.
     #[allow(clippy::cast_possible_truncation, reason = "saturating")]
