@@ -453,6 +453,22 @@ fn read_corners(
                 };
                 convex.push(sense);
             }
+            // A bevel and an asymmetric round on a straight edge between
+            // planes, one cutting and the other filling: bevels first
+            // (ADR 0001, section 13, question 3), the round then taken on
+            // what the bevel left, its end meeting the bevel's plane.
+            let kinds = [all[here[0]].1, all[here[1]].1];
+            let straight_asym = here.iter().all(|&k| {
+                all[k].1 != 2 || crate::support::planar_seat(model, solid, &all[k].0, tol).is_ok()
+            });
+            if let [Some(a), Some(b)] = convex[..]
+                && a != b
+                && kinds.contains(&1)
+                && kinds.contains(&2)
+                && straight_asym
+            {
+                continue;
+            }
             if let [Some(a), Some(b)] = convex[..]
                 && a == b
             {

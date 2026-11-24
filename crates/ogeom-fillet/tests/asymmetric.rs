@@ -535,7 +535,7 @@ fn what_is_not_built_is_refused_by_name() {
 }
 
 #[test]
-fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a_bevel_of_the_other_convexity()
+fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_a_mixed_pair_beside_a_concave_sharp_edge()
  {
     let profile = RoundProfile::Conic(0.4);
     let asked = |face: &Shape| Blend::RoundDistances {
@@ -586,24 +586,44 @@ fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a
     let v = volume(&m, &both.shape);
     assert!((v - exact).abs() <= 1e-8, "volume {v} against {exact}");
 
-    // Meeting a bevel of the other convexity at a vertex whose third edge
-    // is left sharp: the L's re-entrant edge and the plate's front edge.
-    // A round there closes on the signed patch; a bevel is refused.
+    // A convex and a concave band at a vertex whose third edge, left
+    // sharp, is concave: a block standing on the L's floor against its
+    // wall, the round of its top's front edge and the fill of its top
+    // against the wall, its upright against the wall left sharp. Refused
+    // by name, asymmetric on either band.
     let mut m = Model::new();
-    let (s, edge, floor, _) = l_bracket(&mut m);
-    let plate = edge_where(&m, &s, |p| {
-        p.y.abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9 && p.x >= 8.0 - 1e-9
-    });
-    let message = ogeom_fillet::blend_edges(
+    let (s, ..) = l_bracket(&mut m);
+    let step = ogeom_algo::make_box(
         &mut m,
-        &s,
-        &[(plate, bevel(&floor, 1.0, 1.0)), (edge, asked(&floor))],
-        ChamferCorner::Point,
+        Frame::new(Point::new(8.0, 0.0, 8.0), Direction::Z, Direction::X, T).unwrap(),
+        (6.0, 6.0, 4.0),
         T,
     )
-    .expect_err("refused")
-    .to_string();
-    assert!(message.contains("both cut or both fill"), "{message}");
+    .unwrap()
+    .shape;
+    let s = ogeom_bool::fuse(&mut m, &s, &step, T).unwrap().shape;
+    let front = edge_where(&m, &s, |p| {
+        (p.y - 6.0).abs() < 1e-9 && (p.z - 12.0).abs() < 1e-9
+    });
+    let back = edge_where(&m, &s, |p| {
+        (p.x - 8.0).abs() < 1e-9 && (p.z - 12.0).abs() < 1e-9
+    });
+    let step_top = face_at(&m, &s, Point::new(11.0, 3.0, 12.0));
+    for request in [
+        [
+            (front.clone(), asked(&step_top)),
+            (back.clone(), Blend::Round(1.0)),
+        ],
+        [
+            (front.clone(), Blend::Round(1.0)),
+            (back.clone(), asked(&step_top)),
+        ],
+    ] {
+        let message = ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T)
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains("both cut or both fill"), "{message}");
+    }
 }
 
 #[test]
@@ -4367,6 +4387,78 @@ fn a_bevel_and_an_asymmetric_fill_beside_an_edge_left_sharp_meet_by_intersection
         &[(ex, fill), (ey, bevel(&floor, c_floor, d_wall))],
     );
     assert!((v - exact).abs() <= 1e-5, "volume {v} against {exact}");
+}
+
+/// A bevel and an asymmetric round of the other sense at a vertex whose
+/// third edge is left sharp: bevels first (ADR 0001, section 13,
+/// question 3), the round then on what the bevel left, where its edge ends
+/// in the bevel's plane. On the L-bracket, a bevel of the floor's front
+/// edge `p` along the floor and `q` down the front, then a fill of the
+/// crease: each point of the fill's section `h` above the floor stands
+/// behind the bevel's plane only from `p + p h / q` along the crease, so
+/// the fill adds `(20 - p) A - (p / q) M`, `M` the section's first moment
+/// about the floor. A bevel filling the crease `p` along the floor and `q`
+/// up the wall, then a round of the floor's front edge: the band, cut by
+/// the bevel's plane carried down into the floor, takes each point `t`
+/// below the floor from `p + p t / q` past the wall, `(12 - p) A - (p / q)
+/// M`. The same solid in either order and naming the other faces.
+#[test]
+fn an_asymmetric_round_and_a_bevel_of_the_other_sense_beside_an_edge_left_sharp_take_the_bevel_first()
+ {
+    let w = conic(0.4);
+    let asym = |face: &Shape, a: f64, b: f64| Blend::RoundDistances {
+        face: face.clone(),
+        on_face: a,
+        on_other: b,
+        profile: RoundProfile::Conic(0.4),
+    };
+    let (a, b) = (1.5, 1.0);
+    let (p, q) = (1.2, 0.8);
+    let area = corner_area(a, b, FRAC_PI_2, w);
+    let moment = integrate(a, |u| 0.5 * conic_depth(a, b, w, u).powi(2));
+    let mut m = Model::new();
+    let (s, crease, floor, wall) = l_bracket(&mut m);
+    let front_edge = edge_where(&m, &s, |p| {
+        p.y.abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9 && p.x >= 8.0 - 1e-9
+    });
+    let front = face_at(&m, &s, Point::new(14.0, 0.0, 4.0));
+    let cases = [
+        (
+            [
+                (front_edge.clone(), bevel(&floor, p, q)),
+                (crease.clone(), asym(&floor, a, b)),
+            ],
+            [
+                (front_edge.clone(), bevel(&front, q, p)),
+                (crease.clone(), asym(&wall, b, a)),
+            ],
+            5120.0 - 12.0 * 0.5 * p * q + (20.0 - p) * area - p / q * moment,
+        ),
+        (
+            [
+                (crease.clone(), bevel(&floor, p, q)),
+                (front_edge.clone(), asym(&floor, a, b)),
+            ],
+            [
+                (crease.clone(), bevel(&wall, q, p)),
+                (front_edge.clone(), asym(&front, b, a)),
+            ],
+            5120.0 + 20.0 * 0.5 * p * q - ((12.0 - p) * area - p / q * moment),
+        ),
+    ];
+    for (k, (request, other, exact)) in cases.into_iter().enumerate() {
+        let v = either_order(&mut m, &s, &request);
+        assert!(
+            (v - exact).abs() <= 1e-7,
+            "case {k}: volume {v} against {exact}"
+        );
+        let again = ogeom_fillet::blend_edges(&mut m, &s, &other, ChamferCorner::Point, T).unwrap();
+        assert_eq!(
+            volume(&m, &again.shape).to_bits(),
+            v.to_bits(),
+            "case {k}: naming the other faces"
+        );
+    }
 }
 
 /// A 20 x 12 x 4 block, its upright at (20, 0) rounded at 3: the top's
