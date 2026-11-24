@@ -481,15 +481,10 @@ fn merged(
     };
     // The vertices the merge may dissolve: the ends of the edges it took
     // out between the faces it merged.
-    let kept: FastSet<SameKey> = explore_unique(model, &unified.shape, ShapeType::Edge)?
-        .into_iter()
-        .map(SameKey)
-        .collect();
     let mut at: FastSet<TShapeId> = FastSet::default();
     for face in &around {
         for edge in explore_unique(model, face, ShapeType::Edge)? {
-            let images = unified.history.trace(&edge);
-            if images.iter().any(|e| kept.contains(&SameKey(e.clone()))) {
+            if !unified.history.is_deleted(&edge) {
                 continue;
             }
             for vertex in explore_unique(model, &edge, ShapeType::Vertex)? {
@@ -529,37 +524,19 @@ fn with_solids(
     history: History,
     tol: Tolerances,
 ) -> OgeomResult<History> {
-    let mut originals: Vec<Shape> = Vec::new();
-    let mut held_parts: FastSet<SameKey> = FastSet::default();
+    let mut originals: FastSet<SameKey> = FastSet::default();
     for kind in [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex] {
         for (i, lump) in lumps.iter().enumerate() {
             if !neighbours[i].is_empty() {
-                originals.extend(explore_unique(model, &lump.shape, kind)?);
+                originals.extend(
+                    explore_unique(model, &lump.shape, kind)?
+                        .into_iter()
+                        .map(SameKey),
+                );
             }
         }
-        for solid in out {
-            held_parts.extend(explore_unique(model, solid, kind)?.into_iter().map(SameKey));
-        }
     }
-    let keys: FastSet<SameKey> = originals.iter().cloned().map(SameKey).collect();
-    let mut history = history.only_for(|shape| keys.contains(&SameKey(shape.clone())));
-    // A step that merged or joined may leave a shape it took out unrecorded:
-    // what the result does not hold is not an image.
-    for part in &originals {
-        let images = history.trace(part);
-        let held: Vec<Shape> = images
-            .iter()
-            .filter(|image| held_parts.contains(&SameKey((*image).clone())))
-            .cloned()
-            .collect();
-        if held.len() == images.len() {
-            continue;
-        }
-        history.delete(part);
-        for image in held {
-            history.modify(part, image);
-        }
-    }
+    let mut history = history.only_for(|shape| originals.contains(&SameKey(shape.clone())));
 
     let mut holder: FastMap<SameKey, usize> = FastMap::default();
     for (index, solid) in out.iter().enumerate() {

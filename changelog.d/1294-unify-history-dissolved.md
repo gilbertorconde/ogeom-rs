@@ -1,0 +1,4 @@
+- **Fixed: face unification and edge joining record what they dissolve** (#1294).
+  - `unify_same_domain`, `unify_same_domain_with` and `unify_same_domain_around` now delete, in their history, the shared edges they dissolve inside a merged face and any vertex left with no edge. Before, those traced to themselves although the result no longer held them.
+  - `merge_edges` now modifies both edges of a joined pair into the joined edge (the second was deleted) and deletes the vertex between them (it was left unrecorded).
+  - Every face, edge and vertex given to these now traces only to shapes the result holds, or is deleted. `fuse_all` and the fillet's flush rejoin no longer patch this up themselves.
