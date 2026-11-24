@@ -54,6 +54,7 @@
 //! an edge shared by more than two faces, and a thickened sheet whose
 //! layers run into each other.
 
+use crate::shape::Walls;
 use ogeom_algo::{
     Built, History, attach_pcurve, attach_seam, edge_vertices, make_edge_between, make_face_on,
     make_face_with_pcurves, make_shell, make_solid, make_vertex, make_wire,
@@ -171,6 +172,36 @@ pub fn make_thick_sheet(
     if !thickness.is_finite() || thickness.abs() <= tol.confusion() {
         ogeom_bail!(Construction, "a thickness of {thickness} holds nothing");
     }
+    let walls = if both_sides {
+        Walls::both(thickness.abs())
+    } else if thickness > 0.0 {
+        Walls::ahead(thickness)
+    } else {
+        Walls::behind(-thickness)
+    };
+    make_thick_sheet_sided(model, sheet, walls, tol)
+}
+
+/// [`make_thick_sheet`] with the solid's depth given per side: it stands
+/// `walls.behind` against the sheet's oriented normals and `walls.ahead`
+/// along them, the sheet itself inside it unless one side is zero, where
+/// the sheet is that side's face of the solid.
+///
+/// History is as [`make_thick_sheet`] reports it: each face generates its
+/// two layers, each free edge its side face.
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// depth is negative or not finite, or both are none; otherwise as
+/// [`make_thick_sheet`].
+pub fn make_thick_sheet_sided(
+    model: &mut Model,
+    sheet: &Shape,
+    walls: Walls,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let (behind, ahead) = walls.depths(tol)?;
     let read = read_sheet(model, sheet, tol)?;
     if read.faces.iter().any(|f| f.natural) {
         ogeom_bail!(
@@ -189,13 +220,7 @@ pub fn make_thick_sheet(
              make_thick_solid, not thickened"
         );
     }
-    let (lo, hi) = if both_sides {
-        (-thickness.abs() / 2.0, thickness.abs() / 2.0)
-    } else if thickness > 0.0 {
-        (0.0, thickness)
-    } else {
-        (thickness, 0.0)
-    };
+    let (lo, hi) = (-behind, ahead);
     let creases = creases(&read, lo.abs().max(hi.abs()), tol)?;
     let lower = moved_layer(model, &read, lo, Some(&creases), tol)?;
     let upper = moved_layer(model, &read, hi, Some(&creases), tol)?;

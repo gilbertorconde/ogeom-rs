@@ -1,0 +1,4 @@
+- **Added: `make_thick_solid_sided`, `make_thick_sheet_sided` and `Walls`** (#1245).
+  - `make_thick_solid_sided` hollows a solid with its wall on either side of the faces or on both: `Walls::both(t)` centres the wall on the faces, `Walls::split(behind, ahead)` gives each side its own depth, and `Walls::behind` / `Walls::ahead` are the one-sided hollowing. A both-sided wall is one boolean between the faces moved out and the faces moved in, so each opening leaves one rim face on the removed face's surface instead of a rim split along the old face's edges. `Join::Arc` rounds each side about its own convex edges. History maps each kept face to its two walls.
+  - `make_thick_sheet_sided` thickens a sheet by a different depth to each side.
+  - Refused by name: a negative or missing depth, a side deeper than the solid has room for, and an opening that meets a neighbour tangentially (hollowed to one side only).

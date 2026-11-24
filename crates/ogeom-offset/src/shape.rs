@@ -546,6 +546,250 @@ pub fn make_thick_solid_with(
     Ok(result)
 }
 
+/// How far a wall stands to each side of the faces it thickens.
+///
+/// `ahead` is along each face's outward normal as the face is oriented
+/// (out of a solid's material, to a sheet's front), `behind` against it
+/// (into the material, to the sheet's back). The wall is every point within
+/// those distances of the faces on their own side, so a split wall is the
+/// two one-sided walls laid against each other with the faces themselves as
+/// their common boundary. Each side takes zero or more; zero builds no wall
+/// on that side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Walls {
+    /// The wall's depth against the faces' outward normals.
+    pub behind: f64,
+    /// The wall's depth along the faces' outward normals.
+    pub ahead: f64,
+}
+
+impl Walls {
+    /// A wall of `thickness` behind the faces only: a solid hollowed
+    /// inward, a sheet thickened to its back.
+    #[must_use]
+    pub const fn behind(thickness: f64) -> Self {
+        Self {
+            behind: thickness,
+            ahead: 0.0,
+        }
+    }
+
+    /// A wall of `thickness` ahead of the faces only: a solid walled round
+    /// its outside, a sheet thickened to its front.
+    #[must_use]
+    pub const fn ahead(thickness: f64) -> Self {
+        Self {
+            behind: 0.0,
+            ahead: thickness,
+        }
+    }
+
+    /// A wall of `thickness` centred on the faces: half of it to each side.
+    #[must_use]
+    pub const fn both(thickness: f64) -> Self {
+        Self {
+            behind: thickness / 2.0,
+            ahead: thickness / 2.0,
+        }
+    }
+
+    /// A wall `behind` the faces on one side and `ahead` of them on the
+    /// other.
+    #[must_use]
+    pub const fn split(behind: f64, ahead: f64) -> Self {
+        Self { behind, ahead }
+    }
+
+    /// The two depths, each a length of zero or more (a depth within the
+    /// confusion distance read as none), and not both none.
+    pub(crate) fn depths(self, tol: Tolerances) -> OgeomResult<(f64, f64)> {
+        for (side, depth) in [("behind", self.behind), ("ahead of", self.ahead)] {
+            if !depth.is_finite() || depth < -tol.confusion() {
+                ogeom_bail!(
+                    Construction,
+                    "a wall of {depth} {side} the faces is not a depth; each \
+                     side takes zero or more"
+                );
+            }
+        }
+        let read = |depth: f64| if depth <= tol.confusion() { 0.0 } else { depth };
+        let (behind, ahead) = (read(self.behind), read(self.ahead));
+        if behind == 0.0 && ahead == 0.0 {
+            ogeom_bail!(
+                Construction,
+                "walls of {} behind and {} ahead of the faces hold nothing",
+                self.behind,
+                self.ahead
+            );
+        }
+        Ok((behind, ahead))
+    }
+}
+
+/// Hollow a solid into a wall standing to either side of its faces, or
+/// both: [`make_thick_solid_with`] with the wall's depth given per side.
+///
+/// With a wall on one side only this is [`make_thick_solid_with`]. With
+/// both, the wall is what lies between the solid's faces moved
+/// `walls.ahead` outward and the same faces moved `walls.behind` inward,
+/// built as one boolean between the two moved copies; [`Walls::both`] is
+/// the wall centred on the faces (the mid-plane wall).
+///
+/// The openings follow the one-sided rule on both sides: each `removed`
+/// face stays exactly where it is in both moved copies, so the walls run up
+/// to its surface and stop there, and the rim it leaves is one face on that
+/// surface, from the outer wall to the inner, never split along the old
+/// face's edges. A solid with nothing removed becomes a closed wall round a
+/// sealed cavity, one solid with two shells.
+///
+/// `join` applies on each side as [`make_thick_solid_with`] reads it:
+/// [`Join::Arc`] rounds each moved copy about its edges that are convex on
+/// the side that copy grows toward, at that side's depth, so on a convex
+/// solid the outer wall's corners round and the inner wall's stay sharp.
+///
+/// History: each kept face of the solid is modified into its two walls
+/// (the one ahead of it and the one behind it); its edges and vertices map
+/// the same way; each removed face is deleted, as in
+/// [`make_thick_solid_with`].
+///
+/// # Errors
+///
+/// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if a
+/// depth is negative or not finite, or both are none; as
+/// [`make_thick_solid_with`] for a one-sided wall; and, with walls on both
+/// sides, if a removed face is not a face of `solid`, a removed face meets
+/// a neighbour tangentially (the rim of a both-sided wall has no single
+/// surface to stop on there), a side's moved copy runs its faces through
+/// each other (that side's depth is more than the solid has room for), the
+/// rounding fails, or the walls do not come out one sound solid.
+pub fn make_thick_solid_sided(
+    model: &mut Model,
+    solid: &Shape,
+    removed: &[Shape],
+    walls: Walls,
+    join: Join,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    let (behind, ahead) = walls.depths(tol)?;
+    if ahead == 0.0 {
+        return make_thick_solid_with(model, solid, removed, behind, join, tol);
+    }
+    if behind == 0.0 {
+        return make_thick_solid_with(model, solid, removed, -ahead, join, tol);
+    }
+    let (canonical, mapped, prefix) = canonical_input(model, solid, removed, tol)?;
+    if let Some(prefix) = prefix {
+        let mut out = make_thick_solid_sided(model, &canonical, &mapped, walls, join, tol)?;
+        out.history = prefix.then(&out.history);
+        return Ok(out);
+    }
+    let own: ogeom_core::FastSet<TShapeId> =
+        explore(model, solid, Filter::OfType(ShapeType::Face))?
+            .iter()
+            .map(Shape::node)
+            .collect();
+    for face in removed {
+        if !own.contains(&face.node()) {
+            ogeom_bail!(Construction, "a removed face is not a face of the solid");
+        }
+        if has_tangent_neighbour(model, solid, face, tol)? {
+            ogeom_bail!(
+                Construction,
+                "a removed face meets a neighbour tangentially; a wall on \
+                 both sides of the faces is built where every opening meets \
+                 its neighbours across a corner, and a tangent opening is \
+                 hollowed to one side only"
+            );
+        }
+    }
+    let skip: Vec<TShapeId> = removed.iter().map(Shape::node).collect();
+    let side = |model: &mut Model, depth: f64, outward: bool| -> OgeomResult<Built> {
+        let amount = if outward { depth } else { -depth };
+        let moved = rebuilt(
+            model,
+            solid,
+            &|face| {
+                if skip.contains(&face.node()) {
+                    0.0
+                } else {
+                    amount
+                }
+            },
+            &|_| None,
+            tol,
+        )?;
+        if !ogeom_algo::inside_out_faces(model, &moved.shape, tol)?.is_empty() {
+            ogeom_bail!(
+                Construction,
+                "the wall {} the faces runs the solid's faces through each \
+                 other: {depth} is more than the solid has room for on that side",
+                if outward { "ahead of" } else { "behind" }
+            );
+        }
+        if join != Join::Arc {
+            return Ok(moved);
+        }
+        let held: Vec<TShapeId> = removed
+            .iter()
+            .flat_map(|f| {
+                moved
+                    .history
+                    .modified(f)
+                    .iter()
+                    .map(Shape::node)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let edges = growing_edges(model, &moved.shape, &held, outward, tol)?;
+        if edges.is_empty() {
+            return Ok(moved);
+        }
+        let rounded = ogeom_fillet::fillet_edges(model, &moved.shape, &edges, depth, tol)?;
+        Ok(Built::new(
+            rounded.shape,
+            moved.history.then(&rounded.history),
+        ))
+    };
+    let outer = side(model, ahead, true)?;
+    let inner = side(model, behind, false)?;
+    // The held opening faces coincide in both copies, and the cut's melt of
+    // the flush faces is what leaves each opening one rim face.
+    let cut = ogeom_bool::cut(model, &outer.shape, &inner.shape, tol)?;
+    let solids = explore(model, &cut.shape, Filter::OfType(ShapeType::Solid))?;
+    if solids.len() != 1 {
+        ogeom_bail!(
+            Construction,
+            "the walls on both sides of the faces came out as {} solids, \
+             not one",
+            solids.len()
+        );
+    }
+    if !ogeom_algo::check(model, &cut.shape, tol)?.is_valid() {
+        ogeom_bail!(
+            Construction,
+            "the walls on both sides of the faces do not close into a sound \
+             solid"
+        );
+    }
+    let mut originals: ogeom_core::FastSet<TShapeId> = ogeom_core::FastSet::default();
+    for kind in [ShapeType::Face, ShapeType::Edge, ShapeType::Vertex] {
+        for s in explore(model, solid, Filter::OfType(kind))? {
+            originals.insert(s.node());
+        }
+    }
+    let ours = |s: &Shape| originals.contains(&s.node());
+    let mut history = outer
+        .history
+        .then(&cut.history)
+        .only_for(ours)
+        .joined(inner.history.then(&cut.history).only_for(ours))
+        .without_repeated_images();
+    for face in removed {
+        history.delete(face);
+    }
+    Ok(Built::new(cut.shape, history))
+}
+
 /// Whether any neighbour meets `face` tangentially along a shared edge.
 fn has_tangent_neighbour(
     model: &Model,
