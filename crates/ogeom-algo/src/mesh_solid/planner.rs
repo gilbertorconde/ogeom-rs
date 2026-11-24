@@ -1454,10 +1454,11 @@ impl Planner<'_> {
                 .map(|k| f64::from(k) / f64::from(SAMPLES))
                 .collect()
         } else {
-            crate::fit::spaced(&lifted, crate::fit::Spacing::Centripetal, self.tol).ok()?
+            ogeom_geom::fit::spaced(&lifted, ogeom_geom::fit::Spacing::Centripetal, self.tol)
+                .ok()?
         };
-        let curve = crate::fit::interpolate_at(&lifted, &parameters, 3, self.tol).ok()?;
-        let image = crate::fit::interpolate_at(&at, &parameters, 3, self.tol).ok()?;
+        let curve = ogeom_geom::fit::interpolate_at(&lifted, &parameters, 3, self.tol).ok()?;
+        let image = ogeom_geom::fit::interpolate_at(&at, &parameters, 3, self.tol).ok()?;
         let image: PlanarCurve = ogeom_geom::BSpline2d::new(
             image.knots().clone(),
             image

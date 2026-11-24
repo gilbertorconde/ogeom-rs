@@ -7934,8 +7934,9 @@ mod tests {
         // in two halves, but the ring is a ten-thousandth as wide as it is
         // long. It is a slit, and the plate meshes whole.
         let (euler, area) = plate_with(Vector::ZERO, |model, _| {
-            use ogeom_algo::{Spacing, interpolate, make_edge_between, make_wire};
+            use ogeom_algo::{make_edge_between, make_wire};
             use ogeom_geom::Curve3d as _;
+            use ogeom_geom::fit::{Spacing, interpolate};
             let at = [Point::new(4.0, 5.0, 0.0), Point::new(6.0, 5.0, 0.0)];
             let v: Vec<Shape> = at
                 .iter()
@@ -7967,8 +7968,9 @@ mod tests {
     /// The plate of the test above with its slit, moved by `at`.
     fn slit_plate(at: Vector) -> (i64, f64) {
         plate_with(at, |model, by| {
-            use ogeom_algo::{Spacing, interpolate, make_edge_between, make_wire};
+            use ogeom_algo::{make_edge_between, make_wire};
             use ogeom_geom::Curve3d as _;
+            use ogeom_geom::fit::{Spacing, interpolate};
             let p = |x: f64, y: f64| Point::new(x, y, 0.0) + by;
             let at = [p(3.0, 5.0), p(5.0, 5.0), p(7.0, 5.0)];
             let v: Vec<Shape> = at

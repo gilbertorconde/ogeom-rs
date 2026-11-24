@@ -106,7 +106,6 @@ pub use fill_n::{FillBoundary, FillSide, Filled, make_filling_n};
 pub use fill_n::{
     Region as FillRegion, make_filling_n_fixed, make_filling_n_region, make_filling_n_within,
 };
-pub use fit::{Spacing, approximate, approximate_within, interpolate};
 pub use frames::{CurveFrame, CurveFrames, rotation_minimizing_frames};
 pub use held::{NetOutside, net_held_within};
 pub use history::{Built, History, on_own_nodes, on_own_nodes_with, unshare};
@@ -129,6 +128,9 @@ pub use network::{
     Across, ChainedPatch, CurveDef, IrregularCorner, LoopSide, Network, NetworkOptions, PatchDef,
     PatchFit, PatchSide, fit_loop_quads, fit_network, fit_network_chained,
 };
+/// Moved to `ogeom_geom::fit`. These paths are kept until 0.23.0, which
+/// removes them.
+pub use ogeom_geom::fit::{Spacing, approximate, approximate_within, interpolate};
 pub use out_and_back::{
     Notch, OutAndBack, edge_uses, is_tail, notch_of, out_and_back, placed_edge_uses,
 };

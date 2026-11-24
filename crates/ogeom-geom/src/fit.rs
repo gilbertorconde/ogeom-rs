@@ -1,7 +1,8 @@
 //! Fitting a B-spline to points, to a stated error target.
 //!
-//! Interpolation and fixed-count approximation live in `ogeom-algo`, and both
-//! take a control-point count from the caller. This module chooses it: fit,
+//! Interpolation and fixed-count approximation ([`interpolate`],
+//! [`approximate`]) take a control-point count from the caller. The rest of
+//! this module chooses it: fit,
 //! measure where the fit is worst, refine the knots exactly there, and repeat
 //! until the error target is met.
 //!
@@ -45,8 +46,12 @@ use ogeom_math::{KnotVector, Point, Point2};
 use crate::curve::BSplineCurve;
 use crate::curve2d::BSpline2d;
 
+mod fixed;
 mod seeded;
 
+pub use fixed::{Spacing, approximate, approximate_within, interpolate};
+#[doc(hidden)]
+pub use fixed::{interpolate_at, spaced};
 pub use seeded::{Ended, ScatteredFit, ScatteredOptions, Target, fit_surface_scattered_over};
 
 #[allow(
@@ -587,7 +592,7 @@ fn fit_points_joint_inner(
         degree,
         tolerance,
         smooth_loop,
-        Spacing::Centripetal,
+        StartSpacing::Centripetal,
         tol,
     )?;
     let (knots, control, error, met) = if first.3 {
@@ -598,7 +603,7 @@ fn fit_points_joint_inner(
             degree,
             tolerance,
             smooth_loop,
-            Spacing::ChordLength,
+            StartSpacing::ChordLength,
             tol,
         ) {
             Ok(second) if second.2 < first.2 => second,
@@ -1407,7 +1412,7 @@ fn fit_points_2d_at_inner(
 /// How a free fit first assigns parameters to its samples, before the
 /// correction rounds move them to the feet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Spacing {
+enum StartSpacing {
     /// The square root of each chord: the general choice, which keeps a
     /// corner from pulling the parameterization through it.
     Centripetal,
@@ -1438,7 +1443,7 @@ fn fit<const D: usize>(
         degree,
         tolerance,
         smooth_loop.then_some(D),
-        Spacing::Centripetal,
+        StartSpacing::Centripetal,
         tol,
     )
 }
@@ -1448,7 +1453,7 @@ fn fit_spaced<const D: usize>(
     degree: usize,
     tolerance: f64,
     smooth_loop: Option<usize>,
-    spacing: Spacing,
+    spacing: StartSpacing,
     tol: Tolerances,
 ) -> OgeomResult<(KnotVector, Vec<[f64; D]>, f64, bool)> {
     if !tolerance.is_finite() || tolerance <= 0.0 {
@@ -1484,8 +1489,8 @@ fn fit_spaced<const D: usize>(
             <= tol.confusion()
     });
     let parameters = match spacing {
-        Spacing::Centripetal => centripetal::<D>(&points),
-        Spacing::ChordLength => chordal::<D>(&points),
+        StartSpacing::Centripetal => centripetal::<D>(&points),
+        StartSpacing::ChordLength => chordal::<D>(&points),
     };
 
     // Start with the fewest control points a clamped curve of this degree can

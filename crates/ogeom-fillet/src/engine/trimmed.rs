@@ -6179,7 +6179,7 @@ fn torus_skew(
     }
     points[0] = a;
     points[SKEW_SAMPLES as usize] = b;
-    let curve = ogeom_algo::interpolate(&points, 3, ogeom_algo::Spacing::Uniform, tol)?;
+    let curve = ogeom_geom::fit::interpolate(&points, 3, ogeom_geom::fit::Spacing::Uniform, tol)?;
     let range = curve.domain();
     Ok((Curve::BSpline(curve), range))
 }
