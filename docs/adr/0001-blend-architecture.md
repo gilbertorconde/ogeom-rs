@@ -1423,7 +1423,7 @@ out as the corner rounded in one call.
   corner. The current path's own corner tool already carries a band that
   ran out past the vertex back to the corner, so "one at a time, then the
   corner tool, is the corner in one call" still holds on every sheared
-  block and placement in `crates/ogeom/tests/blends.rs`. Its port (the
+  block and placement in `crates/ogeom/tests/facade/blends.rs`. Its port (the
   vertex agent, #902 tracker) inherits that contract unchanged.
 
 ### Amendment: a crease's seat past an earlier blend (#902)
@@ -2654,7 +2654,7 @@ concave rounds meet.
 Making `Rolling` the default corner is a separate decision and is not
 taken here.
 
-**Oracle** (`tests/rolling_curved.rs`), each with `Rolling` in three
+**Oracle** (`tests/fillet/rolling_curved.rs`), each with `Rolling` in three
 orders, sound and with no patch face:
 
 - the obround pocket's floor and rim, the kidney pocket's floor, the
@@ -2717,7 +2717,7 @@ between the same two faces.
   bevel stops at a concave floor" concerns convex bevels and is not
   touched.
 
-**Oracle** (`tests/chamfer_point_and_pockets.rs`), sound, within 1e-6:
+**Oracle** (`tests/fillet/chamfer_point_and_pockets.rs`), sound, within 1e-6:
 
 - the obround and kidney pocket floors at 1: the pocket plus `d²/2` along
   the lines and, by Pappus, round each arc, its centroid `d/3` from each
@@ -2817,7 +2817,7 @@ behaviour.
   check on such a seat, so the answer is the elliptical round built on a
   copy of the model; a refusal there is `NotDone`.
 
-**Oracles** (`tests/asymmetric.rs`):
+**Oracles** (`tests/fillet/asymmetric.rs`):
 
 - the ruling, convex and concave: the drum less (or plus) the drum's
   height times the shoulder conic's corner, less (or plus) the sliver
@@ -2943,7 +2943,7 @@ Rules:
     that end, so the end plane cuts the band in its own exact section.
     A fill does not run on: past the solid it would add material.
 
-**Oracles** (`tests/asymmetric.rs`):
+**Oracles** (`tests/fillet/asymmetric.rs`):
 
 - the chain round a block's rounded upright: each station's conic corner
   integrated along the straight edges, and round the arc times
@@ -3053,7 +3053,7 @@ it is on, so the default request builds what it built before.
 - **Narrow passages** were not part of this step. The part "Narrow
   passages" below builds them under the same option set.
 
-**Oracle** (`tests/overflow.rs`). The case is a block 40 × 30 × 15 whose
+**Oracle** (`tests/fillet/overflow.rs`). The case is a block 40 × 30 × 15 whose
 long top edge is rounded r 5, with a boss r 6, 15 tall, standing at
 `y = 12`. Its foot round, r 3, reaches 2 past the edge round's tangent
 line.
@@ -3135,7 +3135,7 @@ describes no geometry past that, so the following is settled here.
   The part "Hold edge, curved faces and general held edges" builds a
   cylinder beside the edge and held edges of any curve in `a`'s plane.
 
-**Oracle** (`tests/hold_edge.rs`). The reference is the definition,
+**Oracle** (`tests/fillet/hold_edge.rs`). The reference is the definition,
 sampled without the construction: the ball's centres in closed form (at
 the radius under the top while the contact lies on it, else at the radius
 from the held edge's curve), and a point of the corner cut away where it
@@ -3206,7 +3206,7 @@ reaches other geometry is refused by name; it never yields a wrong solid.
   the default set, so the foot bevel above now blends into the round
   where it used to leave the ledge.
 
-**Oracle** (`tests/chamfer_overflow.rs`). The block and boss are the
+**Oracle** (`tests/fillet/chamfer_overflow.rs`). The block and boss are the
 round's, the foot bevelled 3 along the top and 3, then 2, up the wall: its
 leg on the top reaches 2 past the tangent line.
 
@@ -3272,7 +3272,7 @@ settled here, and it needs no choice beyond the seat.
   tangent to the floor, a curved floor, and a bevel reaching anything but one convex
   round from a cylindrical wall.
 
-**Oracle** (`tests/blend_into_round.rs`). The reference is the closing,
+**Oracle** (`tests/fillet/blend_into_round.rs`). The reference is the closing,
 sampled without the construction, as for the first case, generalised: the
 free centres are bounded by the wall's offset (a line in each plane
 through the axis) and the floor's offset (the plane at the radius, each
@@ -3328,7 +3328,7 @@ third face. Blend into round keeps that end.
   reaches one of its ends, where the end plane would cut the fitted piece;
   a bevel's open arc.
 
-**Oracle** (`tests/blend_into_round.rs`). The reference is the closing of
+**Oracle** (`tests/fillet/blend_into_round.rs`). The reference is the closing of
 the whole boss, as above, integrated over the arc's wedge alone, the end
 planes cutting it there. On a boss clear of any round it reproduces
 Pappus over half a turn to 1e-6. The parts are the cone's block with a
@@ -3383,7 +3383,7 @@ depends on how the rounds meet.
   cone's foot, an open arc reaching a corner, and a stretch whose seats
   stand closer than 0.01 rad.
 
-**Oracle** (`tests/blend_into_round.rs`). The reference is the closing of
+**Oracle** (`tests/fillet/blend_into_round.rs`). The reference is the closing of
 the part "more feet", its top over the corner taken in closed form from
 the floor's region (the quadrant inside both tangent lines, its corner
 rounded): a point's distance from the top is its distance from the sunk
@@ -3487,7 +3487,7 @@ rule settled here is the second statement's, carried across the zone:
 
   These go on to the engine, which refuses them by name.
 
-**Oracle** (`tests/narrow_passage.rs`). The reference is the union's
+**Oracle** (`tests/fillet/narrow_passage.rs`). The reference is the union's
 definition, sampled without the construction. Over a point of the floor
 at distance `s` from the nearest wall plane, the fill stands
 `H(s) = r - sqrt(r^2 - (r - s)^2)` tall. It is integrated over the air's
@@ -3601,7 +3601,7 @@ chart's straight sides, read exactly. The tool, its proofs and the
 options are those of the part above, every face past a held edge or at a
 held vertex counted with the faces past the held edge.
 
-**Oracle** (`tests/hold_edge_seats.rs`). The reference is the definition,
+**Oracle** (`tests/fillet/hold_edge_seats.rs`). The reference is the definition,
 sampled without the construction: the ball's centre stands the radius
 behind the front, at depth `sqrt(r^2 - h^2)` under the top, `h` the
 distance in the top's plane from its contact to the top's region, worked
@@ -3667,7 +3667,7 @@ their vertex within a millionth of the radius. Every other change,
 including a jump between edges that do not share a vertex, still goes
 on to trim through.
 
-**Oracle** (`tests/hold_edge_seats.rs`). As in the part above. The top's
+**Oracle** (`tests/fillet/hold_edge_seats.rs`). As in the part above. The top's
 region is the wedge between its two lines moved by the arc's radius toward
 the arc's centre, grown by that radius where the centre lies in front, the
 rest of the plane so grown where it lies behind. The distance `h` from
@@ -3743,7 +3743,7 @@ the tool's volume within the solid (the common of the two), not its whole
 volume. The result must check valid and keep the held edges under every
 foot, as before.
 
-**Oracle** (`tests/hold_edge_seats.rs`). As in the parts above, with the
+**Oracle** (`tests/fillet/hold_edge_seats.rs`). As in the parts above, with the
 material stated: the faces below the top's edges stand square to it,
 deeper than any ball reaches, so each column of the cut is counted only as
 far behind the front as the top runs before it first gives way, and the
@@ -3822,7 +3822,7 @@ plane and arcs on the cylinder, their points counted in the box it can
 take up. The tool, its proofs and the options are those of the parts
 above.
 
-**Oracle** (`tests/hold_edge_curved.rs`). As in the parts above. On the
+**Oracle** (`tests/fillet/hold_edge_curved.rs`). As in the parts above. On the
 drum the reference's centre rises on the circle 6 from the drum's axis,
 by bisection, until `sqrt(h^2 + z^2) = r`, `h` the distance in the top's
 plane from the point over it to the top's region; a point counts as cut
@@ -3906,7 +3906,7 @@ envelope of the balls past the face as well, and the end face trims it.
 (within 60 degrees of square), the band run on past it and trimmed. The
 ends the parts above built keep their construction.
 
-**Oracle** (`tests/hold_edge_ends.rs`). On the drum part's band, far
+**Oracle** (`tests/fillet/hold_edge_ends.rs`). On the drum part's band, far
 from the pocket, every section is the same: the corner between the top,
 the drum and the ball's arc. Leaning the far end plane to `x = 30 + k z`
 changes the volume cut away by `k` times that section's first moment
@@ -3937,7 +3937,7 @@ checks against the sampled reference.
   9 to 0.5, the end `x = 20 - z / 2`).
 - A vertex piece cut by the end face (a top's edge bending at
   `(19.3, 1.8)` down to 1.45 at the end, #1296) is checked in
-  `tests/hold_edge_seats.rs` against that suite's sampled reference: cut
+  `tests/fillet/hold_edge_seats.rs` against that suite's sampled reference: cut
   away 58.208017878 against 58.208017917 (bound 8.3e-8), worst G1 5.5e-6
   rad, both cliff edges kept. Hold edge at the end off, or hold edge off,
   goes on to trim through, which refuses it by name; with trim through
@@ -4080,23 +4080,23 @@ No reading is kept from one call to the next. A `Model` carries no
 revision, so a kept answer cannot tell that its solid changed. An app
 reads once per selection.
 
-**What the search found.** Pinned in `tests/exact_limits.rs`:
+**What the search found.** Pinned in `tests/fillet/exact_limits.rs`:
 
 - A 2 mm plate's edge bevels as a notch until its setbacks cross on the
   end faces. That happens where the bevel's plane passes the plate's far
   bottom edge, at 22 for the symmetric bevel and 20/3 + 2 for a scale of
-  3 along the top and 1 down the side. `tests/largest.rs` pinned the
+  3 along the top and 1 down the side. `tests/fillet/largest.rs` pinned the
   seat's 2 for both. Those tests now pin the new answers, since the notch
   is what the call builds.
 - The cone rim's round fails to build within 2e-4 of the exact seat
-  (3.6178 against 3.6180). `tests/largest.rs` had stepped under it by
+  (3.6178 against 3.6180). `tests/fillet/largest.rs` had stepped under it by
   hand; the reading now answers it.
 - Three rounds at a 2 mm plate's corner, radius 2, made the one-boolean
   fallback recurse without end. The polytope it rounds handed its own
   rounds to a polytope again, the same one. A polytope's rounds are no
   longer handed on. Those rounds now build up to the seat.
 
-**Oracles** (`tests/exact_limits.rs`). For every case the answer builds
+**Oracles** (`tests/fillet/exact_limits.rs`). For every case the answer builds
 valid a tolerance under it and is refused a tolerance over it. The cases
 are boxes square and oblique (one edge, all edges, a chamfer), a drum's
 rims, a bore's rim, a cone's rim, the corpus's L and U channels and
@@ -4188,7 +4188,7 @@ Not built: a lone round whose edge is an arc or a line not square to the
 cap (the sweep round its end is then a canal surface on an ellipse, not
 analytic), and a lone round beside a cone.
 
-**Oracle** (`tests/rolling_curved.rs`), sound in three orders, no patch
+**Oracle** (`tests/fillet/rolling_curved.rs`), sound in three orders, no patch
 face, every edge between two curved faces G1 within 1e-6 rad, volume
 within 1e-6:
 
@@ -4235,7 +4235,7 @@ non-local case of amendment "M5a", as before. A leg that reaches the
 concave edge exactly builds. A convex far side still rolls over (M5b): a
 drum's rim chamfered past its short wall is a notch.
 
-**Oracle** (`tests/curved_chamfer.rs`): a boss of radius 6, 1 high, on a
+**Oracle** (`tests/fillet/curved_chamfer.rs`): a boss of radius 6, 1 high, on a
 plate, its top rim chamfered 1.5 is refused by name; at 0.8 it builds
 the boss less the bevel's triangle turned about the axis by Pappus,
 within 1e-6; with 1 on the wall exactly it builds to its Pappus volume.
@@ -4313,7 +4313,7 @@ of the way, leaves the cap. The reading answers 6.2, since that is what
 the call builds. The round radius law on the same edge is refused at 6.
 That check is the engine's; this amendment does not change it.
 
-**Oracles** (`tests/law_limits.rs`). Each answer builds valid a tolerance
+**Oracles** (`tests/fillet/law_limits.rs`). Each answer builds valid a tolerance
 under it, is refused a tolerance over it, and stands at the closed form:
 
 - a linear law on a straight edge between planes, the end radius free,
@@ -4371,7 +4371,7 @@ pocket's floor) where a band is a torus: the D pocket's line band
 crosses its arc's torus band along their intersection. `Rolling` and
 `Setback` agree there, as the rounds at the vertex share their sense.
 
-**Oracle** (`tests/rolling_curved.rs`), sound, alike in three orders and
+**Oracle** (`tests/fillet/rolling_curved.rs`), sound, alike in three orders and
 under `Setback`, no patch face:
 
 - The D pocket (radius 5 on its chord, 5 deep in a 30 × 30 × 10 block),
@@ -4406,7 +4406,7 @@ the longest leg that still seats is read, and the rest of the leg is
 added to its reach. A spec whose contacts do not read at all is passed
 to the build, which reports it.
 
-**Oracle** (`tests/curved_chamfer.rs`, `tests/chamfer_marched_open.rs`):
+**Oracle** (`tests/fillet/curved_chamfer.rs`, `tests/fillet/chamfer_marched_open.rs`):
 the cylinder step (an arc about (9, 3) of radius `sqrt(10)` from the
 ledge at y = 4 up to the top at y = 6, 20 long) chamfered 3.5 is refused
 by name, the foot being `sqrt(10) acos(3/5)`, about 2.93, down the arc;
@@ -4501,7 +4501,7 @@ plane, a cylinder, a cone, a sphere or a torus holds for everything it
 builds today. Admitting the fitted pipe will relax it for these corners
 only.
 
-**Oracle** (`tests/rolling_curved.rs`), in three orders, `check` clean,
+**Oracle** (`tests/fillet/rolling_curved.rs`), in three orders, `check` clean,
 no patch face, every edge between two curved faces G1 within 1e-6 rad.
 At `t` within a round, the section of the boss or of the pocket's void
 is the outline rounded `r` in plan, grown or shrunk by the round's
@@ -4564,7 +4564,7 @@ their ends (`marched::carried_past_ends`):
 - the wedge's face on the clipping plane is credited to the end face,
   not to the round: the band is the round's only face.
 
-**Oracle** (`tests/leaning_end.rs`). The half frustum run on below the
+**Oracle** (`tests/fillet/leaning_end.rs`). The half frustum run on below the
 plate is convex, so rounding its uprights is its opening: the balls of
 radius `r` inside it, whose centres fill `E = {y ≥ 10 + r, ρ ≤ R(z) −
 r / cos α}`. A point is kept where it lies within `r` of `E`, the
@@ -4655,7 +4655,7 @@ to its plane cap, beside planes, cylinders along it or cones it is a
 ruling of: the lone bands go first, and the foot then rolls round them,
 through the pipe.
 
-**Oracle** (`tests/switch_over.rs`). Run on below the plate, the solid
+**Oracle** (`tests/fillet/switch_over.rs`). Run on below the plate, the solid
 is a plate under the opening `S = E ⊕ B_r` of a convex body. The free
 centres are `F = {z ≥ cap + r} ∖ int D`, `D = E ⊕ B_2r`, and a point
 outside `S` below `cap + r` is filled exactly where none of three holds:
@@ -4736,7 +4736,7 @@ changes reach it:
 are rounded first, their feet found on the cap's surface, and the chain
 then rolls round them, which is the two calls.
 
-**Oracles** (`tests/switch_over.rs`), each independent of the kernel:
+**Oracles** (`tests/fillet/switch_over.rs`), each independent of the kernel:
 
 - Convex: the opening of `(E ⊕ B_R) ∩ {z ≤ top}` by balls of `r`, which
   is `C ⊕ B_r` with `C = (E ⊕ B_{R−r}) ∩ {z ≤ top − r}`, convex. Its
@@ -4785,7 +4785,7 @@ there and probes `chamfer_edges_overflow` with all the bevels, the
 corner and the overflow options asked. `largest_chamfer_distance_all` returns that size under
 `ChamferCorner::Facet`.
 
-**What the search found** (`tests/limit_chamfers.rs`, the same under
+**What the search found** (`tests/fillet/limit_chamfers.rs`, the same under
 both corners):
 
 | Request | Seat | Confirmed | Probes |
@@ -4796,7 +4796,7 @@ both corners):
 | 20 x 20 x 2 plate, every edge, `Point` | 1.0 | 1.0 | 8 |
 
 The old reading gave 9.9615, 1.0, 2.0 and 1.0. The slot's floor and the
-post's corner (`tests/largest_chamfer_all.rs`) keep their closed forms,
+post's corner (`tests/fillet/largest_chamfer_all.rs`) keep their closed forms,
 since the request is refused just past them. A bar's narrow top keeps its
 closed form as the seat, and its answer is now where the ridge's build
 is refused.
@@ -4819,7 +4819,7 @@ that builds them. The readings `largest_fillet_radius_overflow`,
 `largest_chamfer_distance_all_overflow` take the options; with
 `Overflow::default()` each answers what its plain reading does.
 
-**What the search found** (`tests/limit_overflow.rs`). The block
+**What the search found** (`tests/fillet/limit_overflow.rs`). The block
 40 x 30 x 15, its top front edge rounded 5, with a boss of radius 6 fused
 on its top about `(20, 12)`:
 
@@ -4898,7 +4898,7 @@ own and those at their ends.
   the engine directly, as before, so for those calls these behaviours are
   not built.
 
-**Oracle** (`tests/overflow.rs`, `tests/rolling_corner.rs`). These cases
+**Oracle** (`tests/fillet/overflow.rs`, `tests/fillet/rolling_corner.rs`). These cases
 use the block and boss of amendment "overflow handling": a foot round of
 radius 3 reaching the edge round.
 
@@ -4960,7 +4960,7 @@ contact reaches other geometry, not where it does, so the seat is the
 plain sizing's. `fillet_edge_distances_variable` takes no options, so
 `DistanceLaws` has no form under them and reads with every behaviour on.
 
-**Oracle** (`tests/limit_overflow.rs`). Each reading builds under its
+**Oracle** (`tests/fillet/limit_overflow.rs`). Each reading builds under its
 options, and a `LIMIT_TOLERANCE` and 1% above it are refused. With
 `Overflow::default()` each `BlendLimit` equals its plain sizing's, probe
 for probe.

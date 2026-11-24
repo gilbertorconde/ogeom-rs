@@ -15,12 +15,13 @@ echo "== comment rot =="
 node tools/lint-comment-rot.mjs --all
 echo "== clippy =="
 cargo clippy -p ogeom-algo -p ogeom-io --all-targets -- -D warnings
-cargo clippy -p ogeom --test mesh_solid --test mesh_steps --test mesh_corpus --test boolean_scale -- -D warnings
+cargo clippy -p ogeom --test facade -- -D warnings
 echo "== test =="
 cargo test --profile iterate -q -p ogeom-algo --lib
 cargo test --profile iterate -q -p ogeom-io --lib
 # The converter's heavy tests too: this is the area's own check.
-cargo test --profile iterate -q -p ogeom --test mesh_solid --test mesh_steps --test mesh_corpus --test boolean_scale -- --include-ignored
+cargo test --profile iterate -q -p ogeom --test facade -- --include-ignored \
+    mesh_solid:: mesh_steps:: mesh_corpus:: boolean_scale::
 if [ -n "${OGEOM_CONVERTER_BENCH:-}" ]; then
     echo "== bench =="
     eval "$OGEOM_CONVERTER_BENCH"

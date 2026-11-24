@@ -48,9 +48,9 @@ The supplied 198/74 expectation is not this main revision's count.
 [Open PR #1092](https://github.com/gilbertorconde/ogeom-rs/pull/1092), head
 `f9d61538af073364f76f08fd756fc6d766fd6f6d` when inspected, reports **214/77
 on its baseline and 198/74 on its own branch**. Its three eliminated asking
-tests are the narrow-face and side-cut-off cases in `tests/fillet.rs`, and
+tests are the narrow-face and side-cut-off cases in `tests/fillet/fillet.rs`, and
 `rounds_at_inside_corners_off_square_or_leaning_both_ways_take_all_above_both`
-in `tests/chain.rs`. This document neither imports nor duplicates its work.
+in `tests/fillet/chain.rs`. This document neither imports nor duplicates its work.
 Recount after it and other routing PRs merge; do not subtract branch claims
 from a changing main.
 
@@ -83,9 +83,9 @@ appendices give every observed asking test, with its source location.
 | `fillet_edge`, `src/fillet.rs:80`; fallback `:91–92` | Public facade; `asym::fillet_edge_distances`' equal-round branch; facade vertex/feature tests. 18 logged requests in the fillet suite; 189 additional facade requests. | The post-engine call to `fillet_edge_wedge(:126)`, not the API. Then its private `cut_off_bands(:153)`, `fillet_edge_own(:208)`, `fillet_edge_meeting(:425)` and seat-routing construction once their other callers disappear. |
 | `fillet_edges`, `src/fillet.rs:1062`; fallback `:1073` | `blend_symmetric`, checked/partial wrappers, setback composition, `facepair::curved_blend`; integration families in Appendix A. 101 logged fillet-suite requests, 31 additional facade requests. | Post-engine `on_own_nodes → cut_off_bands → fillet_edges_meeting(:1613)`. Preserve copy-on-write and history semantics in the engine adapter. |
 | `fillet_edges_with`, `src/fillet.rs:1110`; fallback `:1135` | Mixed blend requests and checked/partial operations; `radius_per_edge.rs`, asymmetric corner fixtures. 2 logged requests. | The same meeting/corner/sequential band tail, not per-edge radius validation. |
-| `fillet_edges_variable`, `src/fillet.rs:3423`; fallback `:3452` | Public API and `tests/variable.rs`. 35 logged requests. | `fillet_chain_law_own(:3677)`, `law_piece(:3781)`, `consumed_law(:3913)`, `chain_law(:4192)`, `run_on_past_turns(:4686)`, `straight_law_fillet(:4810)` and their private law-construction graph after variable routing covers the accepted domain. Keep law evaluation. |
+| `fillet_edges_variable`, `src/fillet.rs:3423`; fallback `:3452` | Public API and `tests/fillet/variable.rs`. 35 logged requests. | `fillet_chain_law_own(:3677)`, `law_piece(:3781)`, `consumed_law(:3913)`, `chain_law(:4192)`, `run_on_past_turns(:4686)`, `straight_law_fillet(:4810)` and their private law-construction graph after variable routing covers the accepted domain. Keep law evaluation. |
 | `fillet_edge_distances`, `src/asym.rs:364`; fallback `:437` | Public API; level laws in `asym_law.rs:74`; asymmetric tests. 47 logged requests. | `fillet_edge_distances_own(:452)`, rim-tool construction and the `marched_bevel_with`/`planar_fillet` tail after conic routes migrate. Keep `RoundProfile` and section arithmetic. |
-| `blend_edges`, `src/blend.rs:51`; asymmetric fallback `:102` | Public mixed-round/bevel API; `tests/asymmetric.rs` and `blend_edges.rs`. 11 logged requests. | `asymmetric_corners`, `after_symmetric` and `close_asymmetric_corners` dispatch in `src/asym.rs:1272,679,1484`. Keep the API and the engine-owned bevel-then-round semantics of `blend_symmetric(:147)`. |
+| `blend_edges`, `src/blend.rs:51`; asymmetric fallback `:102` | Public mixed-round/bevel API; `tests/fillet/asymmetric.rs` and `blend_edges.rs`. 11 logged requests. | `asymmetric_corners`, `after_symmetric` and `close_asymmetric_corners` dispatch in `src/asym.rs:1272,679,1484`. Keep the API and the engine-owned bevel-then-round semantics of `blend_symmetric(:147)`. |
 
 The 214 requests split exactly as **18 + 101 + 2 + 35 + 47 + 11**. These
 are requests, not edges, successful builds, or one count per test. Refusal
@@ -113,11 +113,11 @@ zero counter. Port that test's geometric assertion before removing this seam.
 
 | Entry point / location | What still reaches it | Required treatment |
 |---|---|---|
-| `fillet_edge_variable(:3063)` → `fillet_edge_variable_own(:3082)` in `src/fillet.rs` | `tests/fillet.rs:446`, several `tests/variable.rs` comparisons, `crates/ogeom/tests/mechanical_part.rs:95`. Equal endpoints call old `fillet_edge_own` directly. | Route the linear law through the engine, including equal endpoints; delete the old linear solid builder only after those assertions pass. Not counted today. |
-| `fillet_edge_distances_variable`, `src/asym_law.rs:56` → `varying(:92)` | `tests/asymmetric.rs:1375–1611`; constant laws call `fillet_edge_distances`, nonconstant laws build directly. | Route varying conic distances; keep `varying_net(:323)`, which the engine's section layer uses. |
-| `round_vertex`, `src/corner.rs:68` → `round_vertex_own(:84)` → `round_vertex_with(:97)` | Public facade, #981 corner-history tests; old fillet, asymmetric, setback, rolled and sharp-corner builders; `crates/ogeom/tests/blends.rs:2380–3385`. | Preserve the vertex-only API's result, including its planar caps, and generated-face history. It is not equivalent to rounding all incident edges. Replace its construction before deleting `corner.rs` / `corner_curved.rs`. |
-| `round_vertex_setback`, `src/setback.rs:64`; `round_vertex_setback_sharp`, `src/sharp.rs:95` | Public facade; `tests/setback.rs` and `cell_guard.rs`; old corner orchestration. | Port public vertex-only semantics and continuity/refusal contracts. Do not remove them because edge-request counts reach zero. |
-| `fillet_edges_cornered`, `src/setback.rs:256`; fallback in `cornered_own(:294)` at `:350` | Public facade; `tests/setback.rs`, `cell_guard.rs`. | Keep validation and engine-first `cornered_by_engine`; replace old `fillet_edges` followed by `close_corner`, which is not separately logged. |
+| `fillet_edge_variable(:3063)` → `fillet_edge_variable_own(:3082)` in `src/fillet.rs` | `tests/fillet/fillet.rs:446`, several `tests/fillet/variable.rs` comparisons, `crates/ogeom/tests/facade/mechanical_part.rs:95`. Equal endpoints call old `fillet_edge_own` directly. | Route the linear law through the engine, including equal endpoints; delete the old linear solid builder only after those assertions pass. Not counted today. |
+| `fillet_edge_distances_variable`, `src/asym_law.rs:56` → `varying(:92)` | `tests/fillet/asymmetric.rs:1375–1611`; constant laws call `fillet_edge_distances`, nonconstant laws build directly. | Route varying conic distances; keep `varying_net(:323)`, which the engine's section layer uses. |
+| `round_vertex`, `src/corner.rs:68` → `round_vertex_own(:84)` → `round_vertex_with(:97)` | Public facade, #981 corner-history tests; old fillet, asymmetric, setback, rolled and sharp-corner builders; `crates/ogeom/tests/facade/blends.rs:2380–3385`. | Preserve the vertex-only API's result, including its planar caps, and generated-face history. It is not equivalent to rounding all incident edges. Replace its construction before deleting `corner.rs` / `corner_curved.rs`. |
+| `round_vertex_setback`, `src/setback.rs:64`; `round_vertex_setback_sharp`, `src/sharp.rs:95` | Public facade; `tests/fillet/setback.rs` and `cell_guard.rs`; old corner orchestration. | Port public vertex-only semantics and continuity/refusal contracts. Do not remove them because edge-request counts reach zero. |
+| `fillet_edges_cornered`, `src/setback.rs:256`; fallback in `cornered_own(:294)` at `:350` | Public facade; `tests/fillet/setback.rs`, `cell_guard.rs`. | Keep validation and engine-first `cornered_by_engine`; replace old `fillet_edges` followed by `close_corner`, which is not separately logged. |
 | `request_fits`, `src/fillet.rs:1831` | `src/blame.rs:68,140`, `src/fits.rs:508`, old fillet construction, `marched_wedges(:638)`. | Retain/move the geometric fit and overlap guards and blame data until all production callers use an equivalent engine guard. These are not test-only. |
 | `engine::marched_seats::rounds`, `src/engine/marched_seats.rs:29` | Last route from `rounds_by_engine_unplaced`, `src/fillet.rs:1407`; marched integration tests may return successfully **without a counter record**. | Calls old `marched_wedges(:36)`, `rim_ring_taken_whole(:45)`, `apply_set_aside(:54)`, `marched_strip_taken_whole(:83)`. Replace the old constructors with engine-owned tools before deleting their graph. Merely moving this whole case catalogue does not complete the redesign. |
 | `marched_wedges`, `src/fillet.rs:618` | The engine back-edge above. It calls `route(:937)`, `request_fits`, `fillet_edge_meeting(:736)`, consumed-rim/marched constructors and `junction` joining. | Explicit M6 blocker even if every public fallback count becomes zero. Preserve accepted tools, fit targets, caps, ancestry and refusals while replacing it. |
@@ -215,17 +215,17 @@ uses old construction even though it produces no log record.
 
 | Issue / test at current location | Route today; old-specific assertions? | Port plan: preserve the regression, never delete it |
 |---|---|---|
-| #969: `tests/corner_history.rs:34`, `a_vertex_generates_its_corner_faces_through_composed_history` | Mixed: calls old public `round_vertex` at `:53` for all eight vertices; incident-edge and all-edge `fillet_edges` calls at `:68,72` use engine. `History::generated`, exact unit sphere/centre are **public geometry/ancestry**, not obsolete internals. | Keep both vertex-only and edge-request scenarios. Move the vertex-only API to its replacement when available; retain one sphere owned by the correct source vertex before/after composition, never replace it with “some generated face”. |
+| #969: `tests/fillet/corner_history.rs:34`, `a_vertex_generates_its_corner_faces_through_composed_history` | Mixed: calls old public `round_vertex` at `:53` for all eight vertices; incident-edge and all-edge `fillet_edges` calls at `:68,72` use engine. `History::generated`, exact unit sphere/centre are **public geometry/ancestry**, not obsolete internals. | Keep both vertex-only and edge-request scenarios. Move the vertex-only API to its replacement when available; retain one sphere owned by the correct source vertex before/after composition, never replace it with “some generated face”. |
 | #969: `src/corner.rs:1781`, `generated_corner_faces_belong_to_their_own_vertices` | Calls old private `round_vertex_with` and `round_vertices_together`, then engine `fillet_edges`. **Yes:** exactly four generated faces before band composition (sphere plus three planar caps), batching entry point and private chart/tool mechanics. | Move its geometric/ancestry coverage to the owning public vertex API test. Preserve eight distinct analytical centres/radii and final composed ownership. Replace the private four-face/tool-layout assertion with the public vertex-only cap/history contract; keep an explicit multiple-vertex composition scenario, not only the final all-edge result. No `pub` widening for tests. |
-| #970: `crates/ogeom-bool/tests/spline_extrusion.rs:10`, `a_coplanar_spline_cut_keeps_its_floor` | Boolean-only, no blend engine or old fillet call. No old-blend internals. | Keep unchanged: closed valid cut and independently converged volume **28840.851225099 mm³**. Its coplanar floor failure remains relevant after M6. |
-| #971: `tests/extrusion_cap.rs:10`, `a_spline_cut_preserves_the_rounded_prisms_exact_cap` | Engine round of the quadrilateral prism, then boolean spline cut. No old-specific assertions. | Keep unchanged: cap vertices **and incident geometric curve endpoints** on **z=24.5** within model confusion. Checking only vertices would lose the 3.44303217e-6 mm endpoint regression. |
-| #972: `tests/contact_regressions.rs:10`, `cylinder_contacts_leave_the_middle_wall_between_both_bands` | Engine ruled/meeting round route; no fallback records. Exact axes, positive middle-wall contact gap and volumes are independent geometry. | Keep both fixtures and closed-form volumes **1577.0636662254801 / 2610.337927095673 mm³**. Do not replace gap/tangency checks with validity or face counts. |
+| #970: `crates/ogeom-bool/tests/bool/spline_extrusion.rs:10`, `a_coplanar_spline_cut_keeps_its_floor` | Boolean-only, no blend engine or old fillet call. No old-blend internals. | Keep unchanged: closed valid cut and independently converged volume **28840.851225099 mm³**. Its coplanar floor failure remains relevant after M6. |
+| #971: `tests/fillet/extrusion_cap.rs:10`, `a_spline_cut_preserves_the_rounded_prisms_exact_cap` | Engine round of the quadrilateral prism, then boolean spline cut. No old-specific assertions. | Keep unchanged: cap vertices **and incident geometric curve endpoints** on **z=24.5** within model confusion. Checking only vertices would lose the 3.44303217e-6 mm endpoint regression. |
+| #972: `tests/fillet/contact_regressions.rs:10`, `cylinder_contacts_leave_the_middle_wall_between_both_bands` | Engine ruled/meeting round route; no fallback records. Exact axes, positive middle-wall contact gap and volumes are independent geometry. | Keep both fixtures and closed-form volumes **1577.0636662254801 / 2610.337927095673 mm³**. Do not replace gap/tangency checks with validity or face counts. |
 | Contact-radius support for #972/#974: `crates/ogeom-bool/src/lib.rs:17520`, `a_hug_measures_the_curve_rather_than_its_sampling_chords` | Boolean-only unit test of `hug_distance(:11227)`, not a fillet old path. Private helper, but **not** one removed by M6. | Keep unchanged: exact radial offsets on periodic circle ranges, and nearest endpoint on a bounded arc. If boolean distance ownership changes separately, port this oracle to that owner; M6 does not delete it. |
-| #973: `tests/carried_rim.rs:55`, `a_stadium_foot_round_rolls_on_the_plate_edge` | Engine far-edge/support-transfer route; no fallback records. Exact envelope and quadrature, not `rolled_rim` internals. Marked heavy. | Keep unchanged, including `--include-ignored`: converged divergence-theorem volume at **1e-5 mm³**, and exact envelope probes through support switches on both stadium ends. |
-| #974 positive + cavity negative: `tests/contact_regressions.rs:134`, `narrow_cylinder_shelf` | Engine far-edge route for the positive; engine void guard for the cavity negative. No old-path records. Error substring “a round reaches into a void” is a meaningful named refusal, not a private function name. | Keep all **187 exact envelope samples**, trimmed-face admission near transition endpoints and cavity-refusal check. Never compare against an old fitted shelf result or broaden to any error. |
-| #974 bounded-rim negative: `tests/rim_bounds.rs:11`, `a_shelf_round_refuses_contact_beyond_the_circular_edges_end` | Engine refusal; no fallback record. “roll past a vertex” describes the unsupported bounded-support change. | Keep trimmed-rim fixture and named refusal. If that support change becomes supported, replace refusal only with an independently proved correct result, including the free plane-plane round near **y=2**, not an extrapolated circle. |
-| #975: `tests/cap_history.rs:10`, `a_ruled_round_keeps_one_inherited_cap_at_each_end` | Engine ruled-seat route. Exactly two connected planar caps with inherited ancestry, not generated by the edge, is the regression's observable contract. | Keep unchanged. Preserve source-face tracing and exclusion from edge-generated history; merging/splitting implementation faces must not reclassify inherited caps as new blend faces. |
-| #976: `tests/contact_regressions.rs:255`, `oblique_corner_mesh` | Engine planar round, then meshing; no old-path records. No private assertions. | Keep all **seven rotations**, every emitted mesh node within model confusion of the **trimmed BREP**, and closed mesh. Do not check only the supporting sphere or filter finished triangles to make it pass. |
+| #973: `tests/fillet/carried_rim.rs:55`, `a_stadium_foot_round_rolls_on_the_plate_edge` | Engine far-edge/support-transfer route; no fallback records. Exact envelope and quadrature, not `rolled_rim` internals. Marked heavy. | Keep unchanged, including `--include-ignored`: converged divergence-theorem volume at **1e-5 mm³**, and exact envelope probes through support switches on both stadium ends. |
+| #974 positive + cavity negative: `tests/fillet/contact_regressions.rs:134`, `narrow_cylinder_shelf` | Engine far-edge route for the positive; engine void guard for the cavity negative. No old-path records. Error substring “a round reaches into a void” is a meaningful named refusal, not a private function name. | Keep all **187 exact envelope samples**, trimmed-face admission near transition endpoints and cavity-refusal check. Never compare against an old fitted shelf result or broaden to any error. |
+| #974 bounded-rim negative: `tests/fillet/rim_bounds.rs:11`, `a_shelf_round_refuses_contact_beyond_the_circular_edges_end` | Engine refusal; no fallback record. “roll past a vertex” describes the unsupported bounded-support change. | Keep trimmed-rim fixture and named refusal. If that support change becomes supported, replace refusal only with an independently proved correct result, including the free plane-plane round near **y=2**, not an extrapolated circle. |
+| #975: `tests/fillet/cap_history.rs:10`, `a_ruled_round_keeps_one_inherited_cap_at_each_end` | Engine ruled-seat route. Exactly two connected planar caps with inherited ancestry, not generated by the edge, is the regression's observable contract. | Keep unchanged. Preserve source-face tracing and exclusion from edge-generated history; merging/splitting implementation faces must not reclassify inherited caps as new blend faces. |
+| #976: `tests/fillet/contact_regressions.rs:255`, `oblique_corner_mesh` | Engine planar round, then meshing; no old-path records. No private assertions. | Keep all **seven rotations**, every emitted mesh node within model confusion of the **trimmed BREP**, and closed mesh. Do not check only the supporting sphere or filter finished triangles to make it pass. |
 
 No test is ported in this docs-only change. Most need no mechanical change;
 the two #969 tests require care around vertex-only construction and the inline
@@ -370,7 +370,7 @@ tools/old-path-rounds.sh -- --include-ignored
 tools/old-path-chamfers.sh -- --include-ignored
 cargo test -p ogeom-fillet --features old-path-log -- --include-ignored
 cargo test -p ogeom --features ogeom-fillet/old-path-log -- --include-ignored
-cargo test -p ogeom-bool --test spline_extrusion -- --include-ignored
+cargo test -p ogeom-bool --test bool -- --include-ignored spline_extrusion::
 cargo test -p ogeom-bool --lib a_hug_measures_the_curve_rather_than_its_sampling_chords
 cargo fmt --all -- --check
 cargo clippy -p ogeom-fillet --all-targets --all-features -- -D warnings
@@ -403,82 +403,82 @@ changes. These are also the test callers for the round entry-point table.
 | Test location and name | Requests | Logged entries |
 |---|---:|---|
 | `src/setback.rs:2943` — `setback::tests::the_certified_check_agrees_with_the_fine_mesh` | 2 | fillet_edges × 2 |
-| `tests/asymmetric.rs:264` — `a_slanted_edge_takes_the_ellipse_of_its_own_dihedral` | 2 | fillet_edge_distances × 2 |
-| `tests/asymmetric.rs:456` — `what_is_not_built_is_refused_by_name` | 3 | fillet_edge_distances × 3 |
-| `tests/asymmetric.rs:548` — `blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a_bevel_of_the_other_convexity` | 1 | blend_edges × 1 |
-| `tests/asymmetric.rs:747` — `an_asymmetric_round_runs_out_along_its_wall_onto_a_ramp` | 8 | fillet_edge_distances × 8 |
-| `tests/asymmetric.rs:795` — `an_asymmetric_round_running_up_under_a_roof_stops_on_it` | 8 | fillet_edge_distances × 8 |
-| `tests/asymmetric.rs:991` — `a_bore_s_rim_takes_its_conic_corner_round_the_axis` | 4 | fillet_edge_distances × 4 |
-| `tests/asymmetric.rs:1209` — `what_a_rim_does_not_build_is_refused_by_name` | 3 | fillet_edge_distances × 3 |
-| `tests/asymmetric.rs:1268` — `blend_edges_takes_an_asymmetric_rim_beside_a_round_rim` | 1 | blend_edges × 1 |
-| `tests/asymmetric.rs:1629` — `a_rim_arc_takes_its_conic_corner_over_its_own_turn` | 4 | fillet_edge_distances × 4 |
-| `tests/asymmetric.rs:1689` — `a_tangent_loop_of_asymmetric_rounds_closes_round_a_pad` | 2 | blend_edges × 2 |
-| `tests/asymmetric.rs:1758` — `a_tangent_loop_of_asymmetric_rounds_fills_round_a_pocket_s_floor` | 2 | blend_edges × 2 |
-| `tests/asymmetric.rs:1838` — `asymmetric_rounds_meeting_other_than_as_a_tangent_chain_are_refused` | 2 | blend_edges × 2 |
-| `tests/asymmetric.rs:2047` — `an_open_spline_crease_takes_its_conic_corner_along_its_length` | 4 | fillet_edge_distances × 4 |
-| `tests/asymmetric.rs:2148` — `a_bore_s_rim_on_a_drum_takes_a_marched_conic_band` | 4 | fillet_edge_distances × 4 |
-| `tests/asymmetric.rs:2253` — `asymmetric_rounds_close_a_box_corner_with_rounds_and_bevels` | 6 | blend_edges × 3, fillet_edge_distances × 3 |
-| `tests/asymmetric.rs:2438` — `the_largest_pair_is_where_the_first_contact_leaves_its_face` | 4 | fillet_edge_distances × 4 |
-| `tests/blame.rs:54` — `a_plate_s_overlap_names_an_edge_and_the_one_across_the_wall` | 1 | fillet_edges × 1 |
-| `tests/blame.rs:194` — `a_notched_box_s_refusal_names_the_notch_edge` | 1 | fillet_edges × 1 |
-| `tests/cell_guard.rs:294` — `a_convex_and_a_concave_round_with_a_void_in_their_cell_are_refused_by_name` | 3 | fillet_edges × 3 |
-| `tests/chain.rs:545` — `a_short_arc_of_a_rim_that_stops_rounds_over_its_own_arc` | 2 | fillet_edges × 2 |
-| `tests/chain.rs:785` — `blends_at_an_inside_corner_whose_vertex_stands_off_the_wall_meet_at_the_wall` | 2 | fillet_edges × 2 |
-| `tests/chain.rs:1570` — `rounds_at_inside_corners_off_square_or_leaning_both_ways_take_all_above_both` | 4 | fillet_edges × 4 |
-| `tests/chain.rs:1915` — `rounds_at_a_curved_crease_turning_nearly_back_on_itself` | 4 | fillet_edges × 4 |
-| `tests/chain.rs:2650` — `a_cone_rim_that_meets_unresolved_is_rounded_fitted` | 4 | fillet_edge × 4 |
-| `tests/chain.rs:2705` — `rounds_at_a_bore_meeting_a_drafted_chord_take_all_above_both` | 2 | fillet_edges × 2 |
-| `tests/chain.rs:2739` — `a_pocket_of_a_disc_and_its_chord_meets_at_both_corners` | 1 | fillet_edges × 1 |
-| `tests/chain.rs:2840` — `rounds_of_a_d_shaped_block_take_both_bands_as_alone` | 4 | fillet_edges × 4 |
-| `tests/chain.rs:2911` — `rounds_of_a_d_shaped_block_with_an_overhanging_chord_close_in_both_orders` | 4 | fillet_edges × 4 |
-| `tests/chain.rs:2939` — `rounds_of_a_d_shaped_block_on_a_drafted_drum_take_both_bands_as_alone` | 12 | fillet_edges × 12 |
-| `tests/chain.rs:3089` — `rims_are_cut_by_trimming_to_the_general_fuse_s_solid` | 2 | fillet_edges × 2 |
-| `tests/chain.rs:3430` — `rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut` | 1 | fillet_edges × 1 |
-| `tests/chain.rs:3907` — `bands_running_into_a_rounded_corner_are_trimmed_to_the_general_fuse_s_solid` | 1 | fillet_edges × 1 |
-| `tests/chain.rs:4325` — `rims_pieces_in_a_tangent_chain_are_trimmed_to_the_general_fuse_s_solid` | 1 | fillet_edges × 1 |
-| `tests/concave.rs:810` — `a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it` | 1 | fillet_edge × 1 |
-| `tests/concave.rs:1361` — `a_round_rolls_round_the_corner_of_a_narrow_triangle` | 1 | fillet_edge × 1 |
-| `tests/consumed_marched.rs:127` — `a_bevel_wider_than_the_round_s_setback_is_still_refused` | 1 | fillet_edges × 1 |
-| `tests/fillet.rs:418` — `a_rim_fillet_that_swallows_the_axis_is_refused` | 1 | fillet_edge × 1 |
-| `tests/fillet.rs:623` — `a_fillet_the_faces_cannot_hold_is_refused` | 2 | fillet_edge × 2 |
-| `tests/fillet.rs:638` — `blends_overlapping_across_a_shared_face_are_refused` | 1 | fillet_edges × 1 |
-| `tests/fillet.rs:1119` — `seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges` | 10 | fillet_edges × 10 |
-| `tests/fillet.rs:1359` — `a_seam_cut_off_at_a_side_inside_another_band_is_refused` | 1 | fillet_edges × 1 |
-| `tests/fillet.rs:1426` — `every_edge_of_a_thin_plate_overlaps_alike_built_as_box_or_prism` | 4 | fillet_edges × 4 |
-| `tests/fillet.rs:2100` — `the_top_loop_of_a_block_with_rounded_verticals_rounds_on_the_turns` | 1 | fillet_edges × 1 |
-| `tests/fillet.rs:2238` — `a_rim_arc_ending_obliquely_on_a_flat_rounds_on_past_its_ends` | 3 | fillet_edge × 3 |
-| `tests/largest.rs:63` — `a_plate_s_edge_rounds_at_most_its_thickness` | 1 | fillet_edges × 1 |
-| `tests/largest.rs:131` — `a_plate_rounds_all_round_at_most_half_its_thickness` | 1 | fillet_edges × 1 |
-| `tests/largest.rs:145` — `a_prism_built_plate_rounds_all_round_at_most_half_its_thickness` | 1 | fillet_edges × 1 |
-| `tests/largest.rs:184` — `a_cone_rim_rounds_at_most_where_its_wall_ends` | 2 | fillet_edges × 2 |
-| `tests/marched_fillet.rs:1156` — `rounds_of_a_rib_into_a_boss_take_the_union_of_each_alone` | 4 | fillet_edges × 4 |
-| `tests/mixed_vertex.rs:87` — `a_convex_and_a_concave_round_beside_an_edge_left_sharp_close_one_corner_in_either_order` | 6 | fillet_edges × 6 |
-| `tests/mixed_vertex.rs:194` — `three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order` | 8 | fillet_edge × 2, fillet_edges × 6 |
-| `tests/mixed_vertex.rs:311` — `a_signed_corner_whose_cell_reaches_through_the_wall_is_refused_by_name` | 2 | fillet_edges × 2 |
-| `tests/radius_per_edge.rs:285` — `a_pyramid_apex_at_alternating_radii_closes_with_one_patch` | 2 | fillet_edges_with × 2 |
-| `tests/tangent_chain.rs:140` — `a_foot_round_on_a_face_narrowing_to_a_cusp_is_cut_off_at_the_face_s_side` | 4 | fillet_edges × 4 |
-| `tests/tangent_chain.rs:195` — `a_tangent_chain_through_the_cusp_rounds_either_side_of_it_in_either_order` | 2 | fillet_edges × 2 |
-| `tests/tangent_chain.rs:654` — `the_arm_s_side_edge_and_its_arc_into_the_hub_turn_through_an_s_in_either_order` | 2 | fillet_edges × 2 |
-| `tests/tangent_chain.rs:665` — `printcad_s_chain_asked_on_one_side_of_the_tangent_point_is_refused_by_name` | 2 | fillet_edges × 2 |
-| `tests/variable.rs:230` — `a_law_of_points_rounds_a_drum_s_rim` | 1 | fillet_edges_variable × 1 |
-| `tests/variable.rs:294` — `a_law_of_points_rounds_a_marched_seat_tangent_to_both_faces` | 2 | fillet_edges_variable × 2 |
-| `tests/variable.rs:419` — `a_law_of_points_rounds_an_open_arc_running_out_at_both_ends` | 1 | fillet_edges_variable × 1 |
-| `tests/variable.rs:481` — `a_law_of_points_rounds_an_open_chain_of_arcs_of_one_circle` | 1 | fillet_edges_variable × 1 |
-| `tests/variable.rs:559` — `a_law_of_points_rounds_a_flat_meeting_a_drum_along_its_ruling` | 1 | fillet_edges_variable × 1 |
-| `tests/variable.rs:648` — `a_law_of_points_rounds_a_seam_pinched_where_two_drums_turn_tangent` | 1 | fillet_edges_variable × 1 |
-| `tests/variable.rs:814` — `a_law_of_points_rounds_the_top_loop_of_a_rounded_rectangle_pad` | 2 | fillet_edges × 1, fillet_edges_variable × 1 |
-| `tests/variable.rs:1163` — `a_law_of_points_rounds_a_pad_s_top_loop_with_one_corner_left_sharp` | 2 | fillet_edges × 1, fillet_edges_variable × 1 |
-| `tests/variable.rs:1514` — `a_law_whose_ball_runs_off_a_narrow_face_is_cut_off_as_the_constant_round` | 6 | fillet_edge × 1, fillet_edges_variable × 5 |
-| `tests/variable.rs:1577` — `a_law_whose_ball_runs_off_a_narrow_face_into_the_material_is_refused_by_name` | 4 | fillet_edge × 1, fillet_edges_variable × 3 |
-| `tests/variable.rs:1630` — `a_law_takes_a_narrow_strip_beside_its_edge_off_whole` | 1 | fillet_edges_variable × 1 |
-| `tests/variable.rs:1718` — `a_law_whose_ball_sits_on_a_narrow_strip_rounds_the_edge_beside_it` | 2 | fillet_edges_variable × 2 |
-| `tests/variable.rs:1780` — `a_law_of_points_rounds_a_drum_s_ruling_turning_into_its_rim` | 3 | fillet_edge × 2, fillet_edges_variable × 1 |
-| `tests/variable.rs:1845` — `a_variable_radius_refuses_by_name_what_it_does_not_round` | 6 | fillet_edges_variable × 6 |
-| `tests/variable.rs:1905` — `a_law_steep_at_an_open_arc_s_end_caps_in_the_cut_it_ends_on` | 2 | fillet_edges_variable × 2 |
-| `tests/variable.rs:2026` — `a_law_over_a_chain_beside_a_narrow_face_is_cut_off_across_a_tangent_junction` | 1 | fillet_edges_variable × 1 |
-| `tests/variable.rs:2065` — `a_law_over_a_chain_beside_a_narrow_face_is_cut_off_across_a_convex_turn` | 3 | fillet_edges × 1, fillet_edges_variable × 2 |
-| `tests/variable.rs:2185` — `a_law_round_a_marched_rim_beside_a_narrow_face_is_cut_off_as_the_constant_round` | 2 | fillet_edges_variable × 2 |
-| `tests/variable.rs:2264` — `a_law_round_a_rim_crossing_a_bevel_s_width_is_refused_by_name` | 1 | fillet_edges_variable × 1 |
+| `tests/fillet/asymmetric.rs:264` — `a_slanted_edge_takes_the_ellipse_of_its_own_dihedral` | 2 | fillet_edge_distances × 2 |
+| `tests/fillet/asymmetric.rs:456` — `what_is_not_built_is_refused_by_name` | 3 | fillet_edge_distances × 3 |
+| `tests/fillet/asymmetric.rs:548` — `blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a_bevel_of_the_other_convexity` | 1 | blend_edges × 1 |
+| `tests/fillet/asymmetric.rs:747` — `an_asymmetric_round_runs_out_along_its_wall_onto_a_ramp` | 8 | fillet_edge_distances × 8 |
+| `tests/fillet/asymmetric.rs:795` — `an_asymmetric_round_running_up_under_a_roof_stops_on_it` | 8 | fillet_edge_distances × 8 |
+| `tests/fillet/asymmetric.rs:991` — `a_bore_s_rim_takes_its_conic_corner_round_the_axis` | 4 | fillet_edge_distances × 4 |
+| `tests/fillet/asymmetric.rs:1209` — `what_a_rim_does_not_build_is_refused_by_name` | 3 | fillet_edge_distances × 3 |
+| `tests/fillet/asymmetric.rs:1268` — `blend_edges_takes_an_asymmetric_rim_beside_a_round_rim` | 1 | blend_edges × 1 |
+| `tests/fillet/asymmetric.rs:1629` — `a_rim_arc_takes_its_conic_corner_over_its_own_turn` | 4 | fillet_edge_distances × 4 |
+| `tests/fillet/asymmetric.rs:1689` — `a_tangent_loop_of_asymmetric_rounds_closes_round_a_pad` | 2 | blend_edges × 2 |
+| `tests/fillet/asymmetric.rs:1758` — `a_tangent_loop_of_asymmetric_rounds_fills_round_a_pocket_s_floor` | 2 | blend_edges × 2 |
+| `tests/fillet/asymmetric.rs:1838` — `asymmetric_rounds_meeting_other_than_as_a_tangent_chain_are_refused` | 2 | blend_edges × 2 |
+| `tests/fillet/asymmetric.rs:2047` — `an_open_spline_crease_takes_its_conic_corner_along_its_length` | 4 | fillet_edge_distances × 4 |
+| `tests/fillet/asymmetric.rs:2148` — `a_bore_s_rim_on_a_drum_takes_a_marched_conic_band` | 4 | fillet_edge_distances × 4 |
+| `tests/fillet/asymmetric.rs:2253` — `asymmetric_rounds_close_a_box_corner_with_rounds_and_bevels` | 6 | blend_edges × 3, fillet_edge_distances × 3 |
+| `tests/fillet/asymmetric.rs:2438` — `the_largest_pair_is_where_the_first_contact_leaves_its_face` | 4 | fillet_edge_distances × 4 |
+| `tests/fillet/blame.rs:54` — `a_plate_s_overlap_names_an_edge_and_the_one_across_the_wall` | 1 | fillet_edges × 1 |
+| `tests/fillet/blame.rs:194` — `a_notched_box_s_refusal_names_the_notch_edge` | 1 | fillet_edges × 1 |
+| `tests/fillet/cell_guard.rs:294` — `a_convex_and_a_concave_round_with_a_void_in_their_cell_are_refused_by_name` | 3 | fillet_edges × 3 |
+| `tests/fillet/chain.rs:545` — `a_short_arc_of_a_rim_that_stops_rounds_over_its_own_arc` | 2 | fillet_edges × 2 |
+| `tests/fillet/chain.rs:785` — `blends_at_an_inside_corner_whose_vertex_stands_off_the_wall_meet_at_the_wall` | 2 | fillet_edges × 2 |
+| `tests/fillet/chain.rs:1570` — `rounds_at_inside_corners_off_square_or_leaning_both_ways_take_all_above_both` | 4 | fillet_edges × 4 |
+| `tests/fillet/chain.rs:1915` — `rounds_at_a_curved_crease_turning_nearly_back_on_itself` | 4 | fillet_edges × 4 |
+| `tests/fillet/chain.rs:2650` — `a_cone_rim_that_meets_unresolved_is_rounded_fitted` | 4 | fillet_edge × 4 |
+| `tests/fillet/chain.rs:2705` — `rounds_at_a_bore_meeting_a_drafted_chord_take_all_above_both` | 2 | fillet_edges × 2 |
+| `tests/fillet/chain.rs:2739` — `a_pocket_of_a_disc_and_its_chord_meets_at_both_corners` | 1 | fillet_edges × 1 |
+| `tests/fillet/chain.rs:2840` — `rounds_of_a_d_shaped_block_take_both_bands_as_alone` | 4 | fillet_edges × 4 |
+| `tests/fillet/chain.rs:2911` — `rounds_of_a_d_shaped_block_with_an_overhanging_chord_close_in_both_orders` | 4 | fillet_edges × 4 |
+| `tests/fillet/chain.rs:2939` — `rounds_of_a_d_shaped_block_on_a_drafted_drum_take_both_bands_as_alone` | 12 | fillet_edges × 12 |
+| `tests/fillet/chain.rs:3089` — `rims_are_cut_by_trimming_to_the_general_fuse_s_solid` | 2 | fillet_edges × 2 |
+| `tests/fillet/chain.rs:3430` — `rims_grouped_with_other_wedges_are_trimmed_before_the_rest_is_cut` | 1 | fillet_edges × 1 |
+| `tests/fillet/chain.rs:3907` — `bands_running_into_a_rounded_corner_are_trimmed_to_the_general_fuse_s_solid` | 1 | fillet_edges × 1 |
+| `tests/fillet/chain.rs:4325` — `rims_pieces_in_a_tangent_chain_are_trimmed_to_the_general_fuse_s_solid` | 1 | fillet_edges × 1 |
+| `tests/fillet/concave.rs:810` — `a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it` | 1 | fillet_edge × 1 |
+| `tests/fillet/concave.rs:1361` — `a_round_rolls_round_the_corner_of_a_narrow_triangle` | 1 | fillet_edge × 1 |
+| `tests/fillet/consumed_marched.rs:127` — `a_bevel_wider_than_the_round_s_setback_is_still_refused` | 1 | fillet_edges × 1 |
+| `tests/fillet/fillet.rs:418` — `a_rim_fillet_that_swallows_the_axis_is_refused` | 1 | fillet_edge × 1 |
+| `tests/fillet/fillet.rs:623` — `a_fillet_the_faces_cannot_hold_is_refused` | 2 | fillet_edge × 2 |
+| `tests/fillet/fillet.rs:638` — `blends_overlapping_across_a_shared_face_are_refused` | 1 | fillet_edges × 1 |
+| `tests/fillet/fillet.rs:1119` — `seams_whose_ball_runs_off_a_narrow_face_round_beside_other_edges` | 10 | fillet_edges × 10 |
+| `tests/fillet/fillet.rs:1359` — `a_seam_cut_off_at_a_side_inside_another_band_is_refused` | 1 | fillet_edges × 1 |
+| `tests/fillet/fillet.rs:1426` — `every_edge_of_a_thin_plate_overlaps_alike_built_as_box_or_prism` | 4 | fillet_edges × 4 |
+| `tests/fillet/fillet.rs:2100` — `the_top_loop_of_a_block_with_rounded_verticals_rounds_on_the_turns` | 1 | fillet_edges × 1 |
+| `tests/fillet/fillet.rs:2238` — `a_rim_arc_ending_obliquely_on_a_flat_rounds_on_past_its_ends` | 3 | fillet_edge × 3 |
+| `tests/fillet/largest.rs:63` — `a_plate_s_edge_rounds_at_most_its_thickness` | 1 | fillet_edges × 1 |
+| `tests/fillet/largest.rs:131` — `a_plate_rounds_all_round_at_most_half_its_thickness` | 1 | fillet_edges × 1 |
+| `tests/fillet/largest.rs:145` — `a_prism_built_plate_rounds_all_round_at_most_half_its_thickness` | 1 | fillet_edges × 1 |
+| `tests/fillet/largest.rs:184` — `a_cone_rim_rounds_at_most_where_its_wall_ends` | 2 | fillet_edges × 2 |
+| `tests/fillet/marched_fillet.rs:1156` — `rounds_of_a_rib_into_a_boss_take_the_union_of_each_alone` | 4 | fillet_edges × 4 |
+| `tests/fillet/mixed_vertex.rs:87` — `a_convex_and_a_concave_round_beside_an_edge_left_sharp_close_one_corner_in_either_order` | 6 | fillet_edges × 6 |
+| `tests/fillet/mixed_vertex.rs:194` — `three_rounds_of_both_kinds_at_a_vertex_close_one_corner_whatever_the_order` | 8 | fillet_edge × 2, fillet_edges × 6 |
+| `tests/fillet/mixed_vertex.rs:311` — `a_signed_corner_whose_cell_reaches_through_the_wall_is_refused_by_name` | 2 | fillet_edges × 2 |
+| `tests/fillet/radius_per_edge.rs:285` — `a_pyramid_apex_at_alternating_radii_closes_with_one_patch` | 2 | fillet_edges_with × 2 |
+| `tests/fillet/tangent_chain.rs:140` — `a_foot_round_on_a_face_narrowing_to_a_cusp_is_cut_off_at_the_face_s_side` | 4 | fillet_edges × 4 |
+| `tests/fillet/tangent_chain.rs:195` — `a_tangent_chain_through_the_cusp_rounds_either_side_of_it_in_either_order` | 2 | fillet_edges × 2 |
+| `tests/fillet/tangent_chain.rs:654` — `the_arm_s_side_edge_and_its_arc_into_the_hub_turn_through_an_s_in_either_order` | 2 | fillet_edges × 2 |
+| `tests/fillet/tangent_chain.rs:665` — `printcad_s_chain_asked_on_one_side_of_the_tangent_point_is_refused_by_name` | 2 | fillet_edges × 2 |
+| `tests/fillet/variable.rs:230` — `a_law_of_points_rounds_a_drum_s_rim` | 1 | fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:294` — `a_law_of_points_rounds_a_marched_seat_tangent_to_both_faces` | 2 | fillet_edges_variable × 2 |
+| `tests/fillet/variable.rs:419` — `a_law_of_points_rounds_an_open_arc_running_out_at_both_ends` | 1 | fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:481` — `a_law_of_points_rounds_an_open_chain_of_arcs_of_one_circle` | 1 | fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:559` — `a_law_of_points_rounds_a_flat_meeting_a_drum_along_its_ruling` | 1 | fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:648` — `a_law_of_points_rounds_a_seam_pinched_where_two_drums_turn_tangent` | 1 | fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:814` — `a_law_of_points_rounds_the_top_loop_of_a_rounded_rectangle_pad` | 2 | fillet_edges × 1, fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:1163` — `a_law_of_points_rounds_a_pad_s_top_loop_with_one_corner_left_sharp` | 2 | fillet_edges × 1, fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:1514` — `a_law_whose_ball_runs_off_a_narrow_face_is_cut_off_as_the_constant_round` | 6 | fillet_edge × 1, fillet_edges_variable × 5 |
+| `tests/fillet/variable.rs:1577` — `a_law_whose_ball_runs_off_a_narrow_face_into_the_material_is_refused_by_name` | 4 | fillet_edge × 1, fillet_edges_variable × 3 |
+| `tests/fillet/variable.rs:1630` — `a_law_takes_a_narrow_strip_beside_its_edge_off_whole` | 1 | fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:1718` — `a_law_whose_ball_sits_on_a_narrow_strip_rounds_the_edge_beside_it` | 2 | fillet_edges_variable × 2 |
+| `tests/fillet/variable.rs:1780` — `a_law_of_points_rounds_a_drum_s_ruling_turning_into_its_rim` | 3 | fillet_edge × 2, fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:1845` — `a_variable_radius_refuses_by_name_what_it_does_not_round` | 6 | fillet_edges_variable × 6 |
+| `tests/fillet/variable.rs:1905` — `a_law_steep_at_an_open_arc_s_end_caps_in_the_cut_it_ends_on` | 2 | fillet_edges_variable × 2 |
+| `tests/fillet/variable.rs:2026` — `a_law_over_a_chain_beside_a_narrow_face_is_cut_off_across_a_tangent_junction` | 1 | fillet_edges_variable × 1 |
+| `tests/fillet/variable.rs:2065` — `a_law_over_a_chain_beside_a_narrow_face_is_cut_off_across_a_convex_turn` | 3 | fillet_edges × 1, fillet_edges_variable × 2 |
+| `tests/fillet/variable.rs:2185` — `a_law_round_a_marched_rim_beside_a_narrow_face_is_cut_off_as_the_constant_round` | 2 | fillet_edges_variable × 2 |
+| `tests/fillet/variable.rs:2264` — `a_law_round_a_rim_crossing_a_bevel_s_width_is_refused_by_name` | 1 | fillet_edges_variable × 1 |
 
 ## Appendix B: the 27 additional facade asking tests
 
@@ -489,30 +489,30 @@ additional unlogged old-constructor requests.
 
 | Test location and name | Requests | Logged entries |
 |---|---:|---|
-| `crates/ogeom/tests/blend_reach.rs:73` — `a_fillet_wider_than_its_face_is_refused` | 1 | fillet_edges × 1 |
-| `crates/ogeom/tests/blend_reach.rs:100` — `a_rim_fillet_wider_than_its_cap_is_refused` | 1 | fillet_edges × 1 |
-| `crates/ogeom/tests/blend_reach.rs:128` — `a_concave_fillet_wider_than_its_floor_is_refused` | 2 | fillet_edges × 2 |
-| `crates/ogeom/tests/blends.rs:1916` — `an_edge_round_stops_where_an_upright_drum_s_foot_runs_off_the_block` | 2 | fillet_edges × 2 |
-| `crates/ogeom/tests/blends.rs:2099` — `an_upright_drum_s_face_blend_ends_where_the_crease_runs_off_the_block` | 2 | fillet_edges × 2 |
-| `crates/ogeom/tests/blends.rs:2292` — `b2_three_fillets_and_the_corner_tool_round_the_vertex` | 1 | fillet_edge × 1 |
-| `crates/ogeom/tests/blends.rs:2359` — `round_vertex_reproduces_the_b2_closed_form` | 1 | fillet_edge × 1 |
-| `crates/ogeom/tests/blends.rs:2410` — `round_vertex_rounds_the_corner_at_any_placement` | 10 | fillet_edge × 10 |
-| `crates/ogeom/tests/blends.rs:2485` — `round_vertex_rounds_an_oblique_corner` | 2 | fillet_edge × 2 |
-| `crates/ogeom/tests/blends.rs:2642` — `round_vertex_carries_a_band_stopped_by_a_run_out_back_to_the_corner` | 1 | fillet_edge × 1 |
-| `crates/ogeom/tests/blends.rs:2659` — `round_vertex_carries_two_bands_stopped_by_one_run_out` | 2 | fillet_edge × 2 |
-| `crates/ogeom/tests/blends.rs:2752` — `round_vertex_after_one_edge_at_a_time_is_the_corner_rounded_in_one_call` | 149 | fillet_edge × 149 |
-| `crates/ogeom/tests/blends.rs:3154` — `round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches` | 10 | fillet_edge × 10 |
-| `crates/ogeom/tests/blends.rs:3361` — `a_curved_corner_in_one_call_has_one_ball_and_one_round_at_a_time_takes_the_union` | 3 | fillet_edge × 2, fillet_edges × 1 |
-| `crates/ogeom/tests/blends.rs:3408` — `a_curved_corner_closes_with_the_rim_s_band_first` | 5 | fillet_edge × 5 |
-| `crates/ogeom/tests/blends.rs:3507` — `a_curved_corner_s_straight_band_first_runs_out_across_the_drum` | 4 | fillet_edge × 4 |
-| `crates/ogeom/tests/blends.rs:3843` — `a_rim_blend_rolls_over_the_bracket_s_concave_blend` | 1 | fillet_edges × 1 |
-| `crates/ogeom/tests/blends.rs:3912` — `a_marched_blend_meets_a_straight_blend_at_its_corners` | 2 | fillet_edges × 2 |
-| `crates/ogeom/tests/blends.rs:4393` — `a_rim_whose_rail_passes_within_a_stride_of_the_pole_blends` | 3 | fillet_edge × 2, fillet_edges × 1 |
-| `crates/ogeom/tests/blends.rs:4474` — `blends_along_a_rounded_rim_turn_each_arc_by_its_quarter` | 1 | fillet_edges × 1 |
-| `crates/ogeom/tests/edge_chains.rs:331` — `edges_crossing_beside_a_drum_take_what_each_takes_alone` | 6 | fillet_edges × 6 |
-| `crates/ogeom/tests/imported_corpus.rs:1454` — `rounds_meeting_at_a_vertex_their_edge_overruns_are_capped_there` | 2 | fillet_edges × 2 |
-| `crates/ogeom/tests/imported_corpus.rs:1501` — `rounds_meeting_at_a_vertex_off_one_edges_wall_are_capped_at_the_wall` | 2 | fillet_edges × 2 |
-| `crates/ogeom/tests/imported_corpus.rs:1759` — `a_rib_s_chain_rounds_on_along_its_tangent_continuations` | 3 | fillet_edges × 3 |
-| `crates/ogeom/tests/imported_corpus.rs:1855` — `a_rib_s_lower_spline_crease_rounds_alone_and_with_its_chain` | 2 | fillet_edges × 2 |
-| `crates/ogeom/tests/imported_corpus.rs:2493` — `a_kidney_pocket_floor_loop_rounds_to_its_volume` | 1 | fillet_edges × 1 |
-| `crates/ogeom/tests/imported_corpus.rs:2517` — `a_kidney_pocket_floor_loop_rounds_in_time` | 1 | fillet_edges × 1 |
+| `crates/ogeom-fillet/tests/fillet/blend_reach.rs:73` — `a_fillet_wider_than_its_face_is_refused` | 1 | fillet_edges × 1 |
+| `crates/ogeom-fillet/tests/fillet/blend_reach.rs:100` — `a_rim_fillet_wider_than_its_cap_is_refused` | 1 | fillet_edges × 1 |
+| `crates/ogeom-fillet/tests/fillet/blend_reach.rs:128` — `a_concave_fillet_wider_than_its_floor_is_refused` | 2 | fillet_edges × 2 |
+| `crates/ogeom/tests/facade/blends.rs:1916` — `an_edge_round_stops_where_an_upright_drum_s_foot_runs_off_the_block` | 2 | fillet_edges × 2 |
+| `crates/ogeom/tests/facade/blends.rs:2099` — `an_upright_drum_s_face_blend_ends_where_the_crease_runs_off_the_block` | 2 | fillet_edges × 2 |
+| `crates/ogeom/tests/facade/blends.rs:2292` — `b2_three_fillets_and_the_corner_tool_round_the_vertex` | 1 | fillet_edge × 1 |
+| `crates/ogeom/tests/facade/blends.rs:2359` — `round_vertex_reproduces_the_b2_closed_form` | 1 | fillet_edge × 1 |
+| `crates/ogeom/tests/facade/blends.rs:2410` — `round_vertex_rounds_the_corner_at_any_placement` | 10 | fillet_edge × 10 |
+| `crates/ogeom/tests/facade/blends.rs:2485` — `round_vertex_rounds_an_oblique_corner` | 2 | fillet_edge × 2 |
+| `crates/ogeom/tests/facade/blends.rs:2642` — `round_vertex_carries_a_band_stopped_by_a_run_out_back_to_the_corner` | 1 | fillet_edge × 1 |
+| `crates/ogeom/tests/facade/blends.rs:2659` — `round_vertex_carries_two_bands_stopped_by_one_run_out` | 2 | fillet_edge × 2 |
+| `crates/ogeom/tests/facade/blends.rs:2752` — `round_vertex_after_one_edge_at_a_time_is_the_corner_rounded_in_one_call` | 149 | fillet_edge × 149 |
+| `crates/ogeom/tests/facade/blends.rs:3154` — `round_vertex_rounds_flat_and_oblique_apexes_no_ball_touches` | 10 | fillet_edge × 10 |
+| `crates/ogeom/tests/facade/blends.rs:3361` — `a_curved_corner_in_one_call_has_one_ball_and_one_round_at_a_time_takes_the_union` | 3 | fillet_edge × 2, fillet_edges × 1 |
+| `crates/ogeom/tests/facade/blends.rs:3408` — `a_curved_corner_closes_with_the_rim_s_band_first` | 5 | fillet_edge × 5 |
+| `crates/ogeom/tests/facade/blends.rs:3507` — `a_curved_corner_s_straight_band_first_runs_out_across_the_drum` | 4 | fillet_edge × 4 |
+| `crates/ogeom/tests/facade/blends.rs:3843` — `a_rim_blend_rolls_over_the_bracket_s_concave_blend` | 1 | fillet_edges × 1 |
+| `crates/ogeom/tests/facade/blends.rs:3912` — `a_marched_blend_meets_a_straight_blend_at_its_corners` | 2 | fillet_edges × 2 |
+| `crates/ogeom/tests/facade/blends.rs:4393` — `a_rim_whose_rail_passes_within_a_stride_of_the_pole_blends` | 3 | fillet_edge × 2, fillet_edges × 1 |
+| `crates/ogeom/tests/facade/blends.rs:4474` — `blends_along_a_rounded_rim_turn_each_arc_by_its_quarter` | 1 | fillet_edges × 1 |
+| `crates/ogeom/tests/facade/edge_chains.rs:331` — `edges_crossing_beside_a_drum_take_what_each_takes_alone` | 6 | fillet_edges × 6 |
+| `crates/ogeom/tests/corpus_suites/imported_corpus.rs:1454` — `rounds_meeting_at_a_vertex_their_edge_overruns_are_capped_there` | 2 | fillet_edges × 2 |
+| `crates/ogeom/tests/corpus_suites/imported_corpus.rs:1501` — `rounds_meeting_at_a_vertex_off_one_edges_wall_are_capped_at_the_wall` | 2 | fillet_edges × 2 |
+| `crates/ogeom/tests/corpus_suites/imported_corpus.rs:1759` — `a_rib_s_chain_rounds_on_along_its_tangent_continuations` | 3 | fillet_edges × 3 |
+| `crates/ogeom/tests/corpus_suites/imported_corpus.rs:1855` — `a_rib_s_lower_spline_crease_rounds_alone_and_with_its_chain` | 2 | fillet_edges × 2 |
+| `crates/ogeom/tests/corpus_suites/imported_corpus.rs:2493` — `a_kidney_pocket_floor_loop_rounds_to_its_volume` | 1 | fillet_edges × 1 |
+| `crates/ogeom/tests/corpus_suites/imported_corpus.rs:2517` — `a_kidney_pocket_floor_loop_rounds_in_time` | 1 | fillet_edges × 1 |

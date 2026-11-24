@@ -119,7 +119,7 @@ or a documented default. Also keep:
   a wrong shape passing `check`;
 - a test cited as evidence in `docs/capabilities.toml`; deleting it fails
   the capabilities gate, and the verdict must be re-evidenced first;
-- a test included by anchor into the book (`crates/ogeom/tests/book.rs`);
+- a test included by anchor into the book (`crates/ogeom/tests/facade/book.rs`);
 - a retained test that fails on the baseline: treat it as a possible kernel
   bug, reproduce it, and repair the owner rather than deleting it.
 

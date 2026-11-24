@@ -13,8 +13,8 @@ jobs:
   check:
     name: fmt / clippy / test
     runs-on: ubuntu-latest
-    # Full debug info for the suite's ~290 test binaries does not fit on
-    # the runner's disk. Line tables keep file and line in
+    # Full debug info for the suite's test binaries does not fit on the
+    # runner's disk. Line tables keep file and line in
     # every backtrace at a fraction of the size.
     env:
       CARGO_PROFILE_DEV_DEBUG: line-tables-only

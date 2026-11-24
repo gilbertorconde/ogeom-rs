@@ -347,4 +347,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: 71731c003c947031 -->
+<!-- ledger-checksum: 636afa2e3a81b188 -->

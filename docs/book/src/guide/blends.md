@@ -5,7 +5,7 @@ Everything here is in `ogeom::fillet`.
 ## Rounding one edge
 
 ```rust
-{{#include ../../../../crates/ogeom/tests/book.rs:fillet_an_edge}}
+{{#include ../../../../crates/ogeom/tests/facade/book.rs:fillet_an_edge}}
 ```
 
 | Function | Result |
@@ -27,7 +27,7 @@ Edges filleted or chamfered in separate calls each stop flush against
 whatever they end on. Passed in one call, they join:
 
 ```rust
-{{#include ../../../../crates/ogeom/tests/book.rs:edges_asked_together}}
+{{#include ../../../../crates/ogeom/tests/facade/book.rs:edges_asked_together}}
 ```
 
 - **`fillet_edges`** trims neighbouring bands against each other, joins

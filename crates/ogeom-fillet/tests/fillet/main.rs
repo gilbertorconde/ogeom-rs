@@ -1,0 +1,90 @@
+//! The integration tests of `ogeom-fillet`, in one test program so the
+//! crate links once.
+
+#[path = "../support/cpu_time.rs"]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+mod cpu_time;
+#[path = "../support/swept.rs"]
+#[allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+mod swept;
+
+mod apart_marched;
+mod asymmetric;
+mod blame;
+mod blend_again;
+mod blend_corpus_curved;
+mod blend_corpus_m5;
+mod blend_corpus_rounds;
+mod blend_edges;
+mod blend_into_round;
+mod blend_reach;
+mod blend_seat;
+mod blend_shells;
+mod bridge;
+mod cap_history;
+mod carried_rim;
+mod cell_guard;
+mod chain;
+mod chamfer;
+mod chamfer_cone_rim;
+mod chamfer_corner;
+mod chamfer_general_crease;
+mod chamfer_marched;
+mod chamfer_marched_open;
+mod chamfer_overflow;
+mod chamfer_point_and_pockets;
+mod chamfer_sphere_rim;
+mod chamfer_torus_groove;
+mod chamfer_torus_rim;
+mod checked_overflow;
+mod closed_edge_fillets;
+mod compound_blend;
+mod concave;
+mod cone_ruling;
+mod conic_rounds;
+mod consumed_marched;
+mod consumed_rim;
+mod contact_regressions;
+mod corner_history;
+mod curved_chamfer;
+mod exact_limits;
+mod extrusion_cap;
+mod fillet;
+mod fillet_cost;
+mod fillet_over_bevel;
+mod hold_edge;
+mod hold_edge_curved;
+mod hold_edge_ends;
+mod hold_edge_seats;
+mod kink_chain;
+mod largest;
+mod largest_chamfer_all;
+mod later_rounds;
+mod law_limits;
+mod leaning_end;
+mod limit_chamfers;
+mod limit_overflow;
+mod marched_blend;
+mod marched_fillet;
+mod mixed_vertex;
+mod narrow_passage;
+mod non_local_general;
+mod non_local_rims;
+mod non_local_straight;
+mod overflow;
+mod periodic_pad;
+mod polyhedral_chamfer;
+mod radius_per_edge;
+mod rim_bounds;
+mod rolling_corner;
+mod rolling_curved;
+mod round_entries;
+mod rounded_corner_booleans;
+mod setback;
+mod switch_over;
+mod tangent_chain;
+mod two_cylinders;
+mod variable;
+mod variants;
+mod varying_rounds;
+mod vertex_engine;

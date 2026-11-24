@@ -18,7 +18,7 @@ A block with a hole through it: two primitives, one boolean, and a volume
 check.
 
 ```rust
-{{#include ../../../../crates/ogeom/tests/book.rs:first_solid}}
+{{#include ../../../../crates/ogeom/tests/facade/book.rs:first_solid}}
 ```
 
 The same patterns apply to the whole API:

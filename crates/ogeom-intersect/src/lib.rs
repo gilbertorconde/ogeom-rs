@@ -34,8 +34,8 @@
 //! branch. The second exists because the first cannot catch a missing answer:
 //! an intersector that finds one circle of two and traces it perfectly scores
 //! perfectly on accuracy alone. Both have negative controls in
-//! `tests/instruments.rs`. They demonstrably fail when something is genuinely
-//! missing.
+//! `tests/intersect/instruments.rs`. They demonstrably fail when something is
+//! genuinely missing.
 
 // Debug output goes through `ogeom_core::diag`, never to stdout or stderr.
 #![cfg_attr(

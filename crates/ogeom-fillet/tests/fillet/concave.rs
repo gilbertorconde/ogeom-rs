@@ -1,0 +1,2240 @@
+//! The additive blends: concave edges, and the revolved seats in every sign.
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
+use crate::swept;
+use swept::{adaptive, clipped_section};
+
+use ogeom_core::Tolerances;
+use ogeom_math::{Frame, Point};
+use ogeom_topo::{Filter, ShapeType, explore};
+
+const T: Tolerances = Tolerances::millimetres();
+
+fn fine() -> ogeom_mesh::Deflection {
+    ogeom_mesh::Deflection {
+        chord: 1e-4,
+        ..ogeom_mesh::Deflection::default()
+    }
+}
+
+fn volume(model: &ogeom_topo::Model, shape: &ogeom_topo::Shape) -> f64 {
+    ogeom_algo::volume_properties(model, shape, fine(), T)
+        .unwrap()
+        .mass
+}
+
+/// An L: a box with a notch, and its re-entrant edge along y at (1, 1).
+fn l_bracket(model: &mut ogeom_topo::Model) -> (ogeom_topo::Shape, ogeom_topo::Shape) {
+    let block = ogeom_algo::make_box(model, Frame::WORLD, (2.0, 2.0, 2.0), T).unwrap();
+    let seat = Frame::new(
+        Point::new(1.0, -0.5, 1.0),
+        ogeom_math::Direction::Z,
+        ogeom_math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let notch = ogeom_algo::make_box(model, seat, (2.0, 3.0, 2.0), T).unwrap();
+    let cut = ogeom_bool::cut(model, &block.shape, &notch.shape, T).unwrap();
+    let edge = explore(model, &cut.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            ogeom_algo::edge_vertices(model, e)
+                .unwrap()
+                .is_some_and(|(a, b)| {
+                    let p = |v: &ogeom_topo::Shape| {
+                        model
+                            .node(v)
+                            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                            .unwrap()
+                    };
+                    let (pa, pb) = (p(&a), p(&b));
+                    (pa.x - 1.0).abs() < 1e-9
+                        && (pa.z - 1.0).abs() < 1e-9
+                        && (pb.x - 1.0).abs() < 1e-9
+                        && (pb.z - 1.0).abs() < 1e-9
+                })
+        })
+        .expect("the L has its re-entrant edge");
+    (cut.shape, edge)
+}
+
+#[test]
+fn a_concave_chamfer_fills_the_corner_with_its_bevel() {
+    let mut model = ogeom_topo::Model::new();
+    let (bracket, edge) = l_bracket(&mut model);
+    let d = 0.25;
+    let result = ogeom_fillet::chamfer_edge(&mut model, &bracket, &edge, d, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let exact = 6.0 + d * d / 2.0 * 2.0;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - exact).abs() < 1e-9,
+        "concave chamfer volume {measured} against {exact}"
+    );
+    assert!(result.history.is_deleted(&edge));
+}
+
+/// The rim of a hole: the top edge of a tube's bore.
+#[test]
+fn a_hole_rim_gains_the_mirrored_toroidal_blend() {
+    let mut model = ogeom_topo::Model::new();
+    let outer = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 2.0, 2.0, T).unwrap();
+    let bore = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 1.0, 2.0, T).unwrap();
+    let tube = ogeom_bool::cut(&mut model, &outer.shape, &bore.shape, T).unwrap();
+
+    // The bore's top rim: radius 1 at z = 2.
+    let edge = explore(&model, &tube.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            ogeom_algo::edge_vertices(&model, e)
+                .unwrap()
+                .is_some_and(|(a, _)| {
+                    model
+                        .node(&a)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .is_some_and(|p| {
+                            (p.z - 2.0).abs() < 1e-9 && (p.x.hypot(p.y) - 1.0).abs() < 1e-6
+                        })
+                })
+        })
+        .expect("the tube has its bore rim");
+
+    let r = 0.3;
+    let result = ogeom_fillet::fillet_edge(&mut model, &tube.shape, &edge, r, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    // Pappus over the mirrored meridian cusp at the bore radius.
+    let pi = core::f64::consts::PI;
+    let hole = 1.0;
+    let removed = 2.0
+        * pi
+        * (hole * r * r + r * r * r / 2.0 - (hole + r) * pi * r * r / 4.0 + r * r * r / 3.0);
+    let exact = pi * (4.0 - 1.0) * 2.0 - removed;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - exact).abs() < 2e-3,
+        "hole rim fillet volume {measured} against {exact}"
+    );
+    assert!(result.history.is_deleted(&edge));
+}
+
+/// The same mouth in a plate, drilled right through: the bore's rim rounded
+/// over where the drill was longer than the plate is thick.
+///
+/// The drill's length is the condition. A bore exactly as deep as the
+/// plate leaves its mouth on the drill cylinder's own rim, and that circle
+/// starts where the wall's chart does; a deeper drill leaves it as a
+/// section, starting wherever the cut split it. The blend's wedge shares
+/// the wall with the plate, and the shared rim's image on that chart is a
+/// straight pcurve running from a quarter turn round to a quarter turn
+/// past the seam. Two of its samples stand three quarters of a turn apart,
+/// which the boolean's tear remover must not read as a wrap: turned back
+/// on itself, the pcurve never splits the wall, the wall's strip inside
+/// the wedge survives, and the shell does not close.
+#[test]
+fn a_bore_mouth_in_a_plate_rounds_over_however_deep_the_drill() {
+    let pi = core::f64::consts::PI;
+    let (plate, bore, r) = (10.0_f64, 4.0_f64, 1.0_f64);
+    for deeper in [false, true] {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(
+            &mut model,
+            Frame::new(
+                Point::new(-plate, -plate, 0.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap(),
+            (plate * 2.0, plate * 2.0, 10.0),
+            T,
+        )
+        .unwrap();
+        let (low, tall) = if deeper { (-1.0, 12.0) } else { (0.0, 10.0) };
+        let seat = Frame::new(
+            Point::new(0.0, 0.0, low),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        let drill = ogeom_algo::make_cylinder(&mut model, seat, bore, tall, T).unwrap();
+        let holed = ogeom_bool::cut(&mut model, &block.shape, &drill.shape, T).unwrap();
+
+        // The mouth, asked for away from the wall's seam so the seam's own
+        // edge cannot answer instead.
+        let mouth = explore(&model, &holed.shape, Filter::OfType(ShapeType::Edge))
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                use ogeom_geom::Curve3d as _;
+                let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = model
+                    .node(e)
+                    .and_then(|n| n.data().as_edge())
+                    .and_then(ogeom_topo::EdgeData::curve3d)
+                else {
+                    return false;
+                };
+                let Some(c) = model.geometry().curve(*curve) else {
+                    return false;
+                };
+                (0..=8).all(|i| {
+                    let t = range.0 + (range.1 - range.0) * f64::from(i) / 8.0;
+                    c.point_at(t, T).is_ok_and(|p| {
+                        (p.z - 10.0).abs() < 1e-9 && (p.x.hypot(p.y) - bore).abs() < 1e-6
+                    })
+                })
+            })
+            .expect("the plate has its bore mouth");
+
+        let built = ogeom_fillet::fillet_edge(&mut model, &holed.shape, &mouth, r, T)
+            .unwrap_or_else(|e| panic!("drill deeper {deeper}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        assert_eq!(
+            explore(&model, &built.shape, Filter::OfType(ShapeType::Face))
+                .unwrap()
+                .len(),
+            8,
+            "drill deeper {deeper}: six walls, the bore and the band"
+        );
+        // Pappus over the mirrored meridian cusp at the bore's radius, the
+        // same figure the tube's rim answers to.
+        let removed = 2.0
+            * pi
+            * (bore * r * r + r * r * r / 2.0 - (bore + r) * pi * r * r / 4.0 + r * r * r / 3.0);
+        let want = plate * plate * 4.0 * 10.0 - pi * bore * bore * 10.0 - removed;
+        let got = volume(&model, &built.shape);
+        assert!(
+            (got - want).abs() < want * 1e-5,
+            "drill deeper {deeper}: {got} against {want}"
+        );
+    }
+}
+
+/// The base of a boss: the concave circular seat where a cylinder stands on
+/// a plate.
+#[test]
+fn a_boss_base_gains_an_additive_toroidal_blend() {
+    let mut model = ogeom_topo::Model::new();
+    let plate = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 2.0), T).unwrap();
+    let seat = Frame::new(
+        Point::new(5.0, 5.0, 2.0),
+        ogeom_math::Direction::Z,
+        ogeom_math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let boss = ogeom_algo::make_cylinder(&mut model, seat, 1.0, 3.0, T).unwrap();
+    let joined = ogeom_bool::fuse(&mut model, &plate.shape, &boss.shape, T).unwrap();
+
+    // The boss's base circle: radius 1 at z = 2 about (5, 5).
+    let edge = explore(&model, &joined.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            ogeom_algo::edge_vertices(&model, e)
+                .unwrap()
+                .is_some_and(|(a, _)| {
+                    model
+                        .node(&a)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .is_some_and(|p| {
+                            (p.z - 2.0).abs() < 1e-9
+                                && ((p.x - 5.0).hypot(p.y - 5.0) - 1.0).abs() < 1e-6
+                        })
+                })
+        })
+        .expect("the joined part has the boss base circle");
+
+    let r = 0.3;
+    let result = ogeom_fillet::fillet_edge(&mut model, &joined.shape, &edge, r, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &result.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+
+    let pi = core::f64::consts::PI;
+    let boss_r = 1.0;
+    let added = 2.0
+        * pi
+        * (boss_r * r * r + r * r * r / 2.0 - (boss_r + r) * pi * r * r / 4.0 + r * r * r / 3.0);
+    let exact = 200.0 + pi * 3.0 + added;
+    let measured = volume(&model, &result.shape);
+    assert!(
+        (measured - exact).abs() < 2e-3,
+        "boss base fillet volume {measured} against {exact}"
+    );
+    assert!(result.history.is_deleted(&edge));
+}
+
+/// A plate whose top is `z = 0`, fused with a block over it whose side
+/// face leans 15 degrees and leaves the top along a concave seam: the
+/// block's top edge, the far side of the narrow strip of that face above
+/// the plate, rises at `rise` degrees through a point `lift` over the
+/// origin. The seam runs from `ends.0` to `ends.1` along it, measured from
+/// the origin; the plate is a prism over a quadrilateral whose ends cross
+/// the seam there, turned about z by `turns` degrees; `post` adds a small
+/// block standing on the plate in front of the strip.
+struct Seat {
+    rise: f64,
+    lift: f64,
+    ends: (f64, f64),
+    turns: (f64, f64),
+    post: bool,
+}
+
+/// The slanted seam the rolling-round tests round: the ball, radius 0.5,
+/// touches the plate's top and rests on the block's top edge all along.
+const SLANT: Seat = Seat {
+    rise: 20.0,
+    lift: 0.0,
+    ends: (0.6, 1.3),
+    turns: (-20.0, 5.0),
+    post: false,
+};
+
+struct Slant {
+    shape: ogeom_topo::Shape,
+    seam: ogeom_topo::Shape,
+    /// The block's top edge: its direction through the origin.
+    far: ogeom_math::Vector,
+    /// Outward normals of the block's side face and top face.
+    side: ogeom_math::Vector,
+    top: ogeom_math::Vector,
+    /// The seam's unit direction, and its ends' distances from the origin.
+    along: ogeom_math::Vector,
+    ends: (f64, f64),
+    /// A point of the top edge.
+    lift: Point,
+    /// The plate's end faces' planes, each as its outward normal and
+    /// offset: the plate keeps `n . p <= d`.
+    caps: [(ogeom_math::Vector, f64); 2],
+}
+
+fn slanted_seam(model: &mut ogeom_topo::Model, seat: &Seat) -> Slant {
+    use ogeom_math::{Direction, Plane, Vector};
+    let ends = seat.ends;
+    let lift = Point::new(0.0, 0.0, seat.lift);
+    let (rise, lean) = (seat.rise.to_radians(), 15_f64.to_radians());
+    let far = Vector::new(rise.cos(), 0.0, rise.sin());
+    let (y0, z0) = (Vector::Y, Vector::new(-rise.sin(), 0.0, rise.cos()));
+    let depth = y0 * lean.cos() + z0 * lean.sin();
+    let up = z0 * lean.cos() - y0 * lean.sin();
+    let block = ogeom_algo::make_box(
+        model,
+        Frame::new(
+            lift - up * 3.0 - far * 2.0,
+            Direction::new(up, T).unwrap(),
+            Direction::new(far, T).unwrap(),
+            T,
+        )
+        .unwrap(),
+        (6.0, 3.0, 3.0),
+        T,
+    )
+    .unwrap();
+    let side = -depth;
+    let along = {
+        let a = Vector::Z.cross(side);
+        let a = a * (1.0 / a.magnitude());
+        if a.dot(far) < 0.0 { -a } else { a }
+    };
+    // Where the seam crosses the plane x = 0: on the side face's plane
+    // through the top edge, at z = 0.
+    let start = Point::new(0.0, side.z * seat.lift / side.y, 0.0);
+    // The plate's ends turned about z so each end of the seam keeps the
+    // round's foot on the plate's top.
+    let corner = |at: f64, angle: f64, y: f64| {
+        let through = start + along * at;
+        let (s, c) = angle.to_radians().sin_cos();
+        let d = Vector::new(-s, c, 0.0);
+        through + d * ((y - through.y) / d.y)
+    };
+    // Each end face's plane: upright through the seam's end, turned with
+    // the plate's end, its normal facing away from the seam's other end.
+    let caps =
+        [(ends.0, seat.turns.0, -1.0), (ends.1, seat.turns.1, 1.0)].map(|(at, angle, out)| {
+            let (s, c) = f64::to_radians(angle).sin_cos();
+            let mut n = Vector::new(c, s, 0.0);
+            if n.dot(along) * out < 0.0 {
+                n = -n;
+            }
+            (n, n.dot((start + along * at) - Point::ORIGIN))
+        });
+    let quad = [
+        corner(ends.0, seat.turns.0, -2.0),
+        corner(ends.1, seat.turns.1, -2.0),
+        corner(ends.1, seat.turns.1, 1.0),
+        corner(ends.0, seat.turns.0, 1.0),
+    ];
+    let wire = ogeom_algo::make_polygon(model, &quad, true, T)
+        .unwrap()
+        .shape;
+    let top = ogeom_geom::PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom_algo::make_face(model, top.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let plate = ogeom_algo::make_prism(model, &face, Vector::new(0.0, 0.0, -3.0), T)
+        .unwrap()
+        .shape;
+    let mut shape = ogeom_bool::fuse(model, &block.shape, &plate, T)
+        .unwrap()
+        .shape;
+    if seat.post {
+        let post = ogeom_algo::make_box(
+            model,
+            Frame::new(Point::new(0.8, -1.05, -0.1), Direction::Z, Direction::X, T).unwrap(),
+            (0.2, 0.15, 0.4),
+            T,
+        )
+        .unwrap();
+        shape = ogeom_bool::fuse(model, &shape, &post.shape, T)
+            .unwrap()
+            .shape;
+    }
+    let middle = start + along * ((ends.0 + ends.1) / 2.0);
+    let seam = explore(model, &shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            ogeom_algo::edge_vertices(model, e)
+                .unwrap()
+                .is_some_and(|(a, b)| {
+                    let p = |v: &ogeom_topo::Shape| {
+                        model
+                            .node(v)
+                            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                            .unwrap()
+                    };
+                    // The seam's ends stand where the plate's ends cross it,
+                    // to rounding.
+                    p(&a).midpoint(p(&b)).distance(middle) < 1e-9
+                })
+        })
+        .expect("the fused part has the seam");
+    Slant {
+        shape,
+        seam,
+        far,
+        side,
+        top: up,
+        along,
+        ends,
+        lift,
+        caps,
+    }
+}
+
+/// `slant`'s seam found again in its shape, by the middle of the seam it
+/// holds: after a boolean that leaves the seam where it was.
+fn seam_of(model: &ogeom_topo::Model, slant: &Slant) -> ogeom_topo::Shape {
+    let point = |v: &ogeom_topo::Shape| {
+        model
+            .node(v)
+            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+            .unwrap()
+    };
+    let middle = |e: &ogeom_topo::Shape| {
+        let (a, b) = ogeom_algo::edge_vertices(model, e).unwrap().unwrap();
+        point(&a).midpoint(point(&b))
+    };
+    let was = middle(&slant.seam);
+    explore(model, &slant.shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| middle(e).distance(was) < 1e-9)
+        .expect("the seam stands where it was")
+}
+
+/// Gauss-Legendre nodes and weights on `[-1, 1]`, by Newton's method on
+/// the Legendre polynomial.
+fn gauss_legendre(n: usize) -> Vec<(f64, f64)> {
+    use core::f64::consts::PI;
+    (0..n)
+        .map(|i| {
+            #[allow(clippy::cast_precision_loss)]
+            let mut x = (PI * (i as f64 + 0.75) / (n as f64 + 0.5)).cos();
+            let mut dp = 0.0;
+            for _ in 0..100 {
+                let (mut p0, mut p1) = (1.0, x);
+                for k in 2..=n {
+                    #[allow(clippy::cast_precision_loss)]
+                    let k = k as f64;
+                    let p2 = ((2.0 * k - 1.0) * x * p1 - (k - 1.0) * p0) / k;
+                    p0 = p1;
+                    p1 = p2;
+                }
+                #[allow(clippy::cast_precision_loss)]
+                let nf = n as f64;
+                dp = nf * (x * p1 - p0) / (x * x - 1.0);
+                let step = p1 / dp;
+                x -= step;
+                if step.abs() < 1e-16 {
+                    break;
+                }
+            }
+            (x, 2.0 / ((1.0 - x * x) * dp * dp))
+        })
+        .collect()
+}
+
+/// The ball of `radius` resting on the plate's top and on the block's top
+/// edge: its centre at angle `a` round the edge from the side face's
+/// normal toward the top face's, a radius off the plate's top, and the
+/// centre's first and second derivatives in `a`.
+fn rolling_centre(
+    slant: &Slant,
+    radius: f64,
+    a: f64,
+) -> (Point, ogeom_math::Vector, ogeom_math::Vector) {
+    use ogeom_math::Vector;
+    let (u, v) = (slant.side, slant.top);
+    let k = slant.far.dot(Vector::Z);
+    let (au, av) = (u.z, v.z);
+    let (s, c) = a.sin_cos();
+    let reach = (u * c + v * s) * radius;
+    let foot = (radius - reach.z) / k;
+    let d_foot = radius * (s * au - c * av) / k;
+    let dd_foot = radius * (c * au + s * av) / k;
+    (
+        Point::ORIGIN + slant.far * foot + reach,
+        slant.far * d_foot + (v * c - u * s) * radius,
+        slant.far * dd_foot - reach,
+    )
+}
+
+/// Where along the seam the plane square to the centre's path at angle
+/// `a` crosses it.
+fn rolling_crossing(slant: &Slant, radius: f64, a: f64) -> f64 {
+    let (c, d, _) = rolling_centre(slant, radius, a);
+    d.dot(c - Point::ORIGIN) / d.dot(slant.along)
+}
+
+/// The angles at which the ball's sections cross the seam's two ends.
+fn rolling_span(slant: &Slant, radius: f64) -> (f64, f64) {
+    let at = |target: f64| {
+        let (mut lo, mut hi) = (0.0, core::f64::consts::FRAC_PI_2);
+        for _ in 0..200 {
+            let m = (lo + hi) / 2.0;
+            let f = |a: f64| rolling_crossing(slant, radius, a) - target;
+            if (f(lo) > 0.0) == (f(m) > 0.0) {
+                lo = m;
+            } else {
+                hi = m;
+            }
+        }
+        (lo + hi) / 2.0
+    };
+    (at(slant.ends.0), at(slant.ends.1))
+}
+
+/// The volume between the seam's corner and the rolling ball, ending flush
+/// on the plate's end faces as the engine ends a round, swept by the ball's
+/// sections: each section, in the plane square to the centre's path, is
+/// the triangle from the seam to the two contacts less the circular
+/// segment the ball's arc cuts off it, clipped to the side of both end
+/// faces' planes the plate keeps, and a plane turning with the path sweeps
+/// `(|c'| - n'.(p - c)) dA da` at each point `p` of it. The arc is read as
+/// chords, each chord's sliver of the ball taken off where both of its ends
+/// are kept (a sliver the clip cuts is a part in ten million of a
+/// section), over the angles from where the first section is kept to the
+/// last, integrated adaptively (the clip puts kinks in the rate).
+fn rolling_fill(slant: &Slant, radius: f64) -> f64 {
+    rolling_fill_within(slant, radius, &[])
+}
+
+/// [`rolling_fill`] within the half-spaces `within` as well (each
+/// `n . p <= d`): what the fill shares with a box.
+fn rolling_fill_within(slant: &Slant, radius: f64, within: &[(ogeom_math::Vector, f64)]) -> f64 {
+    let caps: Vec<_> = slant.caps.iter().chain(within).copied().collect();
+    let section = |a: f64, caps: &[(ogeom_math::Vector, f64)]| -> (f64, f64) {
+        let (c, d, dd) = rolling_centre(slant, radius, a);
+        let x = Point::ORIGIN + slant.along * rolling_crossing(slant, radius, a);
+        let touch = c - ogeom_math::Vector::Z * radius;
+        let foot = c - u_v_reach(slant, radius, a);
+        clipped_section(caps, (c, d, dd), [x, touch, foot], radius)
+    };
+    // From the seam's ends' sections out until none is kept.
+    let (a0, a1) = rolling_span(slant, radius);
+    let (mut lo, mut hi) = (a0.min(a1), a0.max(a1));
+    while section(lo, &slant.caps).0 > 0.0 {
+        lo -= 1e-3;
+    }
+    while section(hi, &slant.caps).0 > 0.0 {
+        hi += 1e-3;
+    }
+    adaptive(&|a| section(a, &caps).1, lo, hi)
+}
+
+/// The fill of the seam whose strip widens past the ball's setback (the
+/// ball resting on the strip's far edge, then on the strip past the
+/// station where it is as wide as the setback), ending flush on the
+/// plate's end faces, within the half-spaces `within` as well: each piece's
+/// sections swept as [`rolling_fill`] sweeps them.
+fn widening_fill(slant: &Slant, radius: f64, within: &[(ogeom_math::Vector, f64)]) -> f64 {
+    use ogeom_math::Vector;
+    let caps: Vec<_> = slant.caps.iter().chain(within).copied().collect();
+    let switch = rolling_crossing(slant, radius, 0.0);
+    let start = bisect(
+        &|a| rolling_crossing(slant, radius, a) - slant.ends.0,
+        0.0,
+        core::f64::consts::FRAC_PI_2,
+    );
+    let n = slant.side;
+    let m = Vector::Z.dot(n);
+    let k = (radius - m * radius) / (1.0 - m * m);
+    let w = Vector::Z * k + n * k;
+    // The rolling piece: its angle grows toward the seam's start.
+    let rolled = |a: f64, caps: &[(Vector, f64)]| {
+        let (c, d, dd) = rolling_centre(slant, radius, a);
+        let x = Point::ORIGIN + slant.along * rolling_crossing(slant, radius, a);
+        let foot = c - u_v_reach(slant, radius, a);
+        clipped_section(caps, (c, d, dd), [x, c - Vector::Z * radius, foot], radius)
+    };
+    // The line's piece, from the switch on past the seam's end.
+    let lined = |x: f64, caps: &[(Vector, f64)]| {
+        let c = Point::ORIGIN + slant.along * x + w;
+        let at = Point::ORIGIN + slant.along * x;
+        clipped_section(
+            caps,
+            (c, slant.along, Vector::ZERO),
+            [at, c - Vector::Z * radius, c - n * radius],
+            radius,
+        )
+    };
+    let mut first = start;
+    while rolled(first, &slant.caps).0 > 0.0 {
+        first += 1e-3;
+    }
+    let mut last = slant.ends.1;
+    while lined(last, &slant.caps).0 > 0.0 {
+        last += 1e-3;
+    }
+    adaptive(&|a| rolled(a, &caps).1, 0.0, first).abs()
+        + adaptive(&|x| lined(x, &caps).1, switch, last).abs()
+}
+
+/// From the ball's centre to its contact on the block's top edge.
+fn u_v_reach(slant: &Slant, radius: f64, a: f64) -> ogeom_math::Vector {
+    let (s, c) = a.sin_cos();
+    (slant.side * c + slant.top * s) * radius
+}
+
+/// How far `p` stands off the envelope of the rolling balls: its distance
+/// to the nearest centre less the radius.
+fn off_rolling_envelope(slant: &Slant, radius: f64, p: Point) -> f64 {
+    let (a0, a1) = rolling_span(slant, radius);
+    let (lo, hi) = (a0.min(a1) - 0.05, a0.max(a1) + 0.05);
+    let dist = |a: f64| p.distance(rolling_centre(slant, radius, a).0);
+    let best = (0..=400)
+        .map(|i| lo + (hi - lo) * f64::from(i) / 400.0)
+        .min_by(|x, y| dist(*x).total_cmp(&dist(*y)))
+        .unwrap();
+    let step = (hi - lo) / 400.0;
+    let (mut a, mut b) = (best - step, best + step);
+    let g = 0.5 * (5.0_f64.sqrt() - 1.0);
+    for _ in 0..100 {
+        let (x1, x2) = (b - g * (b - a), a + g * (b - a));
+        if dist(x1) < dist(x2) {
+            b = x2;
+        } else {
+            a = x1;
+        }
+    }
+    dist((a + b) / 2.0) - radius
+}
+
+/// The fitted round among the faces a blend generated: how far its
+/// surface stands off the envelope `off` measures, at most, over a grid
+/// across it, and its area.
+fn fitted_round(
+    model: &ogeom_topo::Model,
+    faces: &[ogeom_topo::Shape],
+    off: &dyn Fn(Point) -> f64,
+) -> (f64, f64) {
+    use ogeom_geom::Surface as _;
+    let mut worst: f64 = 0.0;
+    let mut area = 0.0;
+    for face in faces {
+        let data = model.node(face).unwrap().data().as_face().unwrap();
+        let surface = model.geometry().surface(data.surface).unwrap();
+        if !matches!(surface, ogeom_geom::SurfaceGeometry::BSpline(_)) {
+            continue;
+        }
+        // Over the face's own trim: a surface may run on past it.
+        let trim = ogeom_algo::classify::FaceTrim::of(model, face, fine(), T).unwrap();
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        for i in 0..=40 {
+            for j in 0..=40 {
+                let at = (
+                    u0 + (u1 - u0) * f64::from(i) / 40.0,
+                    v0 + (v1 - v0) * f64::from(j) / 40.0,
+                );
+                if !trim
+                    .holds(model, at, T.confusion(), T)
+                    .unwrap()
+                    .is_inside_or_on()
+                {
+                    continue;
+                }
+                let p = surface.point_at(at.0, at.1, T).unwrap();
+                worst = worst.max(off(p).abs());
+            }
+        }
+        area += ogeom_algo::surface_properties(model, face, fine(), T)
+            .unwrap()
+            .mass;
+    }
+    (worst, area)
+}
+
+/// A seam whose narrow strip is narrower than the ball's setback all
+/// along: the ball touches the plate's top and rests on the strip's far
+/// edge, the block's top edge, its centre on the ellipse where the plane a
+/// radius over the top meets the cylinder a radius about the edge. The
+/// fill is the volume between the seam and the balls, integrated over
+/// their sections from the boxes' own planes and edge and clipped flush to
+/// the plate's end faces, and the round stands a radius off the top and
+/// off the edge's line along its rails.
+#[test]
+fn a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback() {
+    let radius = 0.5;
+    for alone in [true, false] {
+        let mut model = ogeom_topo::Model::new();
+        let slant = slanted_seam(&mut model, &SLANT);
+        let before = volume(&model, &slant.shape);
+        let rounded = if alone {
+            ogeom_fillet::fillet_edge(&mut model, &slant.shape, &slant.seam, radius, T)
+        } else {
+            ogeom_fillet::fillet_edges(
+                &mut model,
+                &slant.shape,
+                std::slice::from_ref(&slant.seam),
+                radius,
+                T,
+            )
+        }
+        .unwrap();
+        let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+        // The round: the band fitted through the balls' arcs, within the
+        // band's fit target of their envelope, its rails on the plate's top
+        // and on the edge's line.
+        let generated = rounded.history.generated(&slant.seam).to_vec();
+        let (worst, area) = fitted_round(&model, &generated, &|p| {
+            off_rolling_envelope(&slant, radius, p)
+        });
+        let (mut on_top, mut on_edge) = (false, false);
+        for face in &generated {
+            let data = model.node(face).unwrap().data().as_face().unwrap();
+            if !matches!(
+                model.geometry().surface(data.surface).unwrap(),
+                ogeom_geom::SurfaceGeometry::BSpline(_)
+            ) {
+                continue;
+            }
+            for edge in explore(&model, face, Filter::OfType(ShapeType::Edge)).unwrap() {
+                use ogeom_geom::Curve3d as _;
+                let Some(ogeom_topo::EdgeRepr::Curve3d { curve, range, .. }) = model
+                    .node(&edge)
+                    .unwrap()
+                    .data()
+                    .as_edge()
+                    .unwrap()
+                    .curve3d()
+                else {
+                    continue;
+                };
+                let curve = model.geometry().curve(*curve).unwrap();
+                let points: Vec<Point> = (0..=32)
+                    .map(|k| {
+                        curve
+                            .point_at(range.0 + (range.1 - range.0) * f64::from(k) / 32.0, T)
+                            .unwrap()
+                    })
+                    .collect();
+                // A rail set on the top's plane or the edge's line stands on
+                // it to rounding: a nanometre is far below any fit error.
+                let top = points.iter().all(|p| p.z.abs() < 1e-9);
+                let line = points.iter().all(|p| {
+                    let w = *p - Point::ORIGIN;
+                    (w - slant.far * w.dot(slant.far)).magnitude() < 1e-9
+                });
+                // The band's fit target, 2e-4 at unit scale, is what a rail
+                // is held to as well as the band.
+                if top || line {
+                    for p in &points {
+                        assert!(
+                            off_rolling_envelope(&slant, radius, *p).abs() < 2e-4,
+                            "a rail point {p:?} stands off the balls"
+                        );
+                    }
+                }
+                on_top |= top;
+                on_edge |= line;
+            }
+        }
+        assert!(worst < 2e-4, "the round stands {worst} off the balls");
+        assert!(
+            on_top && on_edge,
+            "the round's rails: top {on_top}, edge {on_edge}"
+        );
+        let want = rolling_fill(&slant, radius);
+        let got = volume(&model, &rounded.shape) - before;
+        // The band moves the fill by no more than its furthest stand-off
+        // from the envelope over its area; the integral of the sections is
+        // exact to rounding.
+        assert!(
+            (got - want).abs() <= worst * area,
+            "the round added {got} against {want}, off {} with the band within {worst} over \
+             {area}",
+            got - want
+        );
+    }
+}
+
+/// Where the rolling run does not hold, the round is refused by name: the
+/// seam running back to where the strip narrows to nothing, so the ball
+/// comes onto the block's top beyond the strip's far edge and rounds the
+/// corner between the top and the plate.
+#[test]
+fn a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it() {
+    let seat = Seat {
+        ends: (0.0, 1.3),
+        ..SLANT
+    };
+    let mut model = ogeom_topo::Model::new();
+    let slant = slanted_seam(&mut model, &seat);
+    let refusal = ogeom_fillet::fillet_edge(&mut model, &slant.shape, &slant.seam, 0.5, T)
+        .expect_err("refused")
+        .to_string();
+    assert!(
+        refusal.contains("rests on the far edge")
+            && refusal.contains(
+                "comes onto the face beyond that edge along the crease, rounding the corner \
+                 between that face and the one it touches rather than this edge"
+            ),
+        "{refusal}"
+    );
+}
+
+/// A post standing on the plate within the ball's reach, beside a run
+/// resting on the strip's far edge all along and beside one carried onto
+/// the strip: the round keeps its surface (ADR 0001, amendment "M5c").
+/// Built through the general route (the post off a copy, the seam rounded
+/// there), valid, the fill added less what it shares with the post: each
+/// the swept sections clipped flush to the plate's end faces, the shared
+/// part also to the post's six planes. The seat's own post stands in the
+/// ball's reach but clear of the fill, which it leaves whole; a post set
+/// in by the seam stands in the fill.
+#[test]
+fn a_round_resting_on_a_far_edge_reaching_a_post_keeps_its_surface() {
+    use ogeom_math::Vector;
+    // A box's six planes, each `n . p <= d`.
+    let planes = |lo: Point, hi: Point| {
+        [
+            (Vector::X, hi.x),
+            (-Vector::X, -lo.x),
+            (Vector::Y, hi.y),
+            (-Vector::Y, -lo.y),
+            (Vector::Z, hi.z),
+            (-Vector::Z, -lo.z),
+        ]
+    };
+    let radius = 0.5;
+    for widening in [false, true] {
+        for inner in [false, true] {
+            let seat = Seat {
+                post: !inner,
+                ..if widening {
+                    Seat {
+                        ends: (0.6, 1.9),
+                        turns: (-20.0, 20.0),
+                        ..SLANT
+                    }
+                } else {
+                    SLANT
+                }
+            };
+            let mut model = ogeom_topo::Model::new();
+            let mut slant = slanted_seam(&mut model, &seat);
+            let (lo, hi) = if inner {
+                (Point::new(0.8, -0.3, -0.1), Point::new(1.0, -0.2, 0.15))
+            } else {
+                (Point::new(0.8, -1.05, -0.1), Point::new(1.0, -0.9, 0.3))
+            };
+            if inner {
+                let post = ogeom_algo::make_box(
+                    &mut model,
+                    Frame::new(lo, ogeom_math::Direction::Z, ogeom_math::Direction::X, T).unwrap(),
+                    (hi.x - lo.x, hi.y - lo.y, hi.z - lo.z),
+                    T,
+                )
+                .unwrap();
+                slant.shape = ogeom_bool::fuse(&mut model, &slant.shape, &post.shape, T)
+                    .unwrap()
+                    .shape;
+                slant.seam = seam_of(&model, &slant);
+            }
+            let before = volume(&model, &slant.shape);
+            let (rounded, work) = ogeom_bool::work::counted(|| {
+                ogeom_fillet::fillet_edge(&mut model, &slant.shape, &slant.seam, radius, T).unwrap()
+            });
+            assert!(work.face_pairs > 0, "through the booleans");
+            let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+            assert!(
+                !rounded.history.generated(&slant.seam).is_empty(),
+                "the seam generates its round"
+            );
+            let post = planes(lo, hi);
+            let (fill, shared) = if widening {
+                (
+                    widening_fill(&slant, radius, &[]),
+                    widening_fill(&slant, radius, &post),
+                )
+            } else {
+                (
+                    rolling_fill(&slant, radius),
+                    rolling_fill_within(&slant, radius, &post),
+                )
+            };
+            assert_eq!(shared > 0.0, inner, "the post in the fill");
+            let want = fill - shared;
+            let got = volume(&model, &rounded.shape) - before;
+            // The band is fitted within 1e-8 of its balls, under a unit of
+            // area: the fill to a part in a million.
+            assert!(
+                (got - want).abs() <= want * 1e-6,
+                "widening {widening}, inner {inner}: the round added {got} against {want}"
+            );
+        }
+    }
+}
+
+/// The strip's far edge parallel to the plate's top: the ball's centre
+/// runs on a line, a radius over the top and a radius off the edge, the
+/// round is the cylinder about it, and the fill is a prism whose section,
+/// square to the seam, is the triangle from the seam to the two contacts
+/// less the segment the ball's arc cuts off it.
+#[test]
+fn a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches() {
+    let (radius, lift) = (0.5, 0.3);
+    let mut model = ogeom_topo::Model::new();
+    let slant = slanted_seam(
+        &mut model,
+        &Seat {
+            rise: 0.0,
+            lift,
+            turns: (0.0, 0.0),
+            ..SLANT
+        },
+    );
+    let before = volume(&model, &slant.shape);
+    let rounded =
+        ogeom_fillet::fillet_edge(&mut model, &slant.shape, &slant.seam, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // In the section x = 0: the edge at (0, lift), the seam where the side
+    // face's plane through it meets z = 0, the centre a radius over z = 0
+    // and a radius from the edge, on the side face's outward side.
+    let (sy, sz) = (slant.side.y, slant.side.z);
+    let seam = (sz * lift / sy, 0.0);
+    let edge = (slant.lift.y, slant.lift.z);
+    let centre = (-(radius * radius - (radius - lift).powi(2)).sqrt(), radius);
+    let touch = (centre.0, 0.0);
+    let triangle =
+        ((touch.0 - seam.0) * (edge.1 - seam.1) - (touch.1 - seam.1) * (edge.0 - seam.0)).abs()
+            / 2.0;
+    let to = |p: (f64, f64)| (p.0 - centre.0, p.1 - centre.1);
+    let (a, b) = (to(touch), to(edge));
+    let angle = ((a.0 * b.0 + a.1 * b.1) / (radius * radius)).acos();
+    let segment = radius * radius * (angle - angle.sin()) / 2.0;
+    let want = (triangle - segment) * (slant.ends.1 - slant.ends.0);
+    let generated = rounded.history.generated(&slant.seam).to_vec();
+    let (worst, area) = fitted_round(&model, &generated, &|p| {
+        (p.y - centre.0).hypot(p.z - centre.1) - radius
+    });
+    // The centre runs on a line: the round is the cylinder about it, exact,
+    // and the fill the prism to rounding.
+    let cylinder = generated.iter().any(|f| {
+        let data = model.node(f).unwrap().data().as_face().unwrap();
+        matches!(
+            model.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::Cylinder(c))
+                if (c.cylinder().radius() - radius).abs() < 1e-12
+        )
+    });
+    assert!(cylinder, "the round is not the cylinder of its radius");
+    assert!(
+        area == 0.0 && worst == 0.0,
+        "a fitted band beside the cylinder"
+    );
+    let got = volume(&model, &rounded.shape) - before;
+    assert!(
+        (got - want).abs() <= want * 1e-12,
+        "the round added {got} against {want}"
+    );
+}
+
+struct Tip {
+    shape: ogeom_topo::Shape,
+    seam: ogeom_topo::Shape,
+    apex: Point,
+    edges: [ogeom_math::Vector; 3],
+}
+
+/// A plate whose top is `z = 0`, fused with a box whose corner stands `h`
+/// over it at the origin: the box's face spanned by its first two edges
+/// out of the corner leans `lean` degrees off upright, those edges leaving
+/// it at `turn` degrees and `turn + 90` round from level, and its third
+/// edge runs into the box square to that face. The seam is where that face
+/// meets the plate's top, the side of a right triangle whose right angle is
+/// the corner.
+fn box_tip(model: &mut ogeom_topo::Model, h: f64, lean: f64, turn: f64) -> Tip {
+    use ogeom_math::{Direction, Vector};
+    let (sa, ca) = lean.to_radians().sin_cos();
+    let into = Vector::new(0.0, -ca, -sa);
+    let level = Vector::X;
+    let down = Vector::new(0.0, sa, -ca);
+    let along = |deg: f64| {
+        let (s, c) = deg.to_radians().sin_cos();
+        level * c + down * s
+    };
+    let (d1, d2) = (along(turn), along(turn + 90.0));
+    let apex = Point::new(0.0, 0.0, h);
+    // A right-handed frame along the three edges, `into` its z.
+    let x = if d1.cross(d2).dot(into) > 0.0 { d1 } else { d2 };
+    let block = ogeom_algo::make_box(
+        model,
+        Frame::new(
+            apex,
+            Direction::new(into, T).unwrap(),
+            Direction::new(x, T).unwrap(),
+            T,
+        )
+        .unwrap(),
+        (2.0, 2.0, 2.0),
+        T,
+    )
+    .unwrap();
+    let plate = ogeom_algo::make_box(
+        model,
+        Frame::new(Point::new(-3.0, -3.0, -3.0), Direction::Z, Direction::X, T).unwrap(),
+        (6.0, 6.0, 3.0),
+        T,
+    )
+    .unwrap();
+    let shape = ogeom_bool::fuse(model, &block.shape, &plate.shape, T)
+        .unwrap()
+        .shape;
+    let foot = |d: Vector| apex + d * (h / -d.z);
+    let middle = foot(d1).midpoint(foot(d2));
+    let seam = explore(model, &shape, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            ogeom_algo::edge_vertices(model, e)
+                .unwrap()
+                .is_some_and(|(a, b)| {
+                    let p = |v: &ogeom_topo::Shape| {
+                        model
+                            .node(v)
+                            .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                            .unwrap()
+                    };
+                    p(&a).midpoint(p(&b)).distance(middle) < 1e-9
+                })
+        })
+        .expect("the fused part has the seam");
+    Tip {
+        shape,
+        seam,
+        apex,
+        edges: [d1, d2, into],
+    }
+}
+
+/// One piece of a ball's run over the plate's top `z = 0`: its centre and
+/// the centre's first and second derivatives at a parameter, the ball's
+/// contact on what it holds off the plate for a centre, and the span of
+/// the parameter it runs over.
+struct Run<'a> {
+    centre: &'a dyn Fn(f64) -> (Point, ogeom_math::Vector, ogeom_math::Vector),
+    contact: &'a dyn Fn(Point) -> Point,
+    span: (f64, f64),
+}
+
+/// The root of `f` in `[lo, hi]`, where it changes sign there.
+fn bisect(f: &dyn Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
+    let (mut a, mut b) = (lo, hi);
+    let fa = f(a);
+    for _ in 0..200 {
+        let m = (a + b) / 2.0;
+        if (f(m) > 0.0) == (fa > 0.0) {
+            a = m;
+        } else {
+            b = m;
+        }
+    }
+    (a + b) / 2.0
+}
+
+/// Where along a seam through `origin` along `along` the plane square to
+/// a run's path at `s` crosses it.
+fn crossing_of(run: &Run<'_>, origin: Point, along: ogeom_math::Vector, s: f64) -> f64 {
+    let (c, d, _) = (run.centre)(s);
+    d.dot(c - origin) / d.dot(along)
+}
+
+/// The volume between a seam on the plate's top, through `origin` along
+/// `along`, and the balls of `radius` over `runs`, swept by the balls'
+/// sections: each, in the plane square to the centre's path, is the
+/// triangle from the seam to the two contacts less the circular segment
+/// the ball's arc cuts off it, and a plane turning with the path sweeps
+/// `(|c'| - n'.(p - c)) dA ds` at each point `p` of it. With `caps`, each
+/// section is clipped to the end faces' planes ([`clipped_section`]), the
+/// spans given running out past them.
+fn swept_runs(
+    runs: &[Run<'_>],
+    origin: Point,
+    along: ogeom_math::Vector,
+    radius: f64,
+    caps: Option<&[(ogeom_math::Vector, f64)]>,
+) -> f64 {
+    let nodes = gauss_legendre(40);
+    let mut total = 0.0;
+    for run in runs {
+        // Cut to the end faces' planes: each section clipped, its span run
+        // out past them.
+        if let Some(caps) = caps {
+            let section = |s: f64| {
+                let (c, d, dd) = (run.centre)(s);
+                let x = origin + along * crossing_of(run, origin, along, s);
+                let touch = c - ogeom_math::Vector::Z * radius;
+                clipped_section(caps, (c, d, dd), [x, touch, (run.contact)(c)], radius).1
+            };
+            total += adaptive(&section, run.span.0, run.span.1).abs();
+            continue;
+        }
+        let rate = |s: f64| -> f64 {
+            let (c, d, dd) = (run.centre)(s);
+            let x = origin + along * crossing_of(run, origin, along, s);
+            let touch = c - ogeom_math::Vector::Z * radius;
+            let foot = (run.contact)(c);
+            let triangle = (touch - x).cross(foot - x).magnitude() / 2.0;
+            let tri_moment =
+                ((x - Point::ORIGIN) + (touch - Point::ORIGIN) + (foot - Point::ORIGIN))
+                    * (triangle / 3.0);
+            let angle = ((touch - c).dot(foot - c) / (radius * radius))
+                .clamp(-1.0, 1.0)
+                .acos();
+            let segment = radius * radius * (angle - angle.sin()) / 2.0;
+            let chord_mid = touch.midpoint(foot);
+            let toward = (chord_mid - c) * (1.0 / chord_mid.distance(c));
+            let lever = 4.0 * radius * (angle / 2.0).sin().powi(3) / (3.0 * (angle - angle.sin()));
+            let seg_moment = ((c - Point::ORIGIN) + toward * lever) * segment;
+            let area = triangle - segment;
+            let moment = tri_moment - seg_moment;
+            let speed = d.magnitude();
+            let normal = d * (1.0 / speed);
+            let turning = (dd - normal * dd.dot(normal)) * (1.0 / speed);
+            speed * area - turning.dot(moment - (c - Point::ORIGIN) * area)
+        };
+        // Each piece's span runs either way of its parameter: its volume
+        // is the integral's size.
+        let (lo, hi) = run.span;
+        let pieces = 16;
+        let mut piece = 0.0;
+        for k in 0..pieces {
+            let a = lo + (hi - lo) * f64::from(k) / f64::from(pieces);
+            let b = lo + (hi - lo) * f64::from(k + 1) / f64::from(pieces);
+            let (m, h) = ((a + b) / 2.0, (b - a) / 2.0);
+            piece += nodes
+                .iter()
+                .map(|&(x, w)| w * h * rate(m + h * x))
+                .sum::<f64>();
+        }
+        total += piece.abs();
+    }
+    total
+}
+
+/// How far `p` stands off the envelope of the balls of `radius` over
+/// `runs`: its distance to the nearest centre less the radius.
+fn off_runs(runs: &[Run<'_>], radius: f64, p: Point) -> f64 {
+    runs.iter()
+        .map(|run| {
+            let (lo, hi) = run.span;
+            let dist = |s: f64| p.distance((run.centre)(s).0);
+            let at = |i: i32| lo + (hi - lo) * f64::from(i) / 400.0;
+            let best = (0..=400)
+                .min_by(|x, y| dist(at(*x)).total_cmp(&dist(at(*y))))
+                .unwrap();
+            let (mut a, mut b) = (at((best - 1).max(0)), at((best + 1).min(400)));
+            let g = 0.5 * (5.0_f64.sqrt() - 1.0);
+            for _ in 0..100 {
+                let (x1, x2) = (b - g * (b - a), a + g * (b - a));
+                if dist(x1) < dist(x2) {
+                    b = x2;
+                } else {
+                    a = x1;
+                }
+            }
+            dist((a + b) / 2.0)
+        })
+        .fold(f64::INFINITY, f64::min)
+        - radius
+}
+
+/// Round `seam` alone: the result valid, its fitted bands within the
+/// band's fit target of the envelope of `runs`' balls, and the volume it
+/// added equal to their swept sections (clipped to `caps` where given)
+/// within what the bands' stand-off over their area can move it. Returns
+/// how many bands it has: fitted, the exact cylinder, or the exact turn of
+/// an arc about a vertex.
+fn holds_to_runs(
+    model: &mut ogeom_topo::Model,
+    shape: &ogeom_topo::Shape,
+    seam: &ogeom_topo::Shape,
+    radius: f64,
+    runs: &[Run<'_>],
+    (origin, along): (Point, ogeom_math::Vector),
+    caps: Option<&[(ogeom_math::Vector, f64)]>,
+) -> usize {
+    let before = volume(model, shape);
+    let rounded = ogeom_fillet::fillet_edge(model, shape, seam, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let generated = rounded.history.generated(seam).to_vec();
+    let bands = generated
+        .iter()
+        .filter(|face| {
+            let data = model.node(face).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface).unwrap(),
+                ogeom_geom::SurfaceGeometry::BSpline(_)
+                    | ogeom_geom::SurfaceGeometry::Cylinder(_)
+                    | ogeom_geom::SurfaceGeometry::Revolution(_)
+            )
+        })
+        .count();
+    let (worst, area) = fitted_round(model, &generated, &|p| off_runs(runs, radius, p));
+    // The band's fit target, 2e-4 at unit scale.
+    assert!(worst < 2e-4, "the round stands {worst} off the balls");
+    let want = swept_runs(runs, origin, along, radius, caps);
+    let got = volume(model, &rounded.shape) - before;
+    // A cylinder about a line of centres is exact, to rounding.
+    assert!(
+        (got - want).abs() <= worst * area + want * 1e-12,
+        "the round added {got} against {want}, off {} with the bands within {worst} over \
+         {area}",
+        got - want
+    );
+    bands
+}
+
+/// The seam run on to where the strip beside it is wider than the ball's
+/// setback: the ball rests on the strip's far edge, its centre on the
+/// ellipse, until it comes down on the strip where the ellipse meets the
+/// line a radius over the plate and a radius off the strip, tangent to it,
+/// and runs on that line, the cylinder between the two planes, to the
+/// seam's end. The fill is the two pieces' swept sections, from the boxes'
+/// own planes and edge, clipped flush to the plate's end faces. The round
+/// is two bands, the rolling piece's fitted and the line's the exact
+/// cylinder, meeting on the section where the ball holds all three.
+#[test]
+fn a_round_rolls_onto_a_strip_that_widens_past_its_setback() {
+    use ogeom_math::Vector;
+    let radius = 0.5;
+    let mut model = ogeom_topo::Model::new();
+    let slant = slanted_seam(
+        &mut model,
+        &Seat {
+            ends: (0.6, 1.9),
+            turns: (-20.0, 20.0),
+            ..SLANT
+        },
+    );
+    let rolled = |a: f64| rolling_centre(&slant, radius, a);
+    let on_edge = |c: Point| slant.lift + slant.far * (c - slant.lift).dot(slant.far);
+    // The ball comes down on the strip where its angle round the edge
+    // reaches the strip's normal.
+    let switch = rolling_crossing(&slant, radius, 0.0);
+    assert!(
+        switch > slant.ends.0 && switch < slant.ends.1,
+        "the ball comes down at {switch}"
+    );
+    let start = bisect(
+        &|a| rolling_crossing(&slant, radius, a) - slant.ends.0,
+        0.0,
+        core::f64::consts::FRAC_PI_2,
+    );
+    // A radius over the plate and a radius off the strip, square to the
+    // seam.
+    let n = slant.side;
+    let w = {
+        let m = Vector::Z.dot(n);
+        let (a, b) = (
+            (radius - m * radius) / (1.0 - m * m),
+            (radius - m * radius) / (1.0 - m * m),
+        );
+        Vector::Z * a + n * b
+    };
+    let on_line = |x: f64| {
+        (
+            Point::ORIGIN + slant.along * x + w,
+            slant.along,
+            Vector::ZERO,
+        )
+    };
+    assert!(
+        rolled(0.0).0.distance(on_line(switch).0) < 1e-9,
+        "the ellipse meets the line where the ball comes down"
+    );
+    let on_strip = |c: Point| c - n * radius;
+    // Each piece run out past its end face's plane until none of its
+    // section is kept: the rolling piece's angle grows toward the seam's
+    // start, the line runs on past its end.
+    let kept = |centre: &dyn Fn(f64) -> (Point, Vector, Vector),
+                contact: &dyn Fn(Point) -> Point,
+                s: f64| {
+        let (c, d, dd) = centre(s);
+        let x = Point::ORIGIN + slant.along * (d.dot(c - Point::ORIGIN) / d.dot(slant.along));
+        clipped_section(
+            &slant.caps,
+            (c, d, dd),
+            [x, c - Vector::Z * radius, contact(c)],
+            radius,
+        )
+        .0
+    };
+    let mut first = start;
+    while kept(&rolled, &on_edge, first) > 0.0 {
+        first += 1e-3;
+    }
+    let mut last = slant.ends.1;
+    while kept(&on_line, &on_strip, last) > 0.0 {
+        last += 1e-3;
+    }
+    let runs = [
+        Run {
+            centre: &rolled,
+            contact: &on_edge,
+            span: (first, 0.0),
+        },
+        Run {
+            centre: &on_line,
+            contact: &on_strip,
+            span: (switch, last),
+        },
+    ];
+    let bands = holds_to_runs(
+        &mut model,
+        &slant.shape,
+        &slant.seam,
+        radius,
+        &runs,
+        (Point::ORIGIN, slant.along),
+        Some(&slant.caps),
+    );
+    assert_eq!(bands, 2, "a band for each piece");
+}
+
+/// A box's corner standing over a plate, its steep face a right triangle
+/// over the seam narrower than the ball's setback. From the seam's far
+/// end the ball touches the plate and rests on the triangle's second edge
+/// out of the corner, its centre on the ellipse, until its contact on the
+/// edge reaches the corner. It then rolls round the corner to the seam's
+/// near end, its centre on the circle where the plane a radius over the
+/// plate meets the sphere a radius about the corner, tangent there to the
+/// ellipse. The fill is the two pieces' swept sections, from the box's own
+/// corner, edge and faces, and the corner's piece is a patch of a spindle
+/// torus whose arcs all end on the corner.
+#[test]
+fn a_round_rolls_round_the_corner_of_a_narrow_triangle() {
+    use ogeom_math::Vector;
+    let (radius, h) = (0.38, 0.1);
+    let mut model = ogeom_topo::Model::new();
+    let tip = box_tip(&mut model, h, 4.0, 51.0);
+    let [d1, d2, into] = tip.edges;
+    let w = tip.apex;
+    let foot = |d: Vector| w + d * (h / -d.z);
+    let (p1, p2) = (foot(d1), foot(d2));
+    let along = (p2 - p1) * (1.0 / p1.distance(p2));
+    let length = p1.distance(p2);
+    // The edge out of the corner along `d2`, between the triangle and the
+    // box's face square to `d1`: the ball a radius over the plate resting
+    // on it at angle `a` round it from the triangle's outward normal `u`
+    // toward that face's, `-d1`.
+    let u = -into;
+    let v = {
+        let v = -d1 - u * (-d1).dot(u);
+        v * (1.0 / v.magnitude())
+    };
+    let on_edge = |a: f64| {
+        let (s, c) = a.sin_cos();
+        let l = (radius - h - radius * (c * u.z + s * v.z)) / d2.z;
+        let dl = radius * (s * u.z - c * v.z) / d2.z;
+        let ddl = radius * (c * u.z + s * v.z) / d2.z;
+        (
+            w + d2 * l + (u * c + v * s) * radius,
+            d2 * dl + (v * c - u * s) * radius,
+            d2 * ddl - (u * c + v * s) * radius,
+        )
+    };
+    let edge_foot = |c: Point| w + d2 * (c - w).dot(d2);
+    // A radius over the plate and a radius from the corner.
+    let rho = (h * (2.0 * radius - h)).sqrt();
+    let o = Point::new(w.x, w.y, radius);
+    let round = |t: f64| {
+        let (s, c) = t.sin_cos();
+        (
+            o + Vector::new(c, s, 0.0) * rho,
+            Vector::new(-s, c, 0.0) * rho,
+            Vector::new(-c, -s, 0.0) * rho,
+        )
+    };
+    let corner = |_: Point| w;
+    let x_of = |f: &dyn Fn(f64) -> (Point, Vector, Vector), s: f64| {
+        let (c, d, _) = f(s);
+        d.dot(c - p1) / d.dot(along)
+    };
+    // The arc of angles on which the edge alone holds the ball, from the
+    // triangle's normal to the next face's; the foot reaches the corner
+    // where `l(a) = 0`, `cos a u.z + sin a v.z = (r - h) / r`.
+    let phi = (-d1).dot(v).atan2((-d1).dot(u));
+    let samples = |lo: f64, hi: f64| {
+        (0..400).map(move |i| {
+            (
+                lo + (hi - lo) * f64::from(i) / 400.0,
+                lo + (hi - lo) * f64::from(i + 1) / 400.0,
+            )
+        })
+    };
+    let lift = |a: f64| (on_edge(a).0 - w).dot(d2);
+    let a_corner = samples(0.0, phi)
+        .find(|(a, b)| (lift(*a) > 0.0) != (lift(*b) > 0.0))
+        .map(|(a, b)| bisect(&lift, a, b))
+        .expect("the foot reaches the corner");
+    let to_end = |a: f64| x_of(&on_edge, a) - length;
+    let a_end = samples(0.0, phi)
+        .find(|(a, b)| (to_end(*a) > 0.0) != (to_end(*b) > 0.0))
+        .map(|(a, b)| bisect(&to_end, a, b))
+        .expect("the edge holds the ball at the seam's far end");
+    let t_corner = {
+        let c = on_edge(a_corner).0 - o;
+        c.y.atan2(c.x)
+    };
+    assert!(
+        round(t_corner).0.distance(on_edge(a_corner).0) < 1e-9,
+        "the circle meets the ellipse where the foot reaches the corner"
+    );
+    // Round the corner the way the sections move toward the seam's near
+    // end, to where they reach it.
+    let toward = -(x_of(&round, t_corner + 1e-6) - x_of(&round, t_corner - 1e-6)).signum();
+    let to_start = |t: f64| x_of(&round, t);
+    let t_start = samples(t_corner, t_corner + toward * core::f64::consts::PI)
+        .find(|(a, b)| (to_start(*a) > 0.0) != (to_start(*b) > 0.0))
+        .map(|(a, b)| bisect(&to_start, a, b))
+        .expect("the corner holds the ball at the seam's near end");
+    let runs = [
+        Run {
+            centre: &on_edge,
+            contact: &edge_foot,
+            span: (a_end, a_corner),
+        },
+        Run {
+            centre: &round,
+            contact: &corner,
+            span: (t_corner, t_start),
+        },
+    ];
+    let bands = holds_to_runs(
+        &mut model,
+        &tip.shape,
+        &tip.seam,
+        radius,
+        &runs,
+        (p1, along),
+        None,
+    );
+    assert_eq!(bands, 2, "a band for each piece");
+}
+
+/// A wall standing on two stair steps, each 1 high, 1 deep and the full
+/// length of the wall, its foot rounded with a ball of radius `r` that
+/// touches the wall and rests on the upper step's far edge. The ball's
+/// centre runs on the line `x = 8 + r`, `z = 7 + sqrt(2r - 1)`, and the end
+/// faces meet that edge's ends where the end balls touch it: the run is
+/// held in free space up to the ends. Up to `r = 5` the lower step's far
+/// edge stays clear of every ball.
+#[test]
+fn a_round_rolls_on_the_upper_far_edge_of_a_staircase() {
+    let block = |model: &mut ogeom_topo::Model, x: f64, z: f64, w: f64, h: f64| {
+        let at = Frame::new(
+            Point::new(x, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, at, (w, 20.0, h), T)
+            .unwrap()
+            .shape
+    };
+    for radius in [2.0, 4.0] {
+        let mut model = ogeom_topo::Model::new();
+        let mut solid = block(&mut model, 0.0, 0.0, 30.0, 5.0);
+        for (w, h) in [(10.0, 1.0), (9.0, 2.0), (8.0, 15.0)] {
+            let part = block(&mut model, 0.0, 5.0, w, h);
+            solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+                .unwrap()
+                .shape;
+        }
+        let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+                [a, b].iter().all(|v| {
+                    let p = model
+                        .node(v)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .unwrap();
+                    (p.x - 8.0).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9
+                })
+            })
+            .expect("the wall's foot on the upper step");
+        let before = volume(&model, &solid);
+        let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+        let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "r {radius}: {:?}", diagnosis.problems);
+        // In the section: the seam at (8, 7), the touch on the wall at
+        // (8, cz), the contact on the far edge at (9, 7).
+        let (cx, cz) = (8.0 + radius, 7.0 + 2.0f64.mul_add(radius, -1.0).sqrt());
+        let triangle = (cz - 7.0) / 2.0;
+        let angle = ((cx - 9.0) / radius).acos();
+        let segment = radius * radius * (angle - angle.sin()) / 2.0;
+        let want = (triangle - segment) * 20.0;
+        let generated = rounded.history.generated(&foot).to_vec();
+        let (worst, area) =
+            fitted_round(&model, &generated, &|p| (p.x - cx).hypot(p.z - cz) - radius);
+        assert!(
+            worst < 2e-4,
+            "r {radius}: the round stands {worst} off the balls"
+        );
+        let got = volume(&model, &rounded.shape) - before;
+        // A fitted band moves the fill by no more than its stand-off over
+        // its area; the cylinder about the line of centres is exact, to
+        // rounding.
+        assert!(
+            (got - want).abs() <= worst * area + want * 1e-12,
+            "r {radius}: the round added {got} against {want}, within {worst} over {area}"
+        );
+        // Every ball stands clear of the result's boundary but for the
+        // band's own fit (rounding, on the exact cylinder).
+        let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
+        for k in 0..=40 {
+            let c = Point::new(cx, 20.0 * f64::from(k) / 40.0, cz);
+            let (d, _) = boundary.nearest(c, T).unwrap();
+            assert!(
+                d >= radius - worst - 1e-12,
+                "r {radius}: a ball at {c:?} is {d} from the solid"
+            );
+        }
+    }
+}
+
+/// A wall on two stair steps, each 1 high and 1 deep, the drop past the
+/// lower one running 6 down to the floor: rounded at radius 6, the ball
+/// touching the wall clears the upper step's far edge (9, 7) and rests on
+/// the lower one's (10, 6), its centre on the line `x = 14`,
+/// `z = 6 + sqrt(20)`. The round is the cylinder about it, reaching over
+/// both steps: the fill is the section from the seam to the touch on the
+/// wall, the arc to the lower edge, and back over the steps, less nothing
+/// of the solid.
+#[test]
+fn a_round_rests_on_the_lower_far_edge_of_a_staircase() {
+    let block = |model: &mut ogeom_topo::Model, x: f64, z: f64, w: f64, h: f64| {
+        let at = Frame::new(
+            Point::new(x, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, at, (w, 20.0, h), T)
+            .unwrap()
+            .shape
+    };
+    let radius = 6.0;
+    let mut model = ogeom_topo::Model::new();
+    let mut solid = block(&mut model, 0.0, -5.0, 30.0, 5.0);
+    for (w, h) in [(10.0, 6.0), (9.0, 7.0), (8.0, 20.0)] {
+        let part = block(&mut model, 0.0, 0.0, w, h);
+        solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+            .unwrap()
+            .shape;
+    }
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - 8.0).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9
+            })
+        })
+        .expect("the wall's foot on the upper step");
+    let before = volume(&model, &solid);
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The section: the seam (8, 7), the touch (8, cz), the contact (10, 6),
+    // then (9, 6) and (9, 7) back over the steps; less the segment the arc
+    // cuts off the chord from the touch to the contact.
+    let (cx, cz) = (14.0, 6.0 + 20.0f64.sqrt());
+    let ring = [(8.0, 7.0), (8.0, cz), (10.0, 6.0), (9.0, 6.0), (9.0, 7.0)];
+    let polygon = (0..ring.len())
+        .map(|i| {
+            let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+            p.0 * q.1 - q.0 * p.1
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let angle = (((8.0 - cx) * (10.0 - cx) + (cz - cz) * (6.0 - cz)) / (radius * radius)).acos();
+    let segment = radius * radius * (angle - angle.sin()) / 2.0;
+    let want = (polygon - segment) * 20.0;
+    let got = volume(&model, &rounded.shape) - before;
+    eprintln!("stepped round added {got} against {want}");
+    assert!(
+        (got - want).abs() <= want * 1e-6,
+        "the round added {got} against {want}"
+    );
+    // The round is the cylinder about the centre line, and every ball
+    // stands clear of the result.
+    let cylinder = rounded.history.generated(&foot).iter().any(|f| {
+        let data = model.node(f).unwrap().data().as_face().unwrap();
+        matches!(
+            model.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::Cylinder(c))
+                if (c.cylinder().radius() - radius).abs() < 1e-12
+        )
+    });
+    assert!(cylinder, "the round is not the cylinder of its radius");
+    let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
+    for k in 0..=40 {
+        let c = Point::new(cx, 20.0 * f64::from(k) / 40.0, cz);
+        let (d, _) = boundary.nearest(c, T).unwrap();
+        assert!(d >= radius - 1e-9, "a ball at {c:?} is {d} from the solid");
+    }
+    // With the floor just under the lower step, the ball comes down on the
+    // floor instead.
+    a_round_over_a_staircase_comes_down_on_the_floor();
+}
+
+/// The staircase of `a_round_rolls_on_the_upper_far_edge_of_a_staircase`
+/// with its floor 1 under the lower step, rounded at radius 6: the ball
+/// touching the wall and resting on the lower step's far edge would stand
+/// `1 + sqrt(20) - 6` short of a radius over the floor. The ball comes
+/// down on the floor instead, touching the wall and the floor, its centre
+/// at (14, 11), clear of both steps' far edges by `sqrt(41) - 6`: the
+/// round is the cylinder about that line, and both steps go into its
+/// fill.
+fn a_round_over_a_staircase_comes_down_on_the_floor() {
+    let block = |model: &mut ogeom_topo::Model, x: f64, z: f64, w: f64, h: f64| {
+        let at = Frame::new(
+            Point::new(x, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap();
+        ogeom_algo::make_box(model, at, (w, 20.0, h), T)
+            .unwrap()
+            .shape
+    };
+    let radius = 6.0;
+    let mut model = ogeom_topo::Model::new();
+    let mut solid = block(&mut model, 0.0, 0.0, 30.0, 5.0);
+    for (w, h) in [(10.0, 1.0), (9.0, 2.0), (8.0, 15.0)] {
+        let part = block(&mut model, 0.0, 5.0, w, h);
+        solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+            .unwrap()
+            .shape;
+    }
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - 8.0).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9
+            })
+        })
+        .expect("the wall's foot on the upper step");
+    let before = volume(&model, &solid);
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The section: the seam (8, 7), the touch on the wall (8, 11), the
+    // touch on the floor (14, 5), and back over the steps; less the
+    // quarter disc's segment the arc cuts off the chord.
+    let ring = [
+        (8.0, 7.0),
+        (8.0, 11.0),
+        (14.0, 5.0),
+        (10.0, 5.0),
+        (10.0, 6.0),
+        (9.0, 6.0),
+        (9.0, 7.0),
+    ];
+    let polygon = (0..ring.len())
+        .map(|i| {
+            let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+            p.0 * q.1 - q.0 * p.1
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let segment = radius * radius * (core::f64::consts::FRAC_PI_2 - 1.0) / 2.0;
+    let want = (polygon - segment) * 20.0;
+    let got = volume(&model, &rounded.shape) - before;
+    eprintln!("the round down on the floor added {got} against {want}");
+    assert!(
+        (got - want).abs() <= want * 1e-6,
+        "the round added {got} against {want}"
+    );
+}
+
+#[test]
+fn a_round_takes_a_flat_in_an_inside_corner_into_its_fill() {
+    use ogeom_geom::{Curve, Curve3d as _, LineCurve, PlaneSurface};
+    let (radius, a, length) = (2.0, 0.5, 20.0);
+    let mut model = ogeom_topo::Model::new();
+    let slab = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, length, 2.0), T)
+        .unwrap()
+        .shape;
+    let wall = ogeom_algo::make_box(&mut model, Frame::WORLD, (2.0, length, 10.0), T)
+        .unwrap()
+        .shape;
+    let mut solid = ogeom_bool::fuse(&mut model, &slab, &wall, T).unwrap().shape;
+    // The flat's wedge: the triangle (2, 2), (2 + a, 2), (2, 2 + a) in the
+    // plane y = 0, swept along y.
+    let corners = [
+        Point::new(2.0, 0.0, 2.0),
+        Point::new(2.0 + a, 0.0, 2.0),
+        Point::new(2.0, 0.0, 2.0 + a),
+    ];
+    let v: Vec<_> = corners
+        .iter()
+        .map(|p| ogeom_algo::make_vertex(&mut model, *p).shape)
+        .collect();
+    let edges: Vec<_> = (0..3)
+        .map(|i| {
+            let (p, q) = (corners[i], corners[(i + 1) % 3]);
+            let line: Curve = LineCurve::segment(p, q, T).unwrap().into();
+            let range = line.domain();
+            ogeom_algo::make_edge_between(&mut model, line, range, &v[i], &v[(i + 1) % 3], T)
+                .unwrap()
+                .shape
+        })
+        .collect();
+    let wire = ogeom_algo::make_wire(&mut model, &edges, T).unwrap().shape;
+    let plane = ogeom_math::Plane::new(
+        Frame::new(
+            Point::ORIGIN,
+            -ogeom_math::Direction::Y,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap(),
+    );
+    let surface = PlaneSurface::over(plane, (-20.0, 20.0), (-20.0, 20.0)).unwrap();
+    let face = ogeom_algo::make_face(&mut model, surface.into(), &[wire], T)
+        .unwrap()
+        .shape;
+    let wedge = ogeom_algo::make_prism(
+        &mut model,
+        &face,
+        ogeom_math::Vector::new(0.0, length, 0.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    solid = ogeom_bool::fuse(&mut model, &solid, &wedge, T)
+        .unwrap()
+        .shape;
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (p, q) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [p, q].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - (2.0 + a)).abs() < 1e-9 && (p.z - 2.0).abs() < 1e-9
+            })
+        })
+        .expect("the flat's edge on the floor");
+    let before = volume(&model, &solid);
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let want = (radius * radius * (1.0 - core::f64::consts::PI / 4.0) - a * a / 2.0) * length;
+    let got = volume(&model, &rounded.shape) - before;
+    eprintln!("the flat's round added {got} against {want}");
+    assert!(
+        (got - want).abs() <= want * 1e-6,
+        "the round added {got} against {want}"
+    );
+    let cylinder = rounded.history.generated(&foot).iter().any(|f| {
+        let data = model.node(f).unwrap().data().as_face().unwrap();
+        matches!(
+            model.geometry().surface(data.surface),
+            Some(ogeom_geom::SurfaceGeometry::Cylinder(c))
+                if (c.cylinder().radius() - radius).abs() < 1e-12
+        )
+    });
+    assert!(cylinder, "the round is not the cylinder of its radius");
+}
+
+/// The staircase of `a_round_rests_on_the_lower_far_edge_of_a_staircase`,
+/// built long and cut to the slab between two parallel planes slanted 20
+/// degrees about `z`, `y = k x` and `y = 20 + k x`: its ends are not square
+/// to the seam. Every line along the seam between the planes is 20 long,
+/// so the fill, the section prism cut by the end planes, adds the section's
+/// area times 20, and every ball over the run, its ends straddling the
+/// slanted end faces, stands clear of the result.
+#[test]
+fn a_stepped_round_ends_on_faces_slanted_to_it() {
+    use ogeom_math::{Direction, Vector};
+    let k = 20.0_f64.to_radians().tan();
+    let block = |model: &mut ogeom_topo::Model, x: f64, z: f64, w: f64, h: f64| {
+        let at = Frame::new(Point::new(x, -20.0, z), Direction::Z, Direction::X, T).unwrap();
+        ogeom_algo::make_box(model, at, (w, 60.0, h), T)
+            .unwrap()
+            .shape
+    };
+    let radius = 6.0;
+    let mut model = ogeom_topo::Model::new();
+    let mut solid = block(&mut model, 0.0, -5.0, 30.0, 5.0);
+    for (w, h) in [(10.0, 6.0), (9.0, 7.0), (8.0, 20.0)] {
+        let part = block(&mut model, 0.0, 0.0, w, h);
+        solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+            .unwrap()
+            .shape;
+    }
+    // The half-spaces past each slanted end, boxes turned about z.
+    let along = Direction::new(Vector::new(1.0, k, 0.0), T).unwrap();
+    let across = Vector::new(-k, 1.0, 0.0) * (1.0 / k.hypot(1.0));
+    for (through, side) in [(0.0, -1.0), (20.0, 1.0)] {
+        let origin = Point::new(0.0, through, -50.0)
+            + along.vector() * -100.0
+            + across * if side < 0.0 { -100.0 } else { 0.0 };
+        let frame = Frame::new(origin, Direction::Z, along, T).unwrap();
+        let cutter = ogeom_algo::make_box(&mut model, frame, (200.0, 100.0, 100.0), T)
+            .unwrap()
+            .shape;
+        solid = ogeom_bool::cut(&mut model, &solid, &cutter, T)
+            .unwrap()
+            .shape;
+    }
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - 8.0).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9
+            })
+        })
+        .expect("the wall's foot on the upper step");
+    let before = volume(&model, &solid);
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let (cx, cz) = (14.0, 6.0 + 20.0f64.sqrt());
+    let ring = [(8.0, 7.0), (8.0, cz), (10.0, 6.0), (9.0, 6.0), (9.0, 7.0)];
+    let polygon = (0..ring.len())
+        .map(|i| {
+            let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+            p.0 * q.1 - q.0 * p.1
+        })
+        .sum::<f64>()
+        .abs()
+        / 2.0;
+    let angle = (((8.0 - cx) * (10.0 - cx)) / (radius * radius)).acos();
+    let segment = radius * radius * (angle - angle.sin()) / 2.0;
+    let want = (polygon - segment) * 20.0;
+    let got = volume(&model, &rounded.shape) - before;
+    eprintln!("slanted stepped round added {got} against {want}");
+    assert!(
+        (got - want).abs() <= want * 1e-6,
+        "the round added {got} against {want}"
+    );
+    let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
+    for i in 0..=40 {
+        let y = k * cx + 20.0 * f64::from(i) / 40.0;
+        let c = Point::new(cx, y, cz);
+        let (d, _) = boundary.nearest(c, T).unwrap();
+        assert!(d >= radius - 1e-9, "a ball at {c:?} is {d} from the solid");
+    }
+}
+
+/// A wall on two steps whose far edges are not parallel to the wall's
+/// foot: the upper step's top runs from the wall at `x = 8` to a far edge
+/// from (8.5, 0) to (8.9, 20) at height 7, the lower step's from there to
+/// a far edge from (10, 0) to (10.6, 20) at height 6, the drop past it 6
+/// deep. Rounded at radius 6, the ball touching the wall clears the upper
+/// far edge and rests on the lower one: its centre stands at `x = 14` and
+/// a radius from that edge's line, on the ellipse where the plane meets
+/// the cylinder about the line. The band lies on the envelope of those
+/// balls, every ball stands clear of the result, the line of contact on
+/// the lower far edge lies on it, and the upper step's top went into the
+/// fill.
+#[test]
+fn a_round_rests_on_a_lower_far_edge_slanted_to_its_seam() {
+    slanted_staircase(false);
+}
+
+/// The staircase of [`a_round_rests_on_a_lower_far_edge_slanted_to_its_seam`]
+/// with the whole solid cut to the run's end sections, so the lower far
+/// edge ends where each end ball touches it, on the end faces: the end
+/// balls touch those faces at those vertices, and the run still builds and
+/// holds the same balls.
+#[test]
+fn a_round_rests_on_a_slanted_far_edge_that_ends_where_the_end_balls_touch() {
+    slanted_staircase(true);
+}
+
+/// The slanted staircase rounded at radius 6, its upper part cut to the
+/// run's end sections, and with `cut_all` the whole solid.
+fn slanted_staircase(cut_all: bool) {
+    use ogeom_geom::{Curve, LineCurve, PlaneSurface};
+    use ogeom_math::{Direction, Plane, Vector};
+    let radius = 6.0;
+    let mut model = ogeom_topo::Model::new();
+    // A prism of the polygon `corners` in the plane z = 0, raised `h`.
+    let raised = |model: &mut ogeom_topo::Model, corners: &[(f64, f64)], z0: f64, h: f64| {
+        let points: Vec<Point> = corners.iter().map(|&(x, y)| Point::new(x, y, z0)).collect();
+        let v: Vec<_> = points
+            .iter()
+            .map(|p| ogeom_algo::make_vertex(model, *p).shape)
+            .collect();
+        let n = points.len();
+        let edges: Vec<_> = (0..n)
+            .map(|i| {
+                use ogeom_geom::Curve3d as _;
+                let line: Curve = LineCurve::segment(points[i], points[(i + 1) % n], T)
+                    .unwrap()
+                    .into();
+                let range = line.domain();
+                ogeom_algo::make_edge_between(model, line, range, &v[i], &v[(i + 1) % n], T)
+                    .unwrap()
+                    .shape
+            })
+            .collect();
+        let wire = ogeom_algo::make_wire(model, &edges, T).unwrap().shape;
+        let plane = Plane::new(
+            Frame::new(Point::new(0.0, 0.0, z0), Direction::Z, Direction::X, T).unwrap(),
+        );
+        let surface = PlaneSurface::over(plane, (-100.0, 100.0), (-100.0, 100.0)).unwrap();
+        let face = ogeom_algo::make_face(model, surface.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_prism(model, &face, Vector::new(0.0, 0.0, h), T)
+            .unwrap()
+            .shape
+    };
+    // The base and lower step run from y = -5 to 25; the upper step and
+    // the wall are built as long and cut to the run's own end sections,
+    // further down, so the lower step's far edge runs on past the run.
+    let edge_at = |x0: f64, x1: f64, y: f64| x0 + (x1 - x0) * y / 20.0;
+    let mut solid = raised(
+        &mut model,
+        &[(0.0, -5.0), (30.0, -5.0), (30.0, 25.0), (0.0, 25.0)],
+        -5.0,
+        5.0,
+    );
+    let mut upper: Option<ogeom_topo::Shape> = None;
+    for (x0, x1, h) in [(10.0, 10.6, 6.0), (8.5, 8.9, 7.0), (8.0, 8.0, 20.0)] {
+        let corners = [
+            (0.0, -5.0),
+            (edge_at(x0, x1, -5.0), -5.0),
+            (edge_at(x0, x1, 25.0), 25.0),
+            (0.0, 25.0),
+        ];
+        let part = raised(&mut model, &corners, 0.0, h);
+        if h > 6.5 {
+            upper = Some(match upper {
+                None => part,
+                Some(u) => ogeom_bool::fuse(&mut model, &u, &part, T).unwrap().shape,
+            });
+        } else {
+            solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+                .unwrap()
+                .shape;
+        }
+    }
+    let mut upper = upper.unwrap();
+    if cut_all {
+        upper = ogeom_bool::fuse(&mut model, &solid, &upper, T)
+            .unwrap()
+            .shape;
+    }
+    // The centre at height y along the wall: x = 14, a radius from the
+    // lower far edge's line.
+    let (p0, d) = {
+        let d = Vector::new(0.6, 20.0, 0.0);
+        (Point::new(10.0, 0.0, 6.0), d * (1.0 / d.magnitude()))
+    };
+    let centre = |y: f64| {
+        let w = Point::new(14.0, y, 6.0) - p0;
+        let along = w.dot(d);
+        let square = w.magnitude().powi(2) - along * along;
+        Point::new(14.0, y, 6.0 + (radius * radius - square).sqrt())
+    };
+    let tangent = |y: f64| {
+        let h = 1e-5;
+        let v = centre(y + h) - centre(y - h);
+        v * (1.0 / v.magnitude())
+    };
+    // Each end of the seam, (8, 0, 7) and (8, 20, 7), and the plane square
+    // to the centres' path through it, found by bisection; the upper part
+    // is cut to the slab between the two.
+    for (end, keep) in [(0.0, 1.0), (20.0, -1.0)] {
+        let q = Point::new(8.0, end, 7.0);
+        let f = |y: f64| (q - centre(y)).dot(tangent(y));
+        let (mut a, mut b) = (end - 3.0, end + 3.0);
+        for _ in 0..200 {
+            let m = (a + b) / 2.0;
+            if (f(a) > 0.0) == (f(m) > 0.0) {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        let normal = tangent((a + b) / 2.0) * keep;
+        // The box on the side of the plane through `q` against `normal`.
+        let x = normal.cross(Vector::new(0.0, 0.0, 1.0));
+        let x = x * (1.0 / x.magnitude());
+        let up = (normal * -1.0).cross(x);
+        let frame = Frame::new(
+            q - x * 100.0 - up * 100.0,
+            Direction::new(normal * -1.0, T).unwrap(),
+            Direction::new(x, T).unwrap(),
+            T,
+        )
+        .unwrap();
+        let cutter = ogeom_algo::make_box(&mut model, frame, (200.0, 200.0, 100.0), T)
+            .unwrap()
+            .shape;
+        upper = ogeom_bool::cut(&mut model, &upper, &cutter, T)
+            .unwrap()
+            .shape;
+    }
+    let solid = if cut_all {
+        upper
+    } else {
+        ogeom_bool::fuse(&mut model, &solid, &upper, T)
+            .unwrap()
+            .shape
+    };
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - 8.0).abs() < 1e-9 && (p.z - 7.0).abs() < 1e-9
+            })
+        })
+        .expect("the wall's foot on the upper step");
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // The distance from a point to the balls' envelope, from the nearest
+    // centre over the run.
+    let off = |p: Point| {
+        let (mut a, mut b) = (p.y - radius, p.y + radius);
+        for _ in 0..100 {
+            let (m1, m2) = (a + (b - a) / 3.0, b - (b - a) / 3.0);
+            if p.distance(centre(m1)) < p.distance(centre(m2)) {
+                b = m2;
+            } else {
+                a = m1;
+            }
+        }
+        p.distance(centre((a + b) / 2.0)) - radius
+    };
+    let generated = rounded.history.generated(&foot).to_vec();
+    let (worst, _) = fitted_round(&model, &generated, &off);
+    eprintln!("the slanted stepped band stands {worst} off the balls");
+    assert!(worst < 2e-4, "the round stands {worst} off the balls");
+    let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
+    for k in 1..40 {
+        let y = 20.0 * f64::from(k) / 40.0;
+        let (gap, _) = boundary.nearest(centre(y), T).unwrap();
+        assert!(
+            gap >= radius - worst.max(1e-9),
+            "a ball at {y} is {gap} from the solid"
+        );
+        // Its contact on the lower far edge lies on the result.
+        let w = centre(y) - p0;
+        let contact = p0 + d * w.dot(d);
+        let (on, _) = boundary.nearest(contact, T).unwrap();
+        assert!(on <= worst.max(1e-7), "the contact at {y} stands {on} off");
+    }
+    // The upper step's top went into the fill.
+    let (above, _) = boundary.nearest(Point::new(8.2, 10.0, 7.0), T).unwrap();
+    assert!(
+        above > 0.1,
+        "the upper step's top still bounds the result ({above})"
+    );
+}
+
+/// A wall on two low steps whose far edges are not parallel to the wall's
+/// foot, on a floor: the upper step's top runs from the wall at `x = 8` to
+/// a far edge from (8.5, 0) to (8.9, 20) at height 1.5, the lower step's
+/// from there to one from (10, 0) to (10.6, 20) at height 1, the floor at
+/// height 0 running on past both ends. Rounded at radius 6, the ball
+/// touching the wall clears both far edges and comes down on the floor:
+/// its centre runs on the line `x = 14`, `z = 6`. The band lies on the
+/// envelope of those balls, every ball stands clear of the result, the
+/// lines of contact on the wall and the floor lie on it, and both steps'
+/// tops went into the fill.
+#[test]
+fn a_round_comes_down_on_the_floor_past_steps_slanted_to_its_seam() {
+    use ogeom_geom::{Curve, LineCurve, PlaneSurface};
+    use ogeom_math::{Direction, Plane, Vector};
+    let radius = 6.0;
+    let mut model = ogeom_topo::Model::new();
+    let raised = |model: &mut ogeom_topo::Model, corners: &[(f64, f64)], z0: f64, h: f64| {
+        let points: Vec<Point> = corners.iter().map(|&(x, y)| Point::new(x, y, z0)).collect();
+        let v: Vec<_> = points
+            .iter()
+            .map(|p| ogeom_algo::make_vertex(model, *p).shape)
+            .collect();
+        let n = points.len();
+        let edges: Vec<_> = (0..n)
+            .map(|i| {
+                use ogeom_geom::Curve3d as _;
+                let line: Curve = LineCurve::segment(points[i], points[(i + 1) % n], T)
+                    .unwrap()
+                    .into();
+                let range = line.domain();
+                ogeom_algo::make_edge_between(model, line, range, &v[i], &v[(i + 1) % n], T)
+                    .unwrap()
+                    .shape
+            })
+            .collect();
+        let wire = ogeom_algo::make_wire(model, &edges, T).unwrap().shape;
+        let plane = Plane::new(
+            Frame::new(Point::new(0.0, 0.0, z0), Direction::Z, Direction::X, T).unwrap(),
+        );
+        let surface = PlaneSurface::over(plane, (-100.0, 100.0), (-100.0, 100.0)).unwrap();
+        let face = ogeom_algo::make_face(model, surface.into(), &[wire], T)
+            .unwrap()
+            .shape;
+        ogeom_algo::make_prism(model, &face, Vector::new(0.0, 0.0, h), T)
+            .unwrap()
+            .shape
+    };
+    let mut solid = raised(
+        &mut model,
+        &[(0.0, -5.0), (30.0, -5.0), (30.0, 25.0), (0.0, 25.0)],
+        -5.0,
+        5.0,
+    );
+    for (corners, h) in [
+        (
+            vec![(0.0, 0.0), (10.0, 0.0), (10.6, 20.0), (0.0, 20.0)],
+            1.0,
+        ),
+        (vec![(0.0, 0.0), (8.5, 0.0), (8.9, 20.0), (0.0, 20.0)], 1.5),
+        (vec![(0.0, 0.0), (8.0, 0.0), (8.0, 20.0), (0.0, 20.0)], 20.0),
+    ] {
+        let part = raised(&mut model, &corners, 0.0, h);
+        solid = ogeom_bool::fuse(&mut model, &solid, &part, T)
+            .unwrap()
+            .shape;
+    }
+    let foot = explore(&model, &solid, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .into_iter()
+        .find(|e| {
+            let (a, b) = ogeom_algo::edge_vertices(&model, e).unwrap().unwrap();
+            [a, b].iter().all(|v| {
+                let p = model
+                    .node(v)
+                    .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                    .unwrap();
+                (p.x - 8.0).abs() < 1e-9 && (p.z - 1.5).abs() < 1e-9
+            })
+        })
+        .expect("the wall's foot on the upper step");
+    let rounded = ogeom_fillet::fillet_edge(&mut model, &solid, &foot, radius, T)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let diagnosis = ogeom_algo::check(&model, &rounded.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let centre = |y: f64| Point::new(8.0 + radius, y, radius);
+    let off = |p: Point| Vector::new(p.x - 8.0 - radius, 0.0, p.z - radius).magnitude() - radius;
+    let generated = rounded.history.generated(&foot).to_vec();
+    let (worst, _) = fitted_round(&model, &generated, &off);
+    eprintln!("the floor-held band stands {worst} off the balls");
+    assert!(worst < 2e-4, "the round stands {worst} off the balls");
+    let boundary = ogeom_algo::PointDistance::of(&model, &rounded.shape, T).unwrap();
+    for k in 1..40 {
+        let y = 20.0 * f64::from(k) / 40.0;
+        let (gap, _) = boundary.nearest(centre(y), T).unwrap();
+        assert!(
+            gap >= radius - worst.max(1e-9),
+            "a ball at {y} is {gap} from the solid"
+        );
+        for contact in [Point::new(8.0, y, radius), Point::new(8.0 + radius, y, 0.0)] {
+            let (on, _) = boundary.nearest(contact, T).unwrap();
+            assert!(
+                on <= worst.max(1e-7),
+                "the contact {contact:?} stands {on} off"
+            );
+        }
+    }
+    // Both steps' tops went into the fill.
+    for p in [Point::new(8.2, 10.0, 1.5), Point::new(9.5, 10.0, 1.0)] {
+        let (above, _) = boundary.nearest(p, T).unwrap();
+        assert!(
+            above > 0.1,
+            "a step's top at {p:?} still bounds the result ({above})"
+        );
+    }
+}

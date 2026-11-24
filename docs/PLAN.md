@@ -121,7 +121,7 @@ chart's pole met only where the chart is left unturned, which refuses.
 Two still miss by more than a few chords. A skin crossing a mitre
 plane ever more shallowly toward the corner
 (`an_off_centre_section_down_an_l_mitres_between_skinned_runs` in
-`crates/ogeom/tests/pipe_corners.rs`, the surfaces' normals parallel to
+`crates/ogeom/tests/facade/pipe_corners.rs`, the surfaces' normals parallel to
 1e-14 at the corner) states 2.2e-4: within the confusion distance of both
 surfaces the walk's correction can land a sample off the crossing, one by
 2.9e-5 in the skin's chart, and the fit follows it. Holding each span
@@ -170,9 +170,9 @@ stretch and keeps every piece beyond one
 `a_floor_its_line_of_contact_runs_out_of_and_back_rounds_in_two_runs`).
 Edges a line is cut into that meet end to end, across a face's seam, are
 one stretch (`a_round_whose_line_crosses_the_drum_s_seam_stands_untrimmed`).
-They refuse (`curved_face_blends_refuse_by_name` in `tests/blends.rs`,
+They refuse (`curved_face_blends_refuse_by_name` in `tests/facade/blends.rs`,
 `face_rounds_refuse_by_name` and `curved_rounds_refuse_by_name` in
-`tests/sheet_fillets.rs`):
+`tests/facade/sheet_fillets.rs`):
 
 - with `trim`, a marched line of contact crossing a face's seam (the rail
   would be two edges), or crossing a face over a stretch the other face

@@ -1,0 +1,469 @@
+//! The boolean's entry points beyond the three operations: scaled
+//! placements baked automatically, half spaces, faces sewn into solids,
+//! cells, fuzz and periodic patterns.
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
+use ogeom_core::Tolerances;
+use ogeom_math::{Direction, Frame, Point, Transform};
+use ogeom_mesh::Deflection;
+use ogeom_topo::Model;
+
+const T: Tolerances = Tolerances::millimetres();
+
+/// A placement with scale is not refused: the boolean bakes it (every
+/// surface restated exactly in its own analytic vocabulary, pcurves
+/// re-derived) and the drilled result measures.
+#[test]
+fn a_scaled_placement_bakes_and_the_boolean_runs() {
+    let mut model = Model::new();
+    let unit = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let scaled = ogeom_algo::transformed(
+        &mut model,
+        &unit,
+        Transform::scaling(Point::ORIGIN, 2.0, T).unwrap(),
+    )
+    .unwrap()
+    .shape;
+
+    // The bake alone is exact: the doubled box measures eight thousand.
+    let baked = ogeom_algo::baked_shape(&mut model, &scaled, T)
+        .unwrap()
+        .shape;
+    let v = ogeom_algo::volume_properties(&model, &baked, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 8000.0).abs() < 1e-6, "the bake is exact: {v}");
+
+    // And the boolean takes the scaled shape directly.
+    let f = Frame::new(Point::new(10.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drill = ogeom_algo::make_cylinder(&mut model, f, 3.0, 22.0, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom_bool::cut(&mut model, &scaled, &drill, T)
+        .unwrap()
+        .shape;
+    let v = ogeom_algo::volume_properties(&model, &cut, Deflection::with_chord(1e-2).unwrap(), T)
+        .unwrap()
+        .mass;
+    let expected = 8000.0 - core::f64::consts::PI * 9.0 * 20.0;
+    assert!(
+        (v - expected).abs() / expected < 1e-3,
+        "the scaled cut measures: {v} vs {expected}"
+    );
+}
+
+/// Cutting a box with the solid on one side of a plane slices it exactly
+/// at the plane, and the union with a half space refuses as the unbounded
+/// thing it would be.
+#[test]
+fn a_half_space_cuts_and_refuses_to_fuse() {
+    use ogeom_geom::{LineCurve, PlaneSurface, SurfaceGeometry};
+    use ogeom_math::Plane;
+    use ogeom_topo::Shape;
+
+    let mut model = Model::new();
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+
+    // A face on the plane z = 4, and the half space above it.
+    let corners = [
+        Point::new(-5.0, -5.0, 4.0),
+        Point::new(15.0, -5.0, 4.0),
+        Point::new(15.0, 15.0, 4.0),
+        Point::new(-5.0, 15.0, 4.0),
+    ];
+    let vertices: Vec<Shape> = corners
+        .iter()
+        .map(|c| ogeom_algo::make_vertex(&mut model, *c).shape)
+        .collect();
+    let edges: Vec<Shape> = (0..4)
+        .map(|i| {
+            let (a, b) = (corners[i], corners[(i + 1) % 4]);
+            ogeom_algo::make_edge_between(
+                &mut model,
+                LineCurve::segment(a, b, T).unwrap().into(),
+                (0.0, a.distance(b)),
+                &vertices[i],
+                &vertices[(i + 1) % 4],
+                T,
+            )
+            .unwrap()
+            .shape
+        })
+        .collect();
+    let plane_frame = Frame::new(Point::new(0.0, 0.0, 4.0), Direction::Z, Direction::X, T).unwrap();
+    let face = ogeom_algo::make_face_with_pcurves(
+        &mut model,
+        SurfaceGeometry::Plane(PlaneSurface::new(Plane::new(plane_frame))),
+        &[edges],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let upper = ogeom_algo::make_half_space(&mut model, &face, Point::new(0.0, 0.0, 100.0), T)
+        .unwrap()
+        .shape;
+
+    // Cutting away everything above z = 4 leaves the 10x10x4 slab.
+    let slab = ogeom_bool::cut(&mut model, &block, &upper, T)
+        .unwrap()
+        .shape;
+    let v = ogeom_algo::volume_properties(&model, &slab, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 400.0).abs() < 1e-6, "the slab below the plane: {v}");
+
+    // Common keeps the upper part.
+    let cap = ogeom_bool::common(&mut model, &block, &upper, T)
+        .unwrap()
+        .shape;
+    let v = ogeom_algo::volume_properties(&model, &cap, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 600.0).abs() < 1e-6, "the cap above the plane: {v}");
+
+    // And the union is refused as unbounded, by name.
+    let err = ogeom_bool::fuse(&mut model, &block, &upper, T).unwrap_err();
+    assert!(err.to_string().contains("unbounded"), "{err}");
+}
+
+/// Faces sewn back into the solids they bound: two boxes' faces, one
+/// nested inside the other, become a solid with a void.
+#[test]
+fn a_face_soup_becomes_solids_with_voids() {
+    use ogeom_topo::{ShapeType, explore_unique};
+    let mut model = Model::new();
+    let outer = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let inner_frame = Frame::new(Point::new(3.0, 3.0, 3.0), Direction::Z, Direction::X, T).unwrap();
+    let inner = ogeom_algo::make_box(&mut model, inner_frame, (4.0, 4.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let mut soup = explore_unique(&model, &outer, ShapeType::Face).unwrap();
+    soup.extend(explore_unique(&model, &inner, ShapeType::Face).unwrap());
+
+    let built = ogeom_bool::make_volume(&mut model, &soup, T).unwrap();
+    let v = ogeom_algo::volume_properties(&model, &built.shape, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!(
+        (v - (1000.0 - 64.0)).abs() < 1e-6,
+        "the inner shell is a void: {v}"
+    );
+}
+
+/// The three cells, and the identity that binds them.
+#[test]
+fn cells_partition_and_their_volumes_add_up() {
+    let mut model = Model::new();
+    let a = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let f = Frame::new(Point::new(5.0, 5.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+    let b = ogeom_algo::make_box(&mut model, f, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let cells = ogeom_bool::cells(&mut model, &a, &b, T).unwrap();
+    let v = |s: &ogeom_topo::Shape| {
+        ogeom_algo::volume_properties(&model, s, Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let (va, vb, vc) = (
+        v(&cells.a_not_b.shape),
+        v(&cells.b_not_a.shape),
+        v(&cells.common.shape),
+    );
+    assert!((vc - 125.0).abs() < 1e-6, "the overlap cell: {vc}");
+    assert!((va - 875.0).abs() < 1e-6 && (vb - 875.0).abs() < 1e-6);
+    assert!(
+        ((va + vb + vc) - 1875.0).abs() < 1e-6,
+        "the cells partition"
+    );
+}
+
+/// Fuzz: boxes adrift by five microns fuse into one solid at a stated
+/// tenth-of-a-millimetre fuzz, and the inputs survive untouched: the
+/// non-destructive contract, pinned.
+#[test]
+fn fuzzy_fusion_closes_small_gaps_and_inputs_survive() {
+    let mut model = Model::new();
+    let a = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let f = Frame::new(
+        Point::new(10.000005, 0.0, 0.0),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let b = ogeom_algo::make_box(&mut model, f, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+
+    let fused = ogeom_bool::fuse_fuzzy(&mut model, &a, &b, 1e-4, T)
+        .unwrap()
+        .shape;
+    let v = ogeom_algo::volume_properties(&model, &fused, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!(
+        (v - 2000.0).abs() / 2000.0 < 1e-4,
+        "the gap closes inside the fuzz: {v}"
+    );
+
+    // Non-destructive: the inputs still measure themselves.
+    for (input, want) in [(&a, 1000.0), (&b, 1000.0)] {
+        let v = ogeom_algo::volume_properties(&model, input, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!((v - want).abs() < 1e-6, "the input survived: {v}");
+    }
+}
+
+/// A fuzz of a tenth of a millimetre on ten-millimetre boxes loosens the
+/// boolean's welds and probes to most of a box. Its result is held to the
+/// volume the exact operation finds: two boxes overlapping by 0.05 mm,
+/// touching, or overlapping by 3 mm at a fuzz of 0.05 fuse whole, neither
+/// box dropped and nothing come out empty.
+#[test]
+fn a_coarse_fuzz_keeps_both_boxes() {
+    for (z, fuzz, want) in [
+        (9.95, 0.1, 1995.0),
+        (10.0, 0.1, 2000.0),
+        (7.0, 0.05, 1700.0),
+    ] {
+        let mut model = Model::new();
+        let a = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let f = Frame::new(Point::new(0.0, 0.0, z), Direction::Z, Direction::X, T).unwrap();
+        let b = ogeom_algo::make_box(&mut model, f, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let fused = ogeom_bool::fuse_fuzzy(&mut model, &a, &b, fuzz, T)
+            .unwrap_or_else(|e| panic!("at z {z}, fuzz {fuzz}: {e}"))
+            .shape;
+        let v = ogeom_algo::volume_properties(&model, &fused, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!(
+            (v - want).abs() <= fuzz * 1200.0,
+            "at z {z}, fuzz {fuzz}: {v} against {want}"
+        );
+        let cut = ogeom_bool::cut_fuzzy(&mut model, &a, &b, fuzz, T)
+            .unwrap()
+            .shape;
+        let left = ogeom_algo::volume_properties(&model, &cut, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        let kept = (z.min(10.0)) * 100.0;
+        assert!(
+            (left - kept).abs() <= fuzz * 1200.0,
+            "cut at z {z}, fuzz {fuzz}: {left} against {kept}"
+        );
+    }
+}
+
+/// A fuzz that is no distance is refused by each of the fuzzy booleans.
+#[test]
+fn the_fuzzy_booleans_refuse_a_fuzz_that_is_no_distance() {
+    let mut model = Model::new();
+    let a = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let f = Frame::new(Point::new(5.0, 0.0, 0.0), Direction::Z, Direction::X, T).unwrap();
+    let b = ogeom_algo::make_box(&mut model, f, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    for fuzz in [-1.0, 0.0, f64::NAN] {
+        for (name, made) in [
+            ("fuse", ogeom_bool::fuse_fuzzy(&mut model, &a, &b, fuzz, T)),
+            ("cut", ogeom_bool::cut_fuzzy(&mut model, &a, &b, fuzz, T)),
+            (
+                "common",
+                ogeom_bool::common_fuzzy(&mut model, &a, &b, fuzz, T),
+            ),
+        ] {
+            assert!(
+                matches!(made, Err(ogeom_core::OgeomError::Construction(_))),
+                "{name} at a fuzz of {fuzz}"
+            );
+        }
+    }
+}
+
+/// A periodic pattern: three boxes at a flush period fuse into one bar.
+#[test]
+fn a_periodic_pattern_fuses_into_one() {
+    use ogeom_math::Vector;
+    let mut model = Model::new();
+    let cell = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let bar = ogeom_bool::make_periodic(&mut model, &cell, Vector::new(10.0, 0.0, 0.0), 3, T)
+        .unwrap()
+        .shape;
+    let v = ogeom_algo::volume_properties(&model, &bar, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    assert!((v - 3000.0).abs() < 1e-6, "three cells, one bar: {v}");
+}
+
+/// A pattern's history reaches its faces: every face of the cell traces
+/// to its own image and generates its copies', and together they are every
+/// face of the result, apart or fused.
+#[test]
+fn a_periodic_pattern_traces_every_face() {
+    use ogeom_math::Vector;
+    use ogeom_topo::{Shape, ShapeType, explore_unique};
+    for (period, faces) in [(20.0, 18), (10.0, 14)] {
+        let mut model = Model::new();
+        let cell = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let built =
+            ogeom_bool::make_periodic(&mut model, &cell, Vector::new(period, 0.0, 0.0), 3, T)
+                .unwrap();
+        let result = explore_unique(&model, &built.shape, ShapeType::Face).unwrap();
+        assert_eq!(result.len(), faces, "period {period}");
+        let mut reached: Vec<Shape> = Vec::new();
+        for face in explore_unique(&model, &cell, ShapeType::Face).unwrap() {
+            // Faces only: a fuse also generates its section edges from the
+            // faces it cuts.
+            let generated: Vec<Shape> = built
+                .history
+                .generated(&face)
+                .iter()
+                .filter(|g| model.kind_of(g).unwrap() == ShapeType::Face)
+                .cloned()
+                .collect();
+            // Apart, every face has two copies. Flush, a wall's copies
+            // between cells are inside the bar and gone.
+            if period > 10.0 {
+                assert_eq!(generated.len(), 2, "period {period}: a face's copies");
+            }
+            for image in built.history.trace(&face).iter().chain(&generated) {
+                assert!(
+                    result.iter().any(|r| r.is_same(image)),
+                    "period {period}: an image in the result"
+                );
+                reached.push(image.clone());
+            }
+        }
+        for face in &result {
+            assert!(
+                reached.iter().any(|r| r.is_same(face)),
+                "period {period}: every result face is reached"
+            );
+        }
+    }
+}
+
+/// A prism's far cap is its near cap moved: the same edge nodes under a
+/// displacement. A box notching only the far cap's edges splits them
+/// there, and the near cap's edges, the same nodes in another place, stay
+/// whole: the near cap is still the triangle it was.
+#[test]
+fn a_prism_s_near_cap_keeps_its_edges_when_its_far_cap_is_notched() {
+    use ogeom_topo::{Filter, ShapeType, explore};
+    let mut model = Model::new();
+    let corners = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(4.0, 0.0, 0.0),
+        Point::new(0.0, 4.0, 0.0),
+    ];
+    let wire = ogeom_algo::make_polygon(&mut model, &corners, true, T)
+        .unwrap()
+        .shape;
+    let edges = explore(&model, &wire, Filter::OfType(ShapeType::Edge)).unwrap();
+    let plane = ogeom_geom::PlaneSurface::new(ogeom_math::Plane::through(corners[0], Direction::Z));
+    let profile = ogeom_algo::make_face_with_pcurves(&mut model, plane.into(), &[edges], T)
+        .unwrap()
+        .shape;
+    let prism = ogeom_algo::make_prism(&mut model, &profile, ogeom_math::Vector::Z * 5.0, T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(1.0, -1.0, 4.0), Direction::Z, Direction::X, T).unwrap();
+    let notch = ogeom_algo::make_box(&mut model, frame, (1.0, 7.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom_bool::cut(&mut model, &prism, &notch, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom_algo::check(&model, &cut, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    let near_cap = explore(&model, &cut, Filter::OfType(ShapeType::Face))
+        .unwrap()
+        .into_iter()
+        .find(|f| {
+            let centre = ogeom_algo::surface_properties(&model, f, Deflection::default(), T)
+                .unwrap()
+                .centre;
+            centre.z.abs() < 1e-9
+        })
+        .expect("the near cap survives");
+    let sides = explore(&model, &near_cap, Filter::OfType(ShapeType::Edge))
+        .unwrap()
+        .len();
+    assert_eq!(sides, 3, "the near cap is still a triangle");
+}
+
+/// A half space below a plane clear of the solid holds all of it: its
+/// section is empty, its common the whole solid and its cut nothing, however
+/// far the plane stands off. Below a plane through the solid, the section
+/// is where the plane crosses it.
+#[test]
+fn a_half_space_clear_of_a_solid_sections_nothing() {
+    use ogeom_geom::{PlaneSurface, SurfaceGeometry};
+    use ogeom_math::Plane;
+    use ogeom_topo::{ShapeType, explore_unique};
+    let below = |model: &mut Model, height: f64| {
+        let plane = Plane::through(Point::new(0.0, 0.0, height), Direction::Z);
+        let surface = PlaneSurface::over(plane, (-1e6, 1e6), (-1e6, 1e6)).unwrap();
+        let face = ogeom_algo::make_natural_face(model, SurfaceGeometry::Plane(surface))
+            .unwrap()
+            .shape;
+        ogeom_algo::make_half_space(model, &face, Point::new(0.0, 0.0, height - 1.0), T)
+            .unwrap()
+            .shape
+    };
+    let mut model = Model::new();
+    let cube = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    for height in [15.0, 40.0, 400.0] {
+        let half = below(&mut model, height);
+        let section = ogeom_bool::section(&mut model, &cube, &half, T)
+            .unwrap()
+            .shape;
+        assert!(
+            explore_unique(&model, &section, ShapeType::Edge)
+                .unwrap()
+                .is_empty(),
+            "a plane at {height} sections nothing"
+        );
+        let kept = ogeom_bool::common(&mut model, &cube, &half, T)
+            .unwrap()
+            .shape;
+        let v = ogeom_algo::volume_properties(&model, &kept, Deflection::default(), T)
+            .unwrap()
+            .mass;
+        assert!((v - 1000.0).abs() < 1e-6, "{height}: {v}");
+    }
+    let half = below(&mut model, 4.0);
+    let section = ogeom_bool::section(&mut model, &cube, &half, T)
+        .unwrap()
+        .shape;
+    assert_eq!(
+        explore_unique(&model, &section, ShapeType::Edge)
+            .unwrap()
+            .len(),
+        4
+    );
+}

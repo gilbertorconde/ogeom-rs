@@ -6,7 +6,7 @@ that silently drops a face. ogeom's rule: **when the kernel cannot produce a
 correct result, it refuses, and the error names the reason.**
 
 ```rust
-{{#include ../../../../crates/ogeom/tests/book.rs:refused_by_name}}
+{{#include ../../../../crates/ogeom/tests/facade/book.rs:refused_by_name}}
 ```
 
 Where this applies:

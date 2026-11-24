@@ -11,7 +11,7 @@ Everything here is in `ogeom::io`.
 Read and write, at document level:
 
 ```rust
-{{#include ../../../../crates/ogeom/tests/book.rs:step_roundtrip}}
+{{#include ../../../../crates/ogeom/tests/facade/book.rs:step_roundtrip}}
 ```
 
 Round trips preserve assemblies with instancing, names, colours, semantic
@@ -48,7 +48,7 @@ solids as `(done, total)`, so a progress bar can be determinate. The
 `Watch`'s canceller stops the work at the next checkpoint:
 
 ```rust
-{{#include ../../../../crates/ogeom/tests/book.rs:watching_an_import}}
+{{#include ../../../../crates/ogeom/tests/facade/book.rs:watching_an_import}}
 ```
 
 ## IGES

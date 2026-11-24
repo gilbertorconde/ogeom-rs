@@ -2,7 +2,7 @@ name: Docs
 
 # The book (docs/book) at the site root, rustdoc under /api/. Deploys only
 # what CI already gates: the book's code blocks are included from
-# crates/ogeom/tests/book.rs, which the check workflow runs.
+# crates/ogeom/tests/facade/book.rs, which the check workflow runs.
 
 on:
   push:

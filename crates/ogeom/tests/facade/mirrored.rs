@@ -1,0 +1,648 @@
+//! Bodies under reflecting placements: the chart's natural normal flips
+//! against every orientation flag, and each consumer must fold the
+//! handedness back in.
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
+use crate::walks;
+
+use ogeom_core::Tolerances;
+use ogeom_math::{Frame, Point};
+
+const T: Tolerances = Tolerances::millimetres();
+
+fn vol(model: &ogeom_topo::Model, s: &ogeom_topo::Shape) -> f64 {
+    ogeom_algo::volume_properties(
+        model,
+        s,
+        ogeom_mesh::Deflection {
+            chord: 1e-3,
+            ..ogeom_mesh::Deflection::default()
+        },
+        T,
+    )
+    .unwrap()
+    .mass
+}
+
+fn block_and_mirror(model: &mut ogeom_topo::Model) -> (ogeom_topo::Shape, ogeom_topo::Shape) {
+    let block = ogeom_algo::make_box(
+        model,
+        Frame::new(
+            Point::new(1.0, 0.0, 0.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap(),
+        (10.0, 10.0, 10.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let mirror =
+        ogeom_math::Transform::plane_mirror(Point::new(1.0, 0.0, 0.0), ogeom_math::Direction::X);
+    let mirrored = model.placed(&block, mirror);
+    (block, mirrored)
+}
+
+#[test]
+fn a_mirrored_body_measures_right_side_out() {
+    let mut model = ogeom_topo::Model::new();
+    let (_, mirrored) = block_and_mirror(&mut model);
+    let properties = ogeom_algo::volume_properties(
+        &model,
+        &mirrored,
+        ogeom_mesh::Deflection {
+            chord: 1e-3,
+            ..ogeom_mesh::Deflection::default()
+        },
+        T,
+    )
+    .unwrap();
+    assert!((properties.mass - 1000.0).abs() < 1e-6);
+    assert!(
+        (properties.centre.x + 4.0).abs() < 1e-6,
+        "the centre mirrored across x = 1: {:?}",
+        properties.centre
+    );
+
+    // And the bake restates it right side out.
+    let baked = ogeom_algo::baked_shape(&mut model, &mirrored, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &baked.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert!((vol(&model, &baked.shape) - 1000.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_body_fuses_with_its_mirror_across_the_shared_face() {
+    let mut model = ogeom_topo::Model::new();
+    let (block, mirrored) = block_and_mirror(&mut model);
+    let fused = ogeom_bool::fuse(&mut model, &block, &mirrored, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert_eq!(walks::edges_walked_one_way(&model, &fused.shape), 0);
+    assert!(
+        (vol(&model, &fused.shape) - 2000.0).abs() < 1e-6,
+        "the halves joined across their shared face"
+    );
+}
+
+#[test]
+fn a_mirrored_drum_fuses_through_its_fitted_images() {
+    // A curved body under a reflection: the boolean restates it in world
+    // coordinates first, and whatever pcurves that restatement had to fit
+    // carry their slop on the record: the melt's snap reaches it, or the
+    // contact dangles a hair from the boundary it paved.
+    let mut model = ogeom_topo::Model::new();
+    let drum = ogeom_algo::make_cylinder(
+        &mut model,
+        Frame::new(
+            Point::new(3.0, 0.0, 0.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap(),
+        2.0,
+        6.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+    let mirrored = model.placed(&drum, mirror);
+    let block = ogeom_algo::make_box(
+        &mut model,
+        Frame::new(
+            Point::new(-2.0, -5.0, 0.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap(),
+        (2.0, 10.0, 6.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let fused = ogeom_bool::fuse(&mut model, &block, &mirrored, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    // Block plus drum less the circular segment they share.
+    let pi = core::f64::consts::PI;
+    let theta = 2.0 * core::f64::consts::FRAC_PI_3;
+    let segment = 4.0 * (theta - theta.sin()) / 2.0 * 6.0;
+    let expected = 6.0_f64.mul_add(2.0 * 10.0, pi * 4.0 * 6.0) - segment;
+    let measured = vol(&model, &fused.shape);
+    assert!(
+        (measured - expected).abs() < expected * 1e-3,
+        "fused volume {measured} against {expected}"
+    );
+}
+
+#[test]
+fn a_prism_fuses_with_its_mirrored_copy() {
+    // A pad is built as a profile face swept, which stores its near cap
+    // reversed and its far cap as that same node displaced. A copy applies
+    // each stored placement and sense once: applied twice they take a wire
+    // apart, and only the bake a reflecting placement forces, which walks
+    // every wire and rebuilds it, says so.
+    let mut model = ogeom_topo::Model::with_tolerances(T);
+    let pts = [
+        Point::new(0.0, 0.0, 0.0),
+        Point::new(10.0, 0.0, 0.0),
+        Point::new(10.0, 10.0, 0.0),
+        Point::new(0.0, 10.0, 0.0),
+    ];
+    let wire = ogeom_algo::make_polygon(&mut model, &pts, true, T)
+        .unwrap()
+        .shape;
+    let surface =
+        ogeom_geom::PlaneSurface::over(ogeom_math::Plane::XY, (-1.0, 11.0), (-1.0, 11.0)).unwrap();
+    let edges = model.children_of(&wire).unwrap();
+    let face = ogeom_algo::make_face_with_pcurves(
+        &mut model,
+        ogeom_geom::SurfaceGeometry::Plane(surface),
+        &[edges],
+        T,
+    )
+    .unwrap()
+    .shape;
+    let a = ogeom_algo::make_prism(&mut model, &face, ogeom_math::Vector::new(0.0, 0.0, 5.0), T)
+        .unwrap()
+        .shape;
+
+    let fresh = ogeom_algo::copied(&mut model, &a).unwrap().shape;
+    let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+    let b = ogeom_algo::transformed(&mut model, &fresh, mirror)
+        .unwrap()
+        .shape;
+
+    let fused = ogeom_bool::fuse(&mut model, &a, &b, T).unwrap();
+    let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
+    assert!(diagnosis.is_valid(), "{:?}", diagnosis.problems);
+    assert_eq!(walks::edges_walked_one_way(&model, &fused.shape), 0);
+
+    // Two 10×10×5 pads meeting at the mirror plane, sharing only that face.
+    let measured = vol(&model, &fused.shape);
+    assert!(
+        (measured - 1000.0).abs() < 1e-6,
+        "fused volume {measured} against 1000"
+    );
+    // The pair spans the mirror. Bounds err outward, so assert one-sided and
+    // let the exact volume above pin how tight the body really is.
+    let bounds = ogeom_algo::shape_bounds(&model, &fused.shape, T).unwrap();
+    assert!(bounds.low().unwrap().x <= -10.0 + 1e-6);
+    assert!(bounds.high().unwrap().x >= 10.0 - 1e-6);
+}
+
+/// Mirrored bodies measure exactly, as their originals do: at the default
+/// chord a mesh would read a drum a percent or more out, and the exact
+/// integrals do not, reflected or not. A block with an oblique bore puts
+/// trimmed spline-free charts through the exact path as well.
+#[test]
+fn mirrored_bodies_measure_exactly_at_the_default_chord() {
+    let at_default = |model: &ogeom_topo::Model, s: &ogeom_topo::Shape| {
+        ogeom_algo::volume_properties(model, s, ogeom_mesh::Deflection::default(), T)
+            .unwrap()
+            .mass
+    };
+    let mut model = ogeom_topo::Model::new();
+    let drum = ogeom_algo::make_cylinder(
+        &mut model,
+        Frame::new(
+            Point::new(3.0, 0.0, 0.0),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap(),
+        2.0,
+        6.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+    let mirrored = model.placed(&drum, mirror);
+    let want = core::f64::consts::PI * 4.0 * 6.0;
+    let v = at_default(&model, &mirrored);
+    assert!((v - want).abs() < want * 1e-9, "{v} against {want}");
+
+    let block = ogeom_algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let axis = ogeom_math::Direction::new(ogeom_math::Vector::new(0.3, 0.2, 1.0), T).unwrap();
+    let bore = ogeom_algo::make_cylinder(
+        &mut model,
+        Frame::new(
+            Point::new(4.0, 5.0, -3.0),
+            axis,
+            ogeom_math::Direction::new(ogeom_math::Vector::new(1.0, 0.0, -0.3), T).unwrap(),
+            T,
+        )
+        .unwrap(),
+        2.0,
+        20.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let bored = ogeom_bool::cut(&mut model, &block, &bore, T).unwrap().shape;
+    let mirrored = model.placed(&bored, mirror);
+    let (a, b) = (at_default(&model, &bored), at_default(&model, &mirrored));
+    assert!((a - b).abs() < a * 1e-9, "{b} against {a}");
+}
+
+#[test]
+fn booleans_with_mirrored_curved_solids_match_the_unmirrored_images() {
+    type Build = fn(&mut ogeom_topo::Model, f64) -> ogeom_topo::Shape;
+    fn at(x: f64, z: f64) -> Frame {
+        Frame::new(
+            Point::new(x, 0.0, z),
+            ogeom_math::Direction::Z,
+            ogeom_math::Direction::X,
+            T,
+        )
+        .unwrap()
+    }
+    let tools: [(&str, Build); 4] = [
+        ("cylinder", |m, x| {
+            ogeom_algo::make_cylinder(m, at(x, -1.0), 1.0, 6.0, T)
+                .unwrap()
+                .shape
+        }),
+        ("cone", |m, x| {
+            ogeom_algo::make_cone(m, at(x, -1.0), 1.5, 0.5, 6.0, T)
+                .unwrap()
+                .shape
+        }),
+        ("sphere", |m, x| {
+            ogeom_algo::make_sphere(m, at(x, 3.0), 1.5, T)
+                .unwrap()
+                .shape
+        }),
+        ("torus", |m, x| {
+            ogeom_algo::make_torus(m, at(x, 3.0), 3.0, 1.0, T)
+                .unwrap()
+                .shape
+        }),
+    ];
+    let mirror =
+        ogeom_math::Transform::plane_mirror(Point::new(0.0, 0.0, 0.0), ogeom_math::Direction::X);
+    for (name, build) in tools {
+        let mut model = ogeom_topo::Model::new();
+        let block = ogeom_algo::make_box(&mut model, at(-5.0, 0.0), (10.0, 10.0, 3.0), T)
+            .unwrap()
+            .shape;
+        let block = model.placed(
+            &block,
+            ogeom_math::Transform::translation(ogeom_math::Vector::new(0.0, -5.0, 0.0)),
+        );
+        let original = build(&mut model, 0.5);
+        let mirrored = ogeom_algo::transformed(&mut model, &original, mirror)
+            .unwrap()
+            .shape;
+        let image = build(&mut model, -0.5);
+        for op in [ogeom_bool::fuse, ogeom_bool::common, ogeom_bool::cut] {
+            let got = op(&mut model, &block, &mirrored, T).unwrap().shape;
+            let want = op(&mut model, &block, &image, T).unwrap().shape;
+            assert!(
+                ogeom_algo::check(&model, &got, T).unwrap().is_valid(),
+                "{name}"
+            );
+            assert_eq!(walks::edges_walked_one_way(&model, &got), 0, "{name}");
+            let (g, w) = (vol(&model, &got), vol(&model, &want));
+            assert!((g - w).abs() < 1e-6 * w.max(1.0), "{name}: {g} against {w}");
+        }
+    }
+}
+
+/// A body scaled by a placement is meshed to the chord where it stands: a
+/// ball scaled tenfold comes out as the ball drawn at that size, not as the
+/// small ball's mesh stretched, whose chords stand ten times off.
+#[test]
+fn a_scaled_body_meshes_to_the_chord_where_it_stands() {
+    let mut model = ogeom_topo::Model::new();
+    let small = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 7.0, T)
+        .unwrap()
+        .shape;
+    let scaled = ogeom_algo::transformed(
+        &mut model,
+        &small,
+        ogeom_math::Transform::scaling(Point::ORIGIN, 10.0, T).unwrap(),
+    )
+    .unwrap()
+    .shape;
+    let large = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 70.0, T)
+        .unwrap()
+        .shape;
+    let deflection = ogeom_mesh::Deflection::default();
+    let mesh = |shape| ogeom_mesh::triangulate(&model, shape, deflection, T).unwrap();
+    let (a, b) = (mesh(&scaled), mesh(&large));
+    let worst = |m: &ogeom_topo::Triangulation| {
+        m.triangles
+            .iter()
+            .map(|t| {
+                let [p, q, r] = t.map(|i| m.positions[i as usize].to_vector());
+                let centroid = (p + q + r) / 3.0;
+                70.0 - centroid.magnitude()
+            })
+            .fold(0.0_f64, f64::max)
+    };
+    assert!(
+        (worst(&a) - worst(&b)).abs() < deflection.chord * 0.1,
+        "{} against {}",
+        worst(&a),
+        worst(&b)
+    );
+}
+
+/// A mesh says it meets the chord only where it does: measured at every
+/// triangle's middle against the surface, a ball whose grid cells sag past
+/// the chord says so, and a drum, whose cells sag no more than their sides,
+/// meets it and says that.
+#[test]
+fn a_mesh_reports_the_chord_it_meets() {
+    let mut model = ogeom_topo::Model::new();
+    let ball = ogeom_algo::make_sphere(&mut model, Frame::WORLD, 70.0, T)
+        .unwrap()
+        .shape;
+    let drum = ogeom_algo::make_cylinder(&mut model, Frame::WORLD, 70.0, 20.0, T)
+        .unwrap()
+        .shape;
+    let deflection = ogeom_mesh::Deflection::default();
+    // The drum's wall: triangles whose corners all stand on the radius and
+    // not all at one level, as a cap's triangle across its rim does.
+    let sag = |m: &ogeom_topo::Triangulation| {
+        let ring = |v: ogeom_math::Vector| v.x.hypot(v.y);
+        m.triangles
+            .iter()
+            .filter_map(|t| {
+                let [p, q, r] = t.map(|i| m.positions[i as usize].to_vector());
+                let level = (p.z - q.z).abs() < 1e-9 && (q.z - r.z).abs() < 1e-9;
+                ([p, q, r].iter().all(|c| (ring(*c) - 70.0).abs() < 1e-6) && !level)
+                    .then(|| 70.0 - ring((p + q + r) / 3.0))
+            })
+            .fold(0.0_f64, f64::max)
+    };
+    let ball_mesh = ogeom_mesh::triangulate(&model, &ball, deflection, T).unwrap();
+    let worst_ball = ball_mesh
+        .triangles
+        .iter()
+        .map(|t| {
+            let [p, q, r] = t.map(|i| ball_mesh.positions[i as usize].to_vector());
+            70.0 - ((p + q + r) / 3.0).magnitude()
+        })
+        .fold(0.0_f64, f64::max);
+    assert_eq!(
+        ball_mesh.deflection_met,
+        worst_ball <= deflection.chord,
+        "{worst_ball}"
+    );
+    let drum_mesh = ogeom_mesh::triangulate(&model, &drum, deflection, T).unwrap();
+    assert!(drum_mesh.deflection_met);
+    assert!(
+        sag(&drum_mesh) <= deflection.chord + 1e-9,
+        "{}",
+        sag(&drum_mesh)
+    );
+}
+
+/// A 2 by 2 square on the plane x = 0 with a quarter round of radius 1
+/// notched out of its corner at y = z = 2, its notch's arc running from
+/// `u = 0` of its circle at one end of the arc or the other.
+fn notched_profile(model: &mut ogeom_topo::Model, arc_from_the_floor: bool) -> ogeom_topo::Shape {
+    use ogeom_geom::{CircleCurve, Curve, Curve3d as _, LineCurve, PlaneSurface};
+    use ogeom_math::{Circle, Direction, Plane, Vector};
+    let at = |y: f64, z: f64| Point::new(0.0, y, z);
+    let corners = [
+        at(0.0, 0.0),
+        at(2.0, 0.0),
+        at(2.0, 1.0),
+        at(1.0, 2.0),
+        at(0.0, 2.0),
+    ];
+    let vertices: Vec<_> = corners
+        .iter()
+        .map(|p| ogeom_algo::make_vertex(model, *p).shape)
+        .collect();
+    let mut edges = Vec::new();
+    for (i, j) in [(0, 1), (1, 2), (3, 4), (4, 0)] {
+        let line = LineCurve::segment(corners[i], corners[j], T).unwrap();
+        let range = line.domain();
+        edges.push(
+            ogeom_algo::make_edge_between(
+                model,
+                Curve::Line(line),
+                range,
+                &vertices[i],
+                &vertices[j],
+                T,
+            )
+            .unwrap()
+            .shape,
+        );
+    }
+    let towards = |x, y, z| Direction::new(Vector::new(x, y, z), T).unwrap();
+    // Either way the arc runs a quarter turn from its circle's `x`: from
+    // the floor's end at (2, 1) round to (1, 2), or back.
+    let (frame, from, to) = if arc_from_the_floor {
+        (
+            Frame::new(
+                at(2.0, 2.0),
+                towards(-1.0, 0.0, 0.0),
+                towards(0.0, 0.0, -1.0),
+                T,
+            ),
+            2,
+            3,
+        )
+    } else {
+        (
+            Frame::new(
+                at(2.0, 2.0),
+                towards(1.0, 0.0, 0.0),
+                towards(0.0, -1.0, 0.0),
+                T,
+            ),
+            3,
+            2,
+        )
+    };
+    let arc = Curve::Circle(CircleCurve::new(
+        Circle::new(frame.unwrap(), 1.0, T).unwrap(),
+    ));
+    let arc = ogeom_algo::make_edge_between(
+        model,
+        arc,
+        (0.0, core::f64::consts::FRAC_PI_2),
+        &vertices[from],
+        &vertices[to],
+        T,
+    )
+    .unwrap()
+    .shape;
+    edges.insert(
+        2,
+        if arc_from_the_floor {
+            arc
+        } else {
+            arc.reversed()
+        },
+    );
+    let plane = PlaneSurface::over(
+        Plane::new(Frame::new(Point::ORIGIN, Direction::X, Direction::Y, T).unwrap()),
+        (-5.0, 5.0),
+        (-5.0, 5.0),
+    )
+    .unwrap();
+    ogeom_algo::make_face_with_pcurves(model, plane.into(), &[edges], T)
+        .unwrap()
+        .shape
+}
+
+/// A prism 4 long on [`notched_profile`], standing on the plane x = 0 on
+/// the side `length` points to; drilled, where `drill` is given, by an
+/// upright pin of that radius through the notch's straight edge along
+/// y = 2, z = 1.
+fn notched_prism(
+    model: &mut ogeom_topo::Model,
+    arc_from_the_floor: bool,
+    length: f64,
+    drill: Option<f64>,
+) -> ogeom_topo::Shape {
+    use ogeom_math::{Direction, Vector};
+    let profile = notched_profile(model, arc_from_the_floor);
+    let prism = ogeom_algo::make_prism(model, &profile, Vector::new(length, 0.0, 0.0), T)
+        .unwrap()
+        .shape;
+    let Some(radius) = drill else {
+        return prism;
+    };
+    let pin = ogeom_algo::make_cylinder(
+        model,
+        Frame::new(
+            Point::new(length / 2.0, 2.0, -1.0),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap(),
+        radius,
+        5.0,
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom_bool::cut(model, &prism, &pin, T).unwrap().shape
+}
+
+#[test]
+fn a_notched_prism_fuses_with_its_mirror_where_its_wall_chart_closes() {
+    // The notch's wall is a quarter of a cylinder whose chart closes along
+    // one of the wall's straight edges. Mirrored and baked, the wall's
+    // chart runs the other way round, and that edge can land on the other
+    // side of the closure from the rest of the wall's ring: the bake must
+    // place it beside the face, or the fuse finds a ring that does not
+    // close. Drilled through that edge, the pin's fitted edges on the wall
+    // end on the closure too, and each must end there on the side its own
+    // curve arrives from, or its pcurve runs round the back of the chart.
+    for (arc_from_the_floor, length, drill) in [
+        (true, -4.0, None),
+        (false, 4.0, None),
+        (true, 4.0, None),
+        (false, -4.0, None),
+        (true, -4.0, Some(0.5)),
+        (false, 4.0, Some(0.5)),
+    ] {
+        let mut model = ogeom_topo::Model::new();
+        let half = notched_prism(&mut model, arc_from_the_floor, length, drill);
+        let copy = ogeom_algo::copied(&mut model, &half).unwrap().shape;
+        let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+        let image = ogeom_algo::transformed(&mut model, &copy, mirror)
+            .unwrap()
+            .shape;
+        let case =
+            format!("arc from the floor {arc_from_the_floor}, length {length}, drill {drill:?}");
+        let fused = ogeom_bool::fuse(&mut model, &half, &image, T)
+            .unwrap_or_else(|e| panic!("{case}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{case}: {:?}", diagnosis.problems);
+        assert_eq!(
+            walks::edges_walked_one_way(&model, &fused.shape),
+            0,
+            "{case}"
+        );
+        // The halves share only the face on the mirror plane, so their
+        // volumes add. Undrilled, each is the profile's area, the square
+        // less the quarter disc, over the length; drilled, it is measured.
+        // The exact integrals measure analytic faces to rounding, and the
+        // pin's fitted edges stand within a micron of its exact curves.
+        let each = if drill.is_some() {
+            vol(&model, &half)
+        } else {
+            4.0 * (4.0 - core::f64::consts::FRAC_PI_4)
+        };
+        let measured = vol(&model, &fused.shape);
+        assert!(
+            (measured - 2.0 * each).abs() < each * 1e-8,
+            "{case}: fused volume {measured} against {}",
+            2.0 * each
+        );
+    }
+}
+
+#[test]
+fn a_notched_ring_fuses_with_its_mirror_where_its_wall_chart_closes_across_it() {
+    // The notched profile turned a quarter about the line x = 0, y = 5
+    // along z: the notch's wall is a quarter of a torus whose chart closes
+    // in v along the circle the profile's corner (1, 2) sweeps, which the
+    // wall's ring runs as a row, and its two arcs, columns, end on it.
+    // Mirrored and baked, the row and the columns' ends on the closure
+    // must land on the side of it the rest of the wall's ring stands on,
+    // or the fuse finds a ring that does not close.
+    use core::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+    for (arc_from_the_floor, up) in [(true, true), (false, true), (true, false), (false, false)] {
+        let mut model = ogeom_topo::Model::new();
+        let profile = notched_profile(&mut model, arc_from_the_floor);
+        let axis = ogeom_math::Axis {
+            location: Point::new(0.0, 5.0, 0.0),
+            direction: if up {
+                ogeom_math::Direction::Z
+            } else {
+                -ogeom_math::Direction::Z
+            },
+        };
+        let half = ogeom_algo::make_revolution(&mut model, &profile, axis, FRAC_PI_2, T)
+            .unwrap()
+            .shape;
+        let copy = ogeom_algo::copied(&mut model, &half).unwrap().shape;
+        let mirror = ogeom_math::Transform::plane_mirror(Point::ORIGIN, ogeom_math::Direction::X);
+        let image = ogeom_algo::transformed(&mut model, &copy, mirror)
+            .unwrap()
+            .shape;
+        let case = format!("arc from the floor {arc_from_the_floor}, turned up {up}");
+        let fused = ogeom_bool::fuse(&mut model, &half, &image, T)
+            .unwrap_or_else(|e| panic!("{case}: {e}"));
+        let diagnosis = ogeom_algo::check(&model, &fused.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{case}: {:?}", diagnosis.problems);
+        assert_eq!(
+            walks::edges_walked_one_way(&model, &fused.shape),
+            0,
+            "{case}"
+        );
+        // Pappus: each half is the profile's area swept a quarter turn at
+        // its centroid's distance from the axis. The square's centroid is
+        // at y = 1, the quarter disc's at y = 2 - 4 / (3 pi).
+        let area = 4.0 - FRAC_PI_4;
+        let centroid = (4.0 - FRAC_PI_4 * (2.0 - 4.0 / (3.0 * PI))) / area;
+        let each = area * (5.0 - centroid) * FRAC_PI_2;
+        let measured = vol(&model, &fused.shape);
+        assert!(
+            (measured - 2.0 * each).abs() < each * 1e-8,
+            "{case}: fused volume {measured} against {}",
+            2.0 * each
+        );
+    }
+}

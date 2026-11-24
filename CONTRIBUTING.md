@@ -139,6 +139,22 @@ does not throw; it corrupts a document six operations later. So:
     answers.
   - `tools/check.sh` and CI run both tiers. `tools/test-times.sh` prints the
     slowest tests of the default tier and fails past 15 s.
+- **One integration-test program per crate.** A crate's integration tests
+  live in `tests/<name>/main.rs` and one module file per area beside it
+  (`crates/ogeom-fillet/tests/fillet/`), so the crate links one test program
+  rather than one per file. Run an area with
+  `cargo t -p ogeom-fillet --test fillet chain::`. Add a test file as a module
+  of that program, not as a new file in `tests/`. Tests that need more crates
+  than the one they cover sit in the facade's program, `crates/ogeom/tests/facade/`.
+  - Helpers shared by several modules sit in `tests/support/` and are
+    declared once, in `main.rs`.
+  - A suite that reads the repository's `tests/corpus/` is its own program
+    (`crates/ogeom/tests/corpus_suites/`, `crates/ogeom-io/tests/step_corpus.rs`,
+    `crates/ogeom-heal/tests/reanchor_corpus.rs`), so the package's `exclude`
+    can leave it out and the main program still builds from the tarball.
+  - A test that sets process-wide state that cannot be reset keeps its own
+    program: `crates/ogeom-core/tests/pool.rs` and `pool_idle.rs` each lend
+    the one pool a process may have.
 - **Changelog entries are fragments.** A change that alters behaviour adds
   `changelog.d/<issue>-<slug>.md` holding its entry, and leaves `CHANGELOG.md`
   alone, so parallel pull requests never conflict on it. See

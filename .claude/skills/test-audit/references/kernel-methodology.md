@@ -19,7 +19,7 @@ mean vendoring one. Every oracle below can be computed here.
 | Robustness at the placements nobody wrote down | The stress harness | `tools/ogeom-stress`, seeded, judged per case by an oracle, gated against `baseline.json` nightly |
 | Performance | Watched, not gated | `tools/ogeom-bench` ratios against `baseline.json` |
 | Capabilities | The ledger's evidence | `docs/capabilities.toml` cites the symbol and the test; `tools/capabilities.py check` holds it to them |
-| The guide | The book's own code | `crates/ogeom/tests/book.rs` includes the examples by anchor; a book that builds is a book whose examples passed |
+| The guide | The book's own code | `crates/ogeom/tests/facade/book.rs` includes the examples by anchor; a book that builds is a book whose examples passed |
 
 ## Rules
 

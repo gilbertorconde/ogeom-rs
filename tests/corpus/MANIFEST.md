@@ -496,7 +496,7 @@ band already cut, and the chord's capped round. Refused the same way.
 
 Three solids in this kernel's native format, as the union rule of #342
 builds a rib running into a boss's rim (`rib_into_a_boss` in
-`crates/ogeom-fillet/tests/marched_fillet.rs`, turned 10°, r = 0.85): the
+`crates/ogeom-fillet/tests/fillet/marched_fillet.rs`, turned 10°, r = 0.85): the
 rib with its spline crease's round, run out past the vertex as it is
 alone, already cut; the round of the rim's arc, capped in the radial plane
 through the vertex; and the rib as given. The two rounds' rails cross on
@@ -510,7 +510,7 @@ close into a shell).
 
 Two solids in this kernel's native format, cut from #342's pentagon pocket
 (`pockets_whose_walls_lean_their_own_ways_meet_at_every_corner` in
-`crates/ogeom-fillet/tests/chain.rs`, walls drafted 0.1 / 0.05 / −0.05 /
+`crates/ogeom-fillet/tests/fillet/chain.rs`, walls drafted 0.1 / 0.05 / −0.05 /
 0.08 / 0, r = 0.5) by a box round its corner at (6, 2), with the fillet
 junction sweeping the cap's own circle: the pocketed block, and the ring
 wedge the junction joined. Two edges of the wedge lying in the pocket's
@@ -525,7 +525,7 @@ kept pieces did not close into a shell).
 Two solids in this kernel's native format, as rounding the rim of a
 drafted pocket of a disc up to a chord fuses them
 (`rounds_at_a_bore_meeting_a_drafted_chord_take_all_above_both` in
-`crates/ogeom-fillet/tests/chain.rs`, chord 0.5 off the centre, wall
+`crates/ogeom-fillet/tests/fillet/chain.rs`, chord 0.5 off the centre, wall
 drafted 0.1, r = 0.5): the corner wedge of the arc's band (a drum, a torus
 and three planes), and the junction piece of fourteen faces holding it
 whole. The wedge's torus meets the junction's drafted wall all but
@@ -576,7 +576,7 @@ out of points within 2e-5 of it, and the rounding took 30 s.
 Two solids in this kernel's native format, as rounding the rims of a
 drafted pocket of a disc up to a chord trims them at their junction
 (`rounds_at_a_bore_meeting_a_drafted_chord_take_all_above_both` in
-`crates/ogeom-fillet/tests/chain.rs`, the chord through the disc's centre,
+`crates/ogeom-fillet/tests/fillet/chain.rs`, the chord through the disc's centre,
 its wall drafted 0.1, r = 0.5): the arc's band carried on past the corner,
 and the region either side of the junction it is kept within. A section of
 the two runs exactly along an edge of one of the band's faces, between the

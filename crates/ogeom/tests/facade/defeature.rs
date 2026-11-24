@@ -1,0 +1,957 @@
+//! Removing a set of faces, the wound closed from the
+//! neighbours' own geometry, measured against the solids the features were
+//! cut from, not against plausibility.
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
+use crate::walks;
+
+use core::f64::consts::TAU;
+use ogeom::core::Tolerances;
+use ogeom::geom::SurfaceGeometry;
+use ogeom::math::{Circle, Direction, Frame, Point, Vector};
+use ogeom::mesh::Deflection;
+use ogeom::topo::{Model, Orientation, Shape, ShapeType, explore_unique};
+
+const T: Tolerances = Tolerances::millimetres();
+
+fn volume(model: &Model, shape: &Shape) -> f64 {
+    ogeom::algo::volume_properties(model, shape, Deflection::default(), T)
+        .unwrap()
+        .mass
+}
+
+/// Faces of `solid` whose surface satisfies the predicate.
+fn faces_where(
+    model: &Model,
+    solid: &Shape,
+    pred: impl Fn(&SurfaceGeometry) -> bool,
+) -> Vec<Shape> {
+    explore_unique(model, solid, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            model
+                .node(f)
+                .and_then(|n| n.data().as_face())
+                .and_then(|d| model.geometry().surface(d.surface))
+                .is_some_and(&pred)
+        })
+        .collect()
+}
+
+/// A through bore's wall removed: the rims are inner loops of the lid and
+/// base, and the block comes back to the last bit of its exact volume:
+/// no overshoot, because nothing is filled. The boundary is resewn.
+#[test]
+fn removing_a_bores_wall_makes_the_block_whole() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let frame = Frame::new(Point::new(15.0, 10.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, frame, 4.0, 12.0, T)
+        .unwrap()
+        .shape;
+    let drilled = ogeom::boolean::cut(&mut model, &block, &drill, T)
+        .unwrap()
+        .shape;
+
+    let walls = faces_where(&model, &drilled, |s| {
+        matches!(s, SurfaceGeometry::Cylinder(_))
+    });
+    assert_eq!(walls.len(), 1, "one bore wall");
+    let built = ogeom::boolean::remove_faces(&mut model, &drilled, &walls, T).unwrap();
+
+    let healed = volume(&model, &built.shape);
+    // Within float accumulation, not within a modelling tolerance: the lid
+    // and base come from the boolean's rebuild and carry its arithmetic. A
+    // wrong closure would miss by the bore's volume, eight hundred times the
+    // bound.
+    assert!((healed - 6000.0).abs() < 1e-6, "the block, whole: {healed}");
+    assert!(built.history.is_deleted(&walls[0]));
+}
+
+/// A through bore cut into a plate extruded from a profile, its wall
+/// removed: the plate comes back whole. The bore is drilled from below
+/// through both faces, or sunk from a disc on the lid, the way a pocket is.
+/// Every face of the cut lists its outer boundary first, the bore's rim
+/// after it.
+#[test]
+fn removing_a_bores_wall_from_an_extruded_plate_makes_it_whole() {
+    use ogeom::topo::{Filter, explore};
+    let flat = |model: &mut Model, z: f64, wire: Shape| {
+        let surface = ogeom::geom::PlaneSurface::over(
+            ogeom::math::Plane::through(Point::new(0.0, 0.0, z), Direction::Z),
+            (-100.0, 100.0),
+            (-100.0, 100.0),
+        )
+        .unwrap();
+        ogeom::algo::make_face(model, surface.into(), &[wire], T)
+            .unwrap()
+            .shape
+    };
+    for sunk in [false, true] {
+        let mut model = Model::new();
+        let corners = [(0.0, 0.0), (20.0, 0.0), (20.0, 10.0), (0.0, 10.0)]
+            .map(|(x, y)| Point::new(x, y, 0.0));
+        let outline = ogeom::algo::make_polygon(&mut model, &corners, true, T)
+            .unwrap()
+            .shape;
+        let profile = flat(&mut model, 0.0, outline);
+        let plate = ogeom::algo::make_prism(&mut model, &profile, Vector::Z * 5.0, T)
+            .unwrap()
+            .shape;
+        let drill = if sunk {
+            let seat =
+                Frame::new(Point::new(10.0, 5.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+            let circle = ogeom::geom::CircleCurve::new(Circle::new(seat, 2.0, T).unwrap());
+            let rim = ogeom::algo::make_edge(&mut model, circle.into(), (0.0, TAU), T)
+                .unwrap()
+                .shape;
+            let ring = ogeom::algo::make_wire(&mut model, &[rim], T).unwrap().shape;
+            let disc = flat(&mut model, 5.0, ring);
+            ogeom::algo::make_prism(&mut model, &disc, Vector::Z * -8.3, T)
+                .unwrap()
+                .shape
+        } else {
+            let frame =
+                Frame::new(Point::new(10.0, 5.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+            ogeom::algo::make_cylinder(&mut model, frame, 2.0, 7.0, T)
+                .unwrap()
+                .shape
+        };
+        let drilled = ogeom::boolean::cut(&mut model, &plate, &drill, T)
+            .unwrap()
+            .shape;
+
+        // The extruded plate's base is used reversed: its rings read in walk
+        // order come hole first, so the removal has to read them as stored.
+        let mut reversed = 0;
+        for cap in faces_where(&model, &drilled, |s| matches!(s, SurfaceGeometry::Plane(_))) {
+            let wires = explore(&model, &cap, Filter::OfType(ShapeType::Wire)).unwrap();
+            let edges = explore_unique(&model, &wires[0], ShapeType::Edge).unwrap();
+            assert_eq!(edges.len(), 4, "sunk {sunk}: the outer wire first");
+            if wires.len() == 2 && cap.orientation() == Orientation::Reversed {
+                reversed += 1;
+            }
+        }
+        assert_eq!(reversed, 1, "sunk {sunk}: the base is used reversed");
+
+        let walls = faces_where(&model, &drilled, |s| {
+            matches!(s, SurfaceGeometry::Cylinder(_))
+        });
+        assert_eq!(walls.len(), 1, "sunk {sunk}: one bore wall");
+        let built = ogeom::boolean::remove_faces(&mut model, &drilled, &walls, T)
+            .unwrap_or_else(|e| panic!("sunk {sunk}: {e}"));
+        let healed = volume(&model, &built.shape);
+        assert!(
+            (healed - 1000.0).abs() < 1e-6,
+            "sunk {sunk}: the plate, whole: {healed}"
+        );
+    }
+}
+
+/// A chamfer band removed: the band interrupts the top and side faces, whose
+/// planes re-intersect in the edge the chamfer replaced, and the end caps'
+/// edges extend to the recovered corners.
+#[test]
+fn removing_a_chamfer_restores_the_sharp_box() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 15.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edge = edge_near(&model, &block, Point::new(10.0, 0.0, 10.0));
+    let chamfered = ogeom::fillet::chamfer_edge(&mut model, &block, &edge, 3.0, T)
+        .unwrap()
+        .shape;
+    let before = volume(&model, &chamfered);
+    assert!(before < 3000.0, "the chamfer took material: {before}");
+
+    // The chamfer band is the one plane that is neither axis-aligned wall
+    // nor lid: its normal has both y and z.
+    let bands = faces_where(&model, &chamfered, |s| {
+        if let SurfaceGeometry::Plane(p) = s {
+            let n = p.plane().frame().z().vector();
+            n.y.abs() > 0.1 && n.z.abs() > 0.1
+        } else {
+            false
+        }
+    });
+    assert_eq!(bands.len(), 1, "one chamfer band");
+    let built = ogeom::boolean::remove_faces(&mut model, &chamfered, &bands, T).unwrap();
+
+    let healed = volume(&model, &built.shape);
+    assert!(
+        (healed - 3000.0).abs() < 1e-9,
+        "the sharp box, exactly: {healed}"
+    );
+    // And it is a box again: six faces, twelve edges, eight vertices.
+    let counts = |kind| explore_unique(&model, &built.shape, kind).unwrap().len();
+    assert_eq!(counts(ShapeType::Face), 6);
+    assert_eq!(counts(ShapeType::Edge), 12);
+    assert_eq!(counts(ShapeType::Vertex), 8);
+}
+
+/// A fillet band removed: the same wound with a cylindrical band, and the
+/// caps' arcs replaced by their own straight edges extended to the corner.
+#[test]
+fn removing_a_fillet_restores_the_sharp_box() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 15.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edge = edge_near(&model, &block, Point::new(10.0, 0.0, 10.0));
+    let filleted = ogeom::fillet::fillet_edge(&mut model, &block, &edge, 3.0, T)
+        .unwrap()
+        .shape;
+
+    let bands = faces_where(&model, &filleted, |s| {
+        matches!(s, SurfaceGeometry::Cylinder(_))
+    });
+    assert_eq!(bands.len(), 1, "one fillet band");
+    let built = ogeom::boolean::remove_faces(&mut model, &filleted, &bands, T).unwrap();
+
+    let healed = volume(&model, &built.shape);
+    assert!(
+        (healed - 3000.0).abs() < 1e-9,
+        "the sharp box, exactly: {healed}"
+    );
+}
+
+/// Each face the removal keeps traces to a face the result holds, through
+/// the sewing that rebuilds the faces closing the wound: a pocket cut
+/// through a boss's top just inside its rim.
+#[test]
+fn a_removals_history_names_the_faces_the_result_holds() {
+    let at = |x, y, z| Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap();
+    let mut model = Model::new();
+    let plate = ogeom::algo::make_box(&mut model, at(-20.0, -20.0, 0.0), (40.0, 40.0, 4.0), T)
+        .unwrap()
+        .shape;
+    let boss = ogeom::algo::make_cylinder(&mut model, at(0.0, 0.0, 4.0), 5.0, 5.0, T)
+        .unwrap()
+        .shape;
+    let solid = ogeom::boolean::fuse(&mut model, &plate, &boss, T)
+        .unwrap()
+        .shape;
+    let pocket = ogeom::algo::make_box(&mut model, at(4.3, -0.25, 6.0), (0.5, 0.5, 4.0), T)
+        .unwrap()
+        .shape;
+    let solid = ogeom::boolean::cut(&mut model, &solid, &pocket, T)
+        .unwrap()
+        .shape;
+    let room = ogeom::math::Aabb::of_corners(Point::new(4.2, -0.3, 5.9), Point::new(5.1, 0.3, 9.1));
+    let walls: Vec<Shape> = explore_unique(&model, &solid, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| room.contains_box(&ogeom::algo::shape_bounds(&model, f, T).unwrap()))
+        .collect();
+    assert!(!walls.is_empty());
+    let built = ogeom::boolean::remove_faces(&mut model, &solid, &walls, T).unwrap();
+    let held = explore_unique(&model, &built.shape, ShapeType::Face).unwrap();
+    for face in explore_unique(&model, &solid, ShapeType::Face).unwrap() {
+        if walls.iter().any(|w| w.is_same(&face)) {
+            continue;
+        }
+        let images = built.history.trace(&face);
+        assert_eq!(images.len(), 1);
+        assert!(held.iter().any(|h| h.is_same(&images[0])));
+    }
+}
+
+/// The refusals, by name.
+#[test]
+fn impossible_removals_are_refused_by_name() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let faces = explore_unique(&model, &block, ShapeType::Face).unwrap();
+
+    let err = ogeom::boolean::remove_faces(&mut model, &block, &[], T).unwrap_err();
+    assert!(err.to_string().contains("nothing to remove"), "{err}");
+
+    let err = ogeom::boolean::remove_faces(&mut model, &block, &faces, T).unwrap_err();
+    assert!(err.to_string().contains("nothing remains"), "{err}");
+
+    // Removing one wall of a plain box: the wound has no feature geometry to
+    // close it: the neighbours meet at right angles already, and nothing
+    // stands in for the missing face.
+    let err = ogeom::boolean::remove_faces(&mut model, &block, &faces[..1], T).unwrap_err();
+    assert!(
+        !err.to_string().is_empty(),
+        "a wall removal fails with a reason, not silently"
+    );
+}
+
+/// The box edge whose midpoint is nearest `at`.
+fn edge_near(model: &Model, solid: &Shape, at: Point) -> Shape {
+    use ogeom::geom::Curve3d as _;
+    let mut best: Option<(f64, Shape)> = None;
+    for edge in explore_unique(model, solid, ShapeType::Edge).unwrap() {
+        let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
+            continue;
+        };
+        let Some(ogeom::topo::EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+            continue;
+        };
+        let Some(geometry) = model.geometry().curve(*curve) else {
+            continue;
+        };
+        let p = geometry
+            .point_at(f64::midpoint(range.0, range.1), T)
+            .unwrap();
+        let d = p.distance(at);
+        if best.as_ref().is_none_or(|(held, _)| d < *held) {
+            best = Some((d, edge));
+        }
+    }
+    best.unwrap().1
+}
+
+/// Two separate features named in one call remove as two wounds.
+///
+/// Two fillets on opposite edges share nothing. Classified together, their
+/// ring edges would elect "the sides" across both features and the recovery
+/// would chase a nonsense edge. Grouped by shared edges, each feature runs
+/// the whole machinery on the previous result, and the box comes back
+/// sharp: exactly, both wounds.
+#[test]
+fn two_separate_fillets_remove_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (10.0, 10.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let mut solid = block;
+    for target in [Point::new(10.0, 5.0, 10.0), Point::new(0.0, 5.0, 0.0)] {
+        let edge = edge_near(&model, &solid, target);
+        solid = ogeom::fillet::fillet_edge(&mut model, &solid, &edge, 2.0, T)
+            .unwrap()
+            .shape;
+    }
+    // The two blend faces: the cylindrical ones.
+    let mut blends = Vec::new();
+    for face in explore_unique(&model, &solid, ShapeType::Face).unwrap() {
+        let data = model.node(&face).unwrap().data().as_face().unwrap();
+        let surface = model.geometry().surface(data.surface).unwrap();
+        if matches!(surface, ogeom::geom::SurfaceGeometry::Cylinder(_)) {
+            blends.push(face);
+        }
+    }
+    assert_eq!(blends.len(), 2, "two fillets leave two cylindrical faces");
+    let restored = ogeom::boolean::remove_faces(&mut model, &solid, &blends, T)
+        .unwrap()
+        .shape;
+    assert!(
+        ogeom::algo::check(&model, &restored, T).unwrap().is_valid(),
+        "the restored box is a valid solid"
+    );
+    let volume =
+        ogeom::algo::volume_properties(&model, &restored, ogeom::mesh::Deflection::default(), T)
+            .unwrap()
+            .mass;
+    assert!(
+        (volume - 1000.0).abs() < 1e-6,
+        "both wounds close exactly: {volume} against 1000"
+    );
+}
+
+/// Two blends meeting at a box corner (`fillet_edges` on two top edges,
+/// the later band trimmed against the earlier) removed in one call: each
+/// band recovers its own crease from its side planes, the two creases meet
+/// where one pierces the other's side, that corner is one vertex for both,
+/// and the box comes back to the last bit.
+#[test]
+fn two_meeting_fillets_remove_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let a = edge_near(&model, &block, Point::new(10.0, 20.0, 10.0));
+    let b = edge_near(&model, &block, Point::new(20.0, 10.0, 10.0));
+    let met = ogeom::fillet::fillet_edges(&mut model, &block, &[a, b], 2.0, T)
+        .unwrap()
+        .shape;
+    let bands: Vec<Shape> = explore_unique(&model, &met, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(SurfaceGeometry::Cylinder(_))
+            )
+        })
+        .collect();
+    assert_eq!(bands.len(), 2);
+    let restored = ogeom::boolean::remove_faces(&mut model, &met, &bands, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
+}
+
+/// The same corner blended one edge at a time: the second band runs on
+/// into the first, which trims it (ADR 0001, amendment "a later round
+/// reaching an earlier band at its end"), so the two bands meet as they
+/// do in one call, with no cap between them, and the feature is the two
+/// bands.
+#[test]
+fn two_fillets_one_at_a_time_remove_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let a = edge_near(&model, &block, Point::new(10.0, 20.0, 10.0));
+    let first = ogeom::fillet::fillet_edge(&mut model, &block, &a, 2.0, T)
+        .unwrap()
+        .shape;
+    let b = edge_near(&model, &first, Point::new(20.0, 10.0, 10.0));
+    let later = ogeom::fillet::fillet_edge(&mut model, &first, &b, 2.0, T)
+        .unwrap()
+        .shape;
+    let faces = explore_unique(&model, &later, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 8, "six walls and two bands, no cap");
+    let feature: Vec<Shape> = faces
+        .into_iter()
+        .filter(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            matches!(
+                model.geometry().surface(data.surface),
+                Some(SurfaceGeometry::Cylinder(_))
+            )
+        })
+        .collect();
+    assert_eq!(feature.len(), 2);
+    let restored = ogeom::boolean::remove_faces(&mut model, &later, &feature, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
+}
+
+/// Two chamfers meeting at a box corner, removed in one call. One at a
+/// time they stand flush, the second's triangular cap against the first's
+/// plane, and the feature is both chamfer planes and the cap.
+#[test]
+fn two_chamfers_meeting_at_a_corner_remove_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let a = edge_near(&model, &block, Point::new(10.0, 20.0, 10.0));
+    let first = ogeom::fillet::chamfer_edge(&mut model, &block, &a, 2.0, T)
+        .unwrap()
+        .shape;
+    let b = edge_near(&model, &first, Point::new(20.0, 10.0, 10.0));
+    let both = ogeom::fillet::chamfer_edge(&mut model, &first, &b, 2.0, T)
+        .unwrap()
+        .shape;
+    // The second bevel runs to the first's plane and the two mitre along
+    // the line they share: six walls and the two bevels.
+    let faces = explore_unique(&model, &both, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 8, "six walls, two chamfer planes");
+    let feature: Vec<Shape> = faces
+        .into_iter()
+        .filter(|f| {
+            let data = model.node(f).unwrap().data().as_face().unwrap();
+            let Some(SurfaceGeometry::Plane(p)) = model.geometry().surface(data.surface) else {
+                return true;
+            };
+            let n = p.plane().normal().vector();
+            let off_axis = !(n.x.abs() > 0.999 || n.y.abs() > 0.999 || n.z.abs() > 0.999);
+            off_axis || explore_unique(&model, f, ShapeType::Edge).unwrap().len() == 3
+        })
+        .collect();
+    assert_eq!(feature.len(), 2);
+    let restored = ogeom::boolean::remove_faces(&mut model, &both, &feature, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
+}
+
+/// A rim blend's wound is the whole ring it took out of each neighbour,
+/// and it closes on the circle those neighbours meet along.
+///
+/// Three rims, each blended and then taken away again: a drum's top, where
+/// the cap's *whole outer boundary* was the wound and the cap must grow
+/// back; a bore's mouth in a plate, where the wound is an inner ring of
+/// the top and the whole bottom of the bore's wall; and a boss's seat,
+/// where the blend is additive and the wound sits between the plate's top
+/// and the post. Each comes back to the solid it was cut from, face for
+/// face and to the volume the mesh can measure.
+///
+/// Each with a fillet and with a chamfer, since the wound is the same
+/// whether the band is a torus or a cone.
+///
+/// A whole ring taken out of a neighbour is closed one of two ways, and
+/// only the neighbours' surfaces say which: a bore's two mouths sit in
+/// faces that never meet, so the rings are dropped and the faces grow
+/// over them, while a rim blend's neighbours meet along the very circle
+/// it replaced. The wall's own seam then reaches that circle, which is
+/// where the circle is cut, and the seam extends to meet it.
+#[test]
+fn a_rim_blend_removes_and_its_rim_comes_back() {
+    for (case, bevel) in [
+        ("drum", false),
+        ("drum", true),
+        ("mouth", false),
+        ("mouth", true),
+        ("boss", false),
+        ("boss", true),
+    ] {
+        let mut model = Model::new();
+        let r = 1.0;
+        let (sharp, rim_at) = match case {
+            "drum" => {
+                let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, 5.0, 10.0, T)
+                    .unwrap()
+                    .shape;
+                (drum, Point::new(0.0, 5.0, 10.0))
+            }
+            "mouth" => {
+                let block = ogeom::algo::make_box(
+                    &mut model,
+                    Frame::new(Point::new(-10.0, -10.0, 0.0), Direction::Z, Direction::X, T)
+                        .unwrap(),
+                    (20.0, 20.0, 10.0),
+                    T,
+                )
+                .unwrap()
+                .shape;
+                let seat =
+                    Frame::new(Point::new(0.0, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+                let drill = ogeom::algo::make_cylinder(&mut model, seat, 4.0, 12.0, T)
+                    .unwrap()
+                    .shape;
+                let bored = ogeom::boolean::cut(&mut model, &block, &drill, T)
+                    .unwrap()
+                    .shape;
+                (bored, Point::new(0.0, 4.0, 10.0))
+            }
+            _ => {
+                let plate = ogeom::algo::make_box(
+                    &mut model,
+                    Frame::new(Point::new(-10.0, -10.0, 0.0), Direction::Z, Direction::X, T)
+                        .unwrap(),
+                    (20.0, 20.0, 5.0),
+                    T,
+                )
+                .unwrap()
+                .shape;
+                let seat =
+                    Frame::new(Point::new(0.0, 0.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+                let post = ogeom::algo::make_cylinder(&mut model, seat, 4.0, 6.0, T)
+                    .unwrap()
+                    .shape;
+                let boss = ogeom::boolean::fuse(&mut model, &plate, &post, T)
+                    .unwrap()
+                    .shape;
+                (boss, Point::new(0.0, 4.0, 5.0))
+            }
+        };
+        // Measured off the mesh at a fine chord, because the blend's own
+        // boolean leaves the faces it did not touch split at their seams,
+        // and a solid whose discs are two arcs apiece does not take the
+        // exact integrator's path. The reach quoted below is the mesh's,
+        // and it is two orders finer than the feature being removed.
+        let fine = Deflection::with_chord(1e-4).unwrap();
+        let measure = |model: &Model, shape: &Shape| {
+            ogeom::algo::volume_properties(model, shape, fine, T)
+                .unwrap()
+                .mass
+        };
+        let was = measure(&model, &sharp);
+        let faces_before = explore_unique(&model, &sharp, ShapeType::Face)
+            .unwrap()
+            .len();
+
+        let rim = edge_near(&model, &sharp, rim_at);
+        let made = if bevel {
+            ogeom::fillet::chamfer_edge(&mut model, &sharp, &rim, r, T)
+        } else {
+            ogeom::fillet::fillet_edge(&mut model, &sharp, &rim, r, T)
+        };
+        let blended = made
+            .unwrap_or_else(|e| panic!("{case} bevel {bevel}: {e}"))
+            .shape;
+        let band = faces_where(&model, &blended, |s| {
+            if bevel {
+                matches!(s, SurfaceGeometry::Cone(_))
+            } else {
+                matches!(s, SurfaceGeometry::Torus(_))
+            }
+        });
+        assert_eq!(band.len(), 1, "{case} bevel {bevel}: one band");
+
+        let back = ogeom::boolean::remove_faces(&mut model, &blended, &band, T)
+            .unwrap_or_else(|e| panic!("{case} bevel {bevel}: {e}"))
+            .shape;
+        let diagnosis = ogeom::algo::check(&model, &back, T).unwrap();
+        assert!(
+            diagnosis.is_valid(),
+            "{case} bevel {bevel}: {:?}",
+            diagnosis.problems
+        );
+        assert_eq!(
+            walks::edges_walked_one_way(&model, &back),
+            0,
+            "{case} bevel {bevel}"
+        );
+        assert_eq!(
+            explore_unique(&model, &back, ShapeType::Face)
+                .unwrap()
+                .len(),
+            faces_before,
+            "{case} bevel {bevel}: the faces the feature interrupted are whole again"
+        );
+        let now = measure(&model, &back);
+        assert!(
+            (now - was).abs() < was * 1e-4,
+            "{case} bevel {bevel}: {now} against the solid it was cut from, {was}"
+        );
+    }
+}
+
+/// A stadium prism: a rectangle with semicircular ends, extruded up.
+fn stadium(model: &mut Model, length: f64, r: f64, height: f64) -> Shape {
+    use ogeom::geom::{CircleCurve, Curve, Curve3d as _, LineCurve, PlaneSurface};
+    use ogeom::math::{Circle, Plane, Vector};
+    let tl = ogeom::algo::make_vertex(model, Point::new(0.0, r, 0.0)).shape;
+    let tr = ogeom::algo::make_vertex(model, Point::new(length, r, 0.0)).shape;
+    let br = ogeom::algo::make_vertex(model, Point::new(length, -r, 0.0)).shape;
+    let bl = ogeom::algo::make_vertex(model, Point::new(0.0, -r, 0.0)).shape;
+    let arc = |model: &mut Model, centre: Point, x: Direction, from: &Shape, to: &Shape| {
+        let frame = Frame::new(centre, Direction::Z, x, T).unwrap();
+        let curve = Curve::Circle(CircleCurve::new(Circle::new(frame, r, T).unwrap()));
+        ogeom::algo::make_edge_between(model, curve, (0.0, core::f64::consts::PI), from, to, T)
+            .unwrap()
+            .shape
+    };
+    let seg = |model: &mut Model, from: (&Shape, Point), to: (&Shape, Point)| {
+        let curve = Curve::Line(LineCurve::segment(from.1, to.1, T).unwrap());
+        let domain = curve.domain();
+        ogeom::algo::make_edge_between(model, curve, domain, from.0, to.0, T)
+            .unwrap()
+            .shape
+    };
+    let top = seg(
+        model,
+        (&tl, Point::new(0.0, r, 0.0)),
+        (&tr, Point::new(length, r, 0.0)),
+    );
+    let right = arc(
+        model,
+        Point::new(length, 0.0, 0.0),
+        Direction::new(Vector::new(0.0, -1.0, 0.0), T).unwrap(),
+        &br,
+        &tr,
+    );
+    let bottom = seg(
+        model,
+        (&br, Point::new(length, -r, 0.0)),
+        (&bl, Point::new(0.0, -r, 0.0)),
+    );
+    let left = arc(model, Point::new(0.0, 0.0, 0.0), Direction::Y, &tl, &bl);
+    let plane = PlaneSurface::over(
+        Plane::through(Point::ORIGIN, Direction::Z),
+        (-100.0, 100.0),
+        (-100.0, 100.0),
+    )
+    .unwrap();
+    let face = ogeom::algo::make_face_with_pcurves(
+        model,
+        plane.into(),
+        &[vec![left, bottom.reversed(), right, top.reversed()]],
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom::algo::make_prism(model, &face, Vector::new(0.0, 0.0, height), T)
+        .unwrap()
+        .shape
+}
+
+/// The edges of `solid` whose every vertex stands at `height`.
+fn edges_at_height(model: &Model, solid: &Shape, height: f64) -> Vec<Shape> {
+    use ogeom::topo::{Filter, explore};
+    explore_unique(model, solid, ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| {
+            explore(model, e, Filter::OfType(ShapeType::Vertex))
+                .unwrap()
+                .iter()
+                .all(|v| {
+                    model
+                        .node(v)
+                        .and_then(|n| n.data().as_vertex().map(|d| d.point))
+                        .zip(v.transform(model.datums()).ok())
+                        .is_some_and(|(p, placed)| (placed.apply(p).z - height).abs() < 1e-9)
+                })
+        })
+        .collect()
+}
+
+/// A tangent chain of blends (a stadium's whole top rim rounded in one
+/// call, two straight bands and two semicircular ones meeting flush)
+/// removed in one call. At a tangent junction neither band's crease
+/// pierces the other's wall: the straight crease grazes the round wall,
+/// and the round crease grazes the flat one. The corner is where the two
+/// creases touch, and the cross-section edge the two bands share says
+/// exactly where: its foot on either crease. The round creases are
+/// circles, and a band standing across a circle's seam is read as one run
+/// about its own centre rather than its complement, so each end wall grows
+/// back its outer half and not its inner.
+#[test]
+fn a_tangent_chain_of_blends_removes_in_one_call() {
+    let mut model = Model::new();
+    let (length, r, height) = (10.0, 5.0, 4.0);
+    let solid = stadium(&mut model, length, r, height);
+    let before = volume(&model, &solid);
+    let rim = edges_at_height(&model, &solid, height);
+    assert_eq!(rim.len(), 4, "the stadium's top rim has four edges");
+    let blended = ogeom::fillet::fillet_edges(&mut model, &solid, &rim, 1.0, T)
+        .unwrap()
+        .shape;
+    let bands = faces_where(&model, &blended, |s| match s {
+        SurfaceGeometry::Torus(_) => true,
+        SurfaceGeometry::Cylinder(c) => (c.cylinder().radius() - 1.0).abs() < 1e-9,
+        _ => false,
+    });
+    assert_eq!(bands.len(), 4, "two straight bands and two round ones");
+    let restored = ogeom::boolean::remove_faces(&mut model, &blended, &bands, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6,
+        "the top, the bottom and four walls"
+    );
+    let shell = explore_unique(&model, &restored, ShapeType::Shell)
+        .unwrap()
+        .remove(0);
+    assert!(ogeom::algo::is_shell_closed(&model, &shell).unwrap());
+    assert!((volume(&model, &restored) - before).abs() < 1e-6);
+}
+
+/// The whole rim of a box top rounded in one call (four bands meeting at
+/// four corners) and removed in one call: every corner is where one
+/// crease pierces the wall of the next, and the box comes back sharp.
+#[test]
+fn a_loop_of_four_fillets_removes_in_one_call() {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let rim = edges_at_height(&model, &block, 10.0);
+    assert_eq!(rim.len(), 4);
+    let blended = ogeom::fillet::fillet_edges(&mut model, &block, &rim, 2.0, T)
+        .unwrap()
+        .shape;
+    let bands = faces_where(&model, &blended, |s| {
+        matches!(s, SurfaceGeometry::Cylinder(_))
+    });
+    assert_eq!(bands.len(), 4);
+    let restored = ogeom::boolean::remove_faces(&mut model, &blended, &bands, T)
+        .unwrap()
+        .shape;
+    assert!(ogeom::algo::check(&model, &restored, T).unwrap().is_valid());
+    assert_eq!(walks::edges_walked_one_way(&model, &restored), 0);
+    assert_eq!(
+        explore_unique(&model, &restored, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!((volume(&model, &restored) - 4000.0).abs() < 1e-6);
+}
+
+/// The faces of `solid` that do not lie on one of the sides of the box
+/// `size` at the origin: what a cut took out of it.
+fn faces_off_the_box(model: &Model, solid: &Shape, size: (f64, f64, f64)) -> Vec<Shape> {
+    faces_where(model, solid, |s| {
+        let SurfaceGeometry::Plane(p) = s else {
+            return true;
+        };
+        let (o, n) = (p.plane().frame().origin(), p.plane().normal().vector());
+        let sides = [
+            (Vector::new(1.0, 0.0, 0.0), 0.0),
+            (Vector::new(1.0, 0.0, 0.0), size.0),
+            (Vector::new(0.0, 1.0, 0.0), 0.0),
+            (Vector::new(0.0, 1.0, 0.0), size.1),
+            (Vector::new(0.0, 0.0, 1.0), 0.0),
+            (Vector::new(0.0, 0.0, 1.0), size.2),
+        ];
+        !sides.iter().any(|(axis, at)| {
+            n.cross(*axis).magnitude() <= 1e-9 && (o.to_vector().dot(*axis) - at).abs() <= 1e-9
+        })
+    })
+}
+
+/// A 20 x 15 x 10 box with a block cut out where `cut` stands, the cut's
+/// faces removed again: the box back exactly, six faces on its own six
+/// planes, valid, drawing closed, and its edges merged back to a box's
+/// twelve.
+fn removing_the_cut_restores_the_box(cut: (Point, (f64, f64, f64)), faces_cut: usize) {
+    let size = (20.0, 15.0, 10.0);
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, size, T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(cut.0, Direction::Z, Direction::X, T).unwrap();
+    let tool = ogeom::algo::make_box(&mut model, at, cut.1, T)
+        .unwrap()
+        .shape;
+    let cut_block = ogeom::boolean::cut(&mut model, &block, &tool, T)
+        .unwrap()
+        .shape;
+    let feature = faces_off_the_box(&model, &cut_block, size);
+    assert_eq!(feature.len(), faces_cut, "the cut's own faces");
+    let healed = ogeom::boolean::remove_faces(&mut model, &cut_block, &feature, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &healed, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    let mesh = ogeom::mesh::triangulate(&model, &healed, Deflection::default(), T).unwrap();
+    assert!(mesh.is_closed(), "the box draws closed");
+    // Every face is planar and the integrals exact: the box's own volume
+    // to rounding.
+    let measured = volume(&model, &healed);
+    assert!(
+        (measured - 3000.0).abs() < 3000.0 * 1e-12,
+        "the box, exactly: {measured}"
+    );
+    assert_eq!(
+        explore_unique(&model, &healed, ShapeType::Face)
+            .unwrap()
+            .len(),
+        6
+    );
+    assert!(
+        faces_off_the_box(&model, &healed, size).is_empty(),
+        "every face on the box's planes"
+    );
+    let merged = ogeom::heal::merge_edges(&mut model, &healed, T)
+        .unwrap()
+        .0
+        .shape;
+    assert_eq!(
+        explore_unique(&model, &merged, ShapeType::Edge)
+            .unwrap()
+            .len(),
+        12
+    );
+}
+
+/// A step cut along a box's top front edge: its floor borders the front
+/// alone and its wall the top alone, so neither is a band between the two
+/// faces that must meet. The top and the front meet again along the edge
+/// the step took, from the left end to the right.
+#[test]
+fn removing_a_step_restores_the_box() {
+    removing_the_cut_restores_the_box((Point::new(-1.0, -1.0, 7.0), (22.0, 4.0, 4.0)), 2);
+}
+
+/// A notch cut from a box's corner: no two of its neighbours lost the
+/// edge between them, only a stretch of it. Each of the three edges the
+/// notch cut short runs on to the corner where the top, the front and the
+/// side meet.
+#[test]
+fn removing_a_corner_notch_restores_the_box() {
+    removing_the_cut_restores_the_box((Point::new(17.0, -1.0, 7.0), (4.0, 4.0, 4.0)), 3);
+}
+
+/// A pocket cut into a box's top, open to its front: the edge between the
+/// top and the front survives either side of it, and its two halves meet
+/// again across the pocket's mouth.
+#[test]
+fn removing_a_pocket_open_at_an_edge_restores_the_box() {
+    removing_the_cut_restores_the_box((Point::new(5.0, -1.0, 6.0), (6.0, 6.0, 5.0)), 4);
+}
+
+/// A slot cut right across a box's top, through its front and back: the
+/// top is left in two halves on one plane, which come back as one face,
+/// and the top's front and back edges run on across the slot's mouths.
+#[test]
+fn removing_a_slot_across_the_top_restores_the_box() {
+    removing_the_cut_restores_the_box((Point::new(5.0, -1.0, 6.0), (6.0, 17.0, 5.0)), 3);
+}
+
+/// A rebate cut round a drum's top rim: the cap shrinks to a smaller disc
+/// and the wall stops short of the top. With the rebate's wall and ledge
+/// removed, the cap and the wall meet again along the rim's whole circle,
+/// which no other face stops, and the drum comes back: three faces on its
+/// own surfaces and its exact volume.
+#[test]
+fn removing_a_rebate_round_a_drums_rim_restores_the_drum() {
+    let (radius, height) = (5.0, 10.0);
+    let mut model = Model::new();
+    let drum = ogeom::algo::make_cylinder(&mut model, Frame::WORLD, radius, height, T)
+        .unwrap()
+        .shape;
+    let seat = Frame::new(Point::new(0.0, 0.0, 8.0), Direction::Z, Direction::X, T).unwrap();
+    let outer = ogeom::algo::make_cylinder(&mut model, seat, 6.0, 3.0, T)
+        .unwrap()
+        .shape;
+    let inner = ogeom::algo::make_cylinder(&mut model, seat, 4.0, 3.0, T)
+        .unwrap()
+        .shape;
+    let ring = ogeom::boolean::cut(&mut model, &outer, &inner, T)
+        .unwrap()
+        .shape;
+    let rebated = ogeom::boolean::cut(&mut model, &drum, &ring, T)
+        .unwrap()
+        .shape;
+    let on_the_drum = |s: &SurfaceGeometry| match s {
+        SurfaceGeometry::Cylinder(c) => (c.cylinder().radius() - radius).abs() <= 1e-9,
+        SurfaceGeometry::Plane(p) => {
+            let z = p.plane().frame().origin().z;
+            z.abs() <= 1e-9 || (z - height).abs() <= 1e-9
+        }
+        _ => false,
+    };
+    let feature = faces_where(&model, &rebated, |s| !on_the_drum(s));
+    assert_eq!(feature.len(), 2, "the rebate's wall and ledge");
+    let healed = ogeom::boolean::remove_faces(&mut model, &rebated, &feature, T)
+        .unwrap()
+        .shape;
+    let diagnosis = ogeom::algo::check(&model, &healed, T).unwrap();
+    assert!(diagnosis.is_valid(), "{diagnosis}");
+    assert_eq!(walks::edges_walked_one_way(&model, &healed), 0);
+    let faces = explore_unique(&model, &healed, ShapeType::Face).unwrap();
+    assert_eq!(faces.len(), 3, "a wall and two discs");
+    assert!(faces_where(&model, &healed, |s| !on_the_drum(s)).is_empty());
+    let want = core::f64::consts::PI * radius * radius * height;
+    let measured = volume(&model, &healed);
+    assert!(
+        (measured - want).abs() < want * 1e-12,
+        "the drum, exactly: {measured} against {want}"
+    );
+}

@@ -1,0 +1,733 @@
+//! What a reader builds keeps the tolerance containment rule, what the
+//! healer is handed it restores, and what the IGES writer writes its reader
+//! reads back.
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
+use crate::walks;
+
+use ogeom::algo::{Severity, check, restore_containment};
+use ogeom::core::{Tolerance, Tolerances};
+use ogeom::mesh::Deflection;
+use ogeom::topo::{Model, NodeData, Shape, ShapeType, explore_unique};
+
+const T: Tolerances = Tolerances::millimetres();
+
+fn corpus(name: &str) -> String {
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(path).expect("the corpus file is committed")
+}
+
+fn containment_findings(model: &Model, shape: &Shape) -> usize {
+    check(model, shape, T)
+        .unwrap()
+        .of(Severity::Broken)
+        .iter()
+        .filter(|p| p.what.contains("tighter than the"))
+        .count()
+}
+
+/// The widest a pcurve, lifted through its surface, leaves its edge's
+/// curve beyond the edge's tolerance, with that tolerance; `None` where
+/// every pcurve of every edge keeps within it.
+///
+/// Measured here, not through `check`: each pcurve is read at 501 points
+/// spread evenly over its range, a lifted point is compared with the
+/// curve's point at the same fraction of its range, and where that is
+/// farther than the tolerance, with the nearest point of the whole curve
+/// (a dense scan refined by golden section), since a pcurve need not share
+/// its curve's pace. A pcurve placed elsewhere than its curve describes
+/// another occurrence and is not compared.
+fn widest_pcurve_excess(model: &Model, shape: &Shape) -> Option<(f64, f64)> {
+    use ogeom::geom::{Curve2d as _, Curve3d as _, Surface as _};
+    use ogeom::topo::EdgeRepr;
+    const SAMPLES: u32 = 500;
+    let mut widest: Option<(f64, f64)> = None;
+    for edge in explore_unique(model, shape, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        let Some(EdgeRepr::Curve3d {
+            curve,
+            range,
+            location,
+        }) = data.curve3d()
+        else {
+            continue;
+        };
+        let curve = model.geometry().curve(*curve).unwrap();
+        let stated = data.tolerance.get();
+        let nearest = |p: ogeom::math::Point| {
+            let at = |t: f64| curve.point_at(t, T).unwrap().distance(p);
+            let step = (range.1 - range.0) / f64::from(SAMPLES);
+            let (mut best, mut least) = (range.0, at(range.0));
+            for k in 1..=SAMPLES {
+                let t = range.0 + step * f64::from(k);
+                if at(t) < least {
+                    (best, least) = (t, at(t));
+                }
+            }
+            let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+            let (mut a, mut b) = ((best - step.abs()).max(lo), (best + step.abs()).min(hi));
+            for _ in 0..60 {
+                let (c, d) = (b - (b - a) * 0.618, a + (b - a) * 0.618);
+                if at(c) < at(d) { b = d } else { a = c }
+            }
+            least.min(at(0.5 * (a + b)))
+        };
+        for repr in &data.representations {
+            let (sides, prange, surface, at) = match repr {
+                EdgeRepr::PCurve {
+                    curve,
+                    range,
+                    surface,
+                    location,
+                } => (vec![*curve], *range, *surface, location),
+                EdgeRepr::Seam {
+                    forward,
+                    reversed,
+                    range,
+                    surface,
+                    location,
+                } => (vec![*forward, *reversed], *range, *surface, location),
+                _ => continue,
+            };
+            if at != location {
+                continue;
+            }
+            let surface = model.geometry().surface(surface).unwrap();
+            for id in sides {
+                let pcurve = model.geometry().pcurve(id).unwrap();
+                for k in 0..=SAMPLES {
+                    let f = f64::from(k) / f64::from(SAMPLES);
+                    let uv = pcurve
+                        .point_at(prange.0 + (prange.1 - prange.0) * f, T)
+                        .unwrap();
+                    let Ok(lifted) = surface.point_at(uv.x, uv.y, T) else {
+                        continue;
+                    };
+                    let on_curve = curve
+                        .point_at(range.0 + (range.1 - range.0) * f, T)
+                        .unwrap();
+                    let mut gap = on_curve.distance(lifted);
+                    if gap > stated {
+                        gap = gap.min(nearest(lifted));
+                    }
+                    if gap > stated && widest.is_none_or(|(w, s)| gap - stated > w - s) {
+                        widest = Some((gap, stated));
+                    }
+                }
+            }
+        }
+    }
+    widest
+}
+
+/// A reader states, on every edge, how far its pcurves stand from its
+/// curve: an exact pcurve of a line lying microns off its plane, and a
+/// pcurve fitted on a sphere straying between its samples, both widen
+/// their edge. Through STEP and through IGES, from a file and from a
+/// boolean's result written out.
+#[test]
+fn a_read_states_how_far_its_pcurves_stand_from_their_curves() {
+    for name in [
+        "nist_ctc_03_asme1_rc.stp",
+        "nist_ftc_06_asme1_rd.stp",
+        "nist_ftc_07_asme1_rd.stp",
+    ] {
+        let read = ogeom::io::read_step(&corpus(name), T).unwrap();
+        for solid in &read.solids {
+            let excess = widest_pcurve_excess(read.document.model(), solid);
+            assert!(
+                excess.is_none(),
+                "{name} through STEP: (gap, stated) {excess:?}"
+            );
+        }
+        let iges = ogeom::io::write_iges(&read.document, T).unwrap();
+        let back = ogeom::io::read_iges(&iges, T).unwrap();
+        for solid in &back.solids {
+            let excess = widest_pcurve_excess(back.document.model(), solid);
+            assert!(
+                excess.is_none(),
+                "{name} through IGES: (gap, stated) {excess:?}"
+            );
+        }
+    }
+
+    // A sphere cut on its side: the section circle has no closed-form
+    // image on the sphere, so each reader fits one.
+    let frame = |x: f64, y: f64, z: f64| {
+        ogeom::math::Frame::new(
+            ogeom::math::Point::new(x, y, z),
+            ogeom::math::Direction::Z,
+            ogeom::math::Direction::X,
+            T,
+        )
+        .unwrap()
+    };
+    let mut model = Model::new();
+    let sphere = ogeom::algo::make_sphere(&mut model, frame(0.0, 0.0, 0.0), 10.0, T)
+        .unwrap()
+        .shape;
+    let block = ogeom::algo::make_box(&mut model, frame(5.0, -20.0, -20.0), (40.0, 40.0, 40.0), T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &sphere, &block, T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("part", cut);
+    let step = ogeom::io::read_step(&ogeom::io::write_step(&document, T).unwrap(), T).unwrap();
+    let iges = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+    for (format, read) in [
+        ("STEP", (step.document.model(), &step.solids[0])),
+        ("IGES", (iges.document.model(), &iges.solids[0])),
+    ] {
+        let excess = widest_pcurve_excess(read.0, read.1);
+        assert!(
+            excess.is_none(),
+            "sphere cut through {format}: (gap, stated) {excess:?}"
+        );
+    }
+}
+
+const R: f64 = 10.0;
+
+/// A half ball of radius `R` whose rim is one closed meridian circle: it
+/// starts at the north pole and runs through the south pole halfway round,
+/// as an exchange file states it.
+fn half_ball_with_a_meridian_rim() -> ogeom::doc::Document {
+    half_ball(true)
+}
+
+/// The half ball as a solid, or as its closed shell alone (a sheet, which
+/// IGES writes as independent trimmed surfaces).
+fn half_ball(as_solid: bool) -> ogeom::doc::Document {
+    use ogeom::geom::{CircleCurve, Curve, PlaneSurface, SphereSurface, SurfaceGeometry};
+    use ogeom::math::{Circle, Direction, Frame, Plane, Point, Sphere};
+    use ogeom::topo::{FaceData, Location};
+    let mut model = Model::new();
+    let frame = |z: Direction, x: Direction| Frame::new(Point::ORIGIN, z, x, T).unwrap();
+    // The rim runs from the north pole toward +x, so the hemisphere on its
+    // left about the outward normal is the one at y > 0.
+    let rim = Curve::Circle(CircleCurve::new(
+        Circle::new(frame(Direction::Y, Direction::Z), R, T).unwrap(),
+    ));
+    let north = ogeom::algo::make_vertex(&mut model, Point::new(0.0, 0.0, R)).shape;
+    let edge = ogeom::algo::make_edge_between(
+        &mut model,
+        rim,
+        (0.0, core::f64::consts::TAU),
+        &north,
+        &north,
+        T,
+    )
+    .unwrap()
+    .shape;
+    let ball: SurfaceGeometry =
+        SphereSurface::new(Sphere::new(frame(Direction::Z, Direction::X), R, T).unwrap()).into();
+    let ball = model.geometry_mut().add_surface(ball);
+    let flat: SurfaceGeometry = PlaneSurface::over(
+        Plane::new(frame(-Direction::Y, Direction::X)),
+        (-2.0 * R, 2.0 * R),
+        (-2.0 * R, 2.0 * R),
+    )
+    .unwrap()
+    .into();
+    let flat = model.geometry_mut().add_surface(flat);
+    let mut faces = Vec::new();
+    for (surface, use_) in [(ball, edge.clone()), (flat, edge.reversed())] {
+        let wire = model.add_wire(&[use_]).unwrap();
+        faces.push(
+            model
+                .add_face(FaceData::new(surface, Location::identity()), &[wire])
+                .unwrap(),
+        );
+    }
+    let shell = model.add_shell(&faces).unwrap();
+    let body = if as_solid {
+        model.add_solid(&[shell]).unwrap()
+    } else {
+        shell
+    };
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("half ball", body);
+    document
+}
+
+/// No single image of a meridian rim follows it through the sphere's chart,
+/// so each reader cuts the rim at the south pole into two meridians, each a
+/// straight column of the chart: the solid reads with its pcurves on their
+/// edges at the confusion tolerance, no fit reported astray, and the exact
+/// volume.
+#[test]
+fn a_rim_through_a_sphere_pole_reads_cut_at_the_pole() {
+    let document = half_ball_with_a_meridian_rim();
+    let exact = 2.0 / 3.0 * core::f64::consts::PI * R.powi(3);
+    let step = ogeom::io::read_step(&ogeom::io::write_step(&document, T).unwrap(), T).unwrap();
+    let iges = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+    for (format, warnings, model, solid) in [
+        (
+            "STEP",
+            &step.report.warnings,
+            step.document.model(),
+            &step.solids[0],
+        ),
+        (
+            "IGES",
+            &iges.report.warnings,
+            iges.document.model(),
+            &iges.solids[0],
+        ),
+    ] {
+        assert!(
+            warnings.iter().all(|w| !w.contains("fit stopped")),
+            "{format}: {warnings:?}"
+        );
+        assert_eq!(widest_pcurve_excess(model, solid), None, "{format}");
+        for edge in explore_unique(model, solid, ShapeType::Edge).unwrap() {
+            let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+            assert!(
+                data.tolerance.get() <= T.confusion(),
+                "{format}: an edge states {}",
+                data.tolerance.get()
+            );
+        }
+        let rims = explore_unique(model, solid, ShapeType::Edge)
+            .unwrap()
+            .iter()
+            .filter(|e| {
+                let data = model.node(e).unwrap().data().as_edge().unwrap();
+                !data.degenerate
+            })
+            .count();
+        assert_eq!(rims, 2, "{format}: the rim in two meridians");
+        let measured = volume(model, solid).unwrap();
+        assert!(
+            (measured - exact).abs() <= exact * 1e-3,
+            "{format}: volume {measured} against {exact}"
+        );
+    }
+}
+
+/// The half ball written as two independent trimmed surfaces (144), each
+/// bounded by the whole meridian circle. The rim is cut at the pole in both
+/// faces alike, the flat one included, so the faces sew piece to piece into
+/// a closed shell: two exact meridians, nothing widened, the exact volume.
+#[test]
+fn trimmed_surfaces_bounded_through_a_sphere_pole_read_cut_at_the_pole() {
+    let text = ogeom::io::write_iges(&half_ball(false), T).unwrap();
+    let iges = ogeom::io::read_iges(&text, T).unwrap();
+    let model = iges.document.model();
+    assert!(
+        iges.report
+            .warnings
+            .iter()
+            .all(|w| !w.contains("fit stopped")),
+        "{:?}",
+        iges.report.warnings
+    );
+    assert_eq!(iges.solids.len(), 1, "sewn closed: {:?}", iges.report);
+    let solid = &iges.solids[0];
+    assert_eq!(widest_pcurve_excess(model, solid), None);
+    let mut rims = 0;
+    for edge in explore_unique(model, solid, ShapeType::Edge).unwrap() {
+        let data = model.node(&edge).unwrap().data().as_edge().unwrap();
+        assert!(
+            data.tolerance.get() <= T.confusion(),
+            "an edge states {}",
+            data.tolerance.get()
+        );
+        rims += usize::from(!data.degenerate);
+    }
+    assert_eq!(rims, 2, "the rim in two meridians");
+    let diagnosis = check(model, solid, T).unwrap();
+    let broken = diagnosis.of(Severity::Broken);
+    assert!(broken.is_empty(), "{broken:?}");
+    let exact = 2.0 / 3.0 * core::f64::consts::PI * R.powi(3);
+    let measured = volume(model, solid).unwrap();
+    assert!(
+        (measured - exact).abs() <= exact * 1e-3,
+        "volume {measured} against {exact}"
+    );
+}
+
+/// A STEP file that styles the meridian rim and dimensions it through a
+/// shape aspect names the rim by its file id. The reader cuts the rim at
+/// the pole, so the colour and the dimension's feature land on both pieces
+/// the faces use, and on nothing else.
+#[test]
+fn a_rim_cut_at_a_pole_keeps_its_colour_and_pmi() {
+    let text = ogeom::io::write_step(&half_ball_with_a_meridian_rim(), T).unwrap();
+    let id_of = |keyword: &str| -> u64 {
+        let mut ids = text.lines().filter_map(|line| {
+            let (id, rest) = line.strip_prefix('#')?.split_once('=')?;
+            rest.starts_with(keyword)
+                .then(|| id.parse::<u64>().unwrap())
+        });
+        let id = ids.next().unwrap_or_else(|| panic!("no {keyword}"));
+        assert!(ids.next().is_none(), "one {keyword}");
+        id
+    };
+    let rim = id_of("EDGE_CURVE(");
+    let pds = id_of("PRODUCT_DEFINITION_SHAPE(");
+    let absr = id_of("ADVANCED_BREP_SHAPE_REPRESENTATION(");
+    let extra = format!(
+        "#900001=COLOUR_RGB('',1.,0.,0.);\n\
+         #900002=CURVE_STYLE('',$,$,#900001);\n\
+         #900003=PRESENTATION_STYLE_ASSIGNMENT((#900002));\n\
+         #900004=STYLED_ITEM('',(#900003),#{rim});\n\
+         #900005=SHAPE_ASPECT('','',#{pds},.T.);\n\
+         #900006=GEOMETRIC_ITEM_SPECIFIC_USAGE('','',#900005,#{absr},#{rim});\n\
+         #900007=DIMENSIONAL_SIZE(#900005,'rim');\n\
+         #900008=SHAPE_DIMENSION_REPRESENTATION('',(),#{absr});\n\
+         #900009=DIMENSIONAL_CHARACTERISTIC_REPRESENTATION(#900007,#900008);\n"
+    );
+    let at = text.rfind("ENDSEC;").unwrap();
+    let text = format!("{}{extra}{}", &text[..at], &text[at..]);
+
+    let import = ogeom::io::read_step(&text, T).unwrap();
+    let document = &import.document;
+    let model = document.model();
+    let mut pieces: Vec<Shape> = explore_unique(model, &import.solids[0], ShapeType::Edge)
+        .unwrap()
+        .into_iter()
+        .filter(|e| !model.node(e).unwrap().data().as_edge().unwrap().degenerate)
+        .collect();
+    assert_eq!(pieces.len(), 2, "the rim in two meridians");
+    let red = ogeom::doc::Colour::rgb(1.0, 0.0, 0.0);
+    for piece in &pieces {
+        assert_eq!(document.colour_of(piece), Some(red));
+    }
+    assert_eq!(document.colours().count(), 2, "nothing else coloured");
+    pieces.sort_by_key(Shape::node);
+    let nodes: Vec<_> = pieces.iter().map(Shape::node).collect();
+    let dimensions = &document.pmi().dimensions;
+    assert_eq!(dimensions.len(), 1);
+    assert_eq!(dimensions[0].name, "rim");
+    assert_eq!(dimensions[0].features, vec![nodes]);
+}
+
+fn volume(model: &Model, shape: &Shape) -> Option<f64> {
+    ogeom::algo::volume_properties(model, shape, Deflection::default(), T)
+        .ok()
+        .map(|p| p.mass)
+}
+
+/// The STEP reader widens an edge to how far its pcurves sit from its
+/// curve. The edge's vertices widen with it, so a freshly read solid holds
+/// every vertex at least as loose as the edges it bounds. These files read
+/// with hundreds of vertices tighter than their edges otherwise.
+#[test]
+fn a_step_read_keeps_tolerance_containment() {
+    for name in [
+        "nist_ctc_02_asme1_rc.stp",
+        "nist_ctc_05_asme1_rd.stp",
+        "long_bore_between_cross_holes.step",
+    ] {
+        let import = ogeom::io::read_step(&corpus(name), T).unwrap();
+        assert!(!import.solids.is_empty(), "{name}");
+        for solid in &import.solids {
+            assert_eq!(
+                containment_findings(import.document.model(), solid),
+                0,
+                "{name}: a vertex tighter than an edge it bounds"
+            );
+        }
+    }
+}
+
+/// A frustum whose base circle stands three tenths of a micron outside its
+/// cone and starts its turn at three radians, so its range runs past one
+/// period: it reads with the circle's edge as loose as its pcurve stands
+/// off it, checks clean, and checks clean after a repair.
+#[test]
+fn a_parallel_read_past_one_turn_checks_clean() {
+    let mut model = Model::new();
+    let frustum = ogeom::algo::make_cone(&mut model, ogeom::math::Frame::WORLD, 3.0, 2.0, 1.0, T)
+        .unwrap()
+        .shape;
+    let mut document = ogeom::doc::Document::over(model);
+    document.add_part("frustum", frustum);
+    let text = ogeom::io::write_step(&document, T).unwrap();
+    // The base circle, given a placement of its own turned three radians
+    // about its axis and a radius a hair wider.
+    let line = text
+        .lines()
+        .find(|l| l.contains("CIRCLE(") && l.ends_with(",3.0);"))
+        .expect("the base circle is written");
+    let placement = line.split(['(', ',']).nth(2).unwrap();
+    let base = text
+        .lines()
+        .find(|l| l.starts_with(&format!("{placement}=AXIS2_PLACEMENT_3D(")))
+        .unwrap();
+    let args: Vec<&str> = base
+        .trim_end_matches(");")
+        .split_once('(')
+        .unwrap()
+        .1
+        .split(',')
+        .collect();
+    let (s, c) = 3.0_f64.sin_cos();
+    let turned = format!(
+        "#9001=DIRECTION('',({c},{s},0.0));\n#9002=AXIS2_PLACEMENT_3D('',{},{},#9001);\n",
+        args[1], args[2]
+    );
+    let wider = line
+        .replace(placement, "#9002")
+        .replace(",3.0);", ",3.0000003);");
+    let text = text
+        .replace(line, &wider)
+        .replacen("DATA;\n", &format!("DATA;\n{turned}"), 1);
+
+    let mut import = ogeom::io::read_step(&text, T).unwrap();
+    let solid = import.solids[0].clone();
+    let diagnosis = check(import.document.model(), &solid, T).unwrap();
+    assert!(diagnosis.of(Severity::Broken).is_empty(), "{diagnosis}");
+    let fixed = ogeom::heal::fix_shape(import.document.model_mut(), &solid, T).unwrap();
+    let diagnosis = check(import.document.model(), &fixed.shape, T).unwrap();
+    assert!(diagnosis.of(Severity::Broken).is_empty(), "{diagnosis}");
+}
+
+/// The widest tolerance of any edge of `shape`.
+fn widest_edge_tolerance(model: &Model, shape: &Shape) -> f64 {
+    explore_unique(model, shape, ShapeType::Edge)
+        .unwrap()
+        .iter()
+        .filter_map(|edge| model.node(edge)?.data().as_edge())
+        .map(|data| data.tolerance.get())
+        .fold(0.0, f64::max)
+}
+
+/// Bands between two circles whose vertices stand on different columns
+/// of their cylinder or torus (a hole's two rims started half or a quarter
+/// turn apart) have one rim split on the other's column and take their
+/// seam there, with no warning, and the neighbour across the split rim
+/// walks both pieces. Measured against matched parameters, as the
+/// same-parameter repair measures, every pcurve then agrees with its
+/// curve, and no edge of these parts grows past 10 µm: the files' own
+/// worst edge sits 6.5 µm off its surface, while a pcurve started on the
+/// wrong column stands a chord of the rim, up to the hole's diameter, off.
+#[test]
+fn rims_starting_on_different_columns_keep_tight_tolerances() {
+    const WIDEST: f64 = 0.01;
+    for name in [
+        "nist_ftc_11_asme1_rb.stp",
+        "nist_ctc_01_asme1_rd.stp",
+        "nist_ctc_03_asme1_rc.stp",
+        "nist_ftc_06_asme1_rd.stp",
+        "nist_ftc_07_asme1_rd.stp",
+    ] {
+        let mut import = ogeom::io::read_step(&corpus(name), T).unwrap();
+        let unseamed: Vec<&String> = import
+            .report
+            .warnings
+            .iter()
+            .filter(|w| w.contains("no seam could be synthesised"))
+            .collect();
+        assert!(unseamed.is_empty(), "{name}: {unseamed:?}");
+        let model = import.document.model_mut();
+        for solid in &import.solids {
+            for shell in explore_unique(model, solid, ShapeType::Shell).unwrap() {
+                assert!(
+                    ogeom::algo::is_shell_closed(model, &shell).unwrap(),
+                    "{name}: a shell opens along a split rim"
+                );
+            }
+            let read = widest_edge_tolerance(model, solid);
+            assert!(read <= WIDEST, "{name}: an edge reads {read} wide");
+            ogeom::heal::repair_same_parameter(model, solid, T).unwrap();
+            let repaired = widest_edge_tolerance(model, solid);
+            assert!(
+                repaired <= WIDEST,
+                "{name}: an edge is {repaired} wide after the same-parameter repair"
+            );
+        }
+    }
+}
+
+/// The healer restores containment. A real part whose edges genuinely
+/// need their width (pcurves sitting microns off their curves) has its
+/// vertices reset to the confusion tolerance, which is the state a reader
+/// that widened only the edges left behind. The reduction cannot tighten
+/// those edges, so the vertices are what must grow, and the report says
+/// how many did.
+#[test]
+fn fix_shape_restores_tolerance_containment() {
+    let mut import = ogeom::io::read_step(&corpus("nist_ctc_02_asme1_rc.stp"), T).unwrap();
+    let solid = import.solids[0].clone();
+    let model = import.document.model_mut();
+    let tight = Tolerance::new(T.confusion()).unwrap();
+    for vertex in explore_unique(model, &solid, ShapeType::Vertex).unwrap() {
+        if let Some(node) = model.node_mut(&vertex)
+            && let NodeData::Vertex(data) = node.data_mut()
+        {
+            data.tolerance = tight;
+        }
+    }
+    assert!(containment_findings(model, &solid) > 0);
+
+    let fixed = ogeom::heal::fix_shape(model, &solid, T).unwrap();
+    assert_eq!(containment_findings(model, &fixed.shape), 0);
+    assert!(fixed.report.tolerances_widened > 0);
+    assert!(
+        fixed.report.after.of(Severity::Broken).is_empty(),
+        "{}",
+        fixed.report.after
+    );
+
+    // The reduction shrinks no edge below how far its pcurves stand from
+    // its curve: this part's fitted trims stray most between the points a
+    // coarse measure would read.
+    let excess = widest_pcurve_excess(model, &fixed.shape);
+    assert!(excess.is_none(), "(gap, stated) {excess:?}");
+
+    // The pass alone, run again, has nothing left to grow.
+    assert_eq!(restore_containment(model, &fixed.shape).unwrap(), 0);
+}
+
+/// Whatever the IGES writer writes, its reader reads: every record exactly
+/// eighty columns, and every solid back, valid, at the volume it went out
+/// with. One of these parts carries a coefficient near 1e-51, which
+/// positional notation spells longer than a record. The others have
+/// vertices their curves miss by a few nanometres, or project a hair past
+/// a bounded curve's end.
+#[test]
+fn a_solid_written_as_iges_reads_back() {
+    for name in [
+        "nist_ctc_03_asme1_rc.stp",
+        "nist_ctc_01_asme1_rd.stp",
+        "nist_ftc_07_asme1_rd.stp",
+        "closed_tube_face_crosses_its_join.step",
+        "fillet_strip_with_a_narrow_chart.step",
+    ] {
+        let read = ogeom::io::read_step(&corpus(name), T).unwrap();
+        let iges = ogeom::io::write_iges(&read.document, T).unwrap();
+        assert!(
+            iges.lines().all(|line| line.len() == 80),
+            "{name}: a record not eighty columns"
+        );
+        let back = ogeom::io::read_iges(&iges, T).unwrap();
+        assert_eq!(back.solids.len(), read.solids.len(), "{name}");
+        for (sent, came) in read.solids.iter().zip(&back.solids) {
+            let model = back.document.model();
+            assert!(check(model, came, T).unwrap().is_usable(), "{name}");
+            assert_eq!(containment_findings(model, came), 0, "{name}");
+            assert_eq!(walks::edges_walked_one_way(model, came), 0, "{name}");
+            let faces = |m: &Model, s: &Shape| explore_unique(m, s, ShapeType::Face).unwrap().len();
+            assert_eq!(
+                faces(read.document.model(), sent),
+                faces(model, came),
+                "{name}"
+            );
+            // A part that encloses a volume encloses the same one.
+            if let (Some(a), Some(b)) = (volume(read.document.model(), sent), volume(model, came)) {
+                assert!(
+                    (a - b).abs() <= a.abs() * 1e-3,
+                    "{name}: volume {a} went out, {b} came back"
+                );
+            }
+        }
+    }
+}
+
+/// Solids whose sphere face is bounded by its own seam meridian on one side
+/// only, walked once by the face: a ball cut by the plane through its seam
+/// (keeping `y > 0`, the face forward), and a block cut by a whole ball
+/// centred on its face at `y = 0` (a half-ball pocket, the face reversed).
+/// Written out and read back through STEP and IGES, each solid is valid,
+/// holds its exact volume, and every point of a fixed grid off its boundary
+/// reads in or out as its membership says. A `SEAM_CURVE` carrying both of
+/// the seam's sides for one walk read back on the far side, and an IGES
+/// image chained across the poles took either column: the sphere face then
+/// faced into its material and half the points read wrong.
+#[test]
+fn solids_bounded_by_a_seam_meridian_keep_their_side_through_exchange() {
+    use ogeom::algo::{Containment, SolidBoundary};
+    use ogeom::math::{Direction, Frame, Point, Vector};
+    let frame = |x: f64, y: f64, z: f64| {
+        Frame::new(Point::new(x, y, z), Direction::Z, Direction::X, T).unwrap()
+    };
+    let ball_volume = 4.0 / 3.0 * core::f64::consts::PI * 1000.0;
+    for pocket in [false, true] {
+        let mut model = Model::new();
+        let ball = ogeom::algo::make_sphere(&mut model, Frame::WORLD, 10.0, T)
+            .unwrap()
+            .shape;
+        let (solid, want): (Shape, f64) = if pocket {
+            let block =
+                ogeom::algo::make_box(&mut model, frame(-20.0, 0.0, -20.0), (40.0, 20.0, 40.0), T)
+                    .unwrap()
+                    .shape;
+            let cut = ogeom::boolean::cut(&mut model, &block, &ball, T)
+                .unwrap()
+                .shape;
+            (cut, 40.0 * 20.0 * 40.0 - ball_volume / 2.0)
+        } else {
+            let below = ogeom::algo::make_box(
+                &mut model,
+                frame(-20.0, -20.0, -20.0),
+                (40.0, 20.0, 40.0),
+                T,
+            )
+            .unwrap()
+            .shape;
+            let cut = ogeom::boolean::cut(&mut model, &ball, &below, T)
+                .unwrap()
+                .shape;
+            (cut, ball_volume / 2.0)
+        };
+        let inside = |p: Point| {
+            let in_ball = Vector::new(p.x, p.y, p.z).magnitude() < 10.0;
+            if pocket {
+                p.x.abs() < 20.0 && p.y > 0.0 && p.y < 20.0 && p.z.abs() < 20.0 && !in_ball
+            } else {
+                in_ball && p.y > 0.0
+            }
+        };
+        assert!(check(&model, &solid, T).unwrap().is_valid());
+        let mut document = ogeom::doc::Document::over(model);
+        document.add_part("part", solid);
+        let step = ogeom::io::read_step(&ogeom::io::write_step(&document, T).unwrap(), T).unwrap();
+        let iges = ogeom::io::read_iges(&ogeom::io::write_iges(&document, T).unwrap(), T).unwrap();
+        for (format, model, solid) in [
+            ("STEP", step.document.model(), &step.solids[0]),
+            ("IGES", iges.document.model(), &iges.solids[0]),
+        ] {
+            let name = format!("{format}, {}", if pocket { "pocket" } else { "half ball" });
+            let diagnosis = check(model, solid, T).unwrap();
+            assert!(diagnosis.is_valid(), "{name}: {diagnosis}");
+            let got = ogeom::algo::volume_properties(model, solid, Deflection::default(), T)
+                .unwrap()
+                .mass;
+            assert!(
+                (got - want).abs() <= want * 1e-9,
+                "{name}: volume {got} against {want}"
+            );
+            let boundary = SolidBoundary::of(model, solid, 1e-3, T).unwrap();
+            let mut wrong = Vec::new();
+            for i in -4..=4 {
+                for j in -4..=4 {
+                    for k in -4..=4 {
+                        let p = Point::new(
+                            4.3 * f64::from(i) + 0.1,
+                            4.3 * f64::from(j) + 0.1,
+                            4.3 * f64::from(k) + 0.1,
+                        );
+                        let read = boundary.holds(model, p, T).unwrap();
+                        let right = matches!(
+                            (read, inside(p)),
+                            (Containment::In, true) | (Containment::Out, false)
+                        );
+                        if !right {
+                            wrong.push(p);
+                        }
+                    }
+                }
+            }
+            assert!(
+                wrong.is_empty(),
+                "{name}: {} points read wrong, e.g. {:?}",
+                wrong.len(),
+                wrong.first()
+            );
+        }
+    }
+}

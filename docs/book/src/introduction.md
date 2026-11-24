@@ -23,7 +23,7 @@ kernel ([provenance](kernel/provenance.md)).
 ## How this book is kept honest
 
 - **Examples are tested.** Every code block in this guide comes from
-  [a test file](https://github.com/gilbertorconde/ogeom-rs/blob/main/crates/ogeom/tests/book.rs)
+  [a test file](https://github.com/gilbertorconde/ogeom-rs/blob/main/crates/ogeom/tests/facade/book.rs)
   that runs in CI, so a broken or false example fails the build. The test
   suite checks every numeric claim against a closed form or a round trip.
 - **Completeness is recorded.** [Scope](kernel/scope.md) sets the target:

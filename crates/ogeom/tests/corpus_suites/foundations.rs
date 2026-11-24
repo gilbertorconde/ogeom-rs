@@ -1,0 +1,433 @@
+//! Cancellation that stops a long operation at its next checkpoint, and
+//! parallelism whose answer is bit-identical at any thread count.
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
+
+use ogeom::core::{OgeomError, Tolerances, parallel, progress};
+use ogeom::math::{Frame, Point};
+use ogeom::mesh::Deflection;
+use ogeom::topo::{Model, Shape};
+
+const T: Tolerances = Tolerances::millimetres();
+
+/// One deterministic part with enough faces to be worth threads: a box, a
+/// drum and a torus, tessellated together under one compound-free model.
+fn build(model: &mut Model) -> Vec<Shape> {
+    let a = ogeom::algo::make_box(model, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let b = ogeom::algo::make_cylinder(model, Frame::WORLD, 6.0, 25.0, T)
+        .unwrap()
+        .shape;
+    let c = ogeom::algo::make_torus(model, Frame::WORLD, 12.0, 3.0, T)
+        .unwrap()
+        .shape;
+    vec![a, b, c]
+}
+
+/// The same model tessellated at one thread and at four serializes to the
+/// same bytes: scheduling cannot reach the answer.
+#[test]
+fn parallel_tessellation_is_bit_identical() {
+    let write = |threads: usize| {
+        parallel::set_threads(threads);
+        let mut model = Model::new();
+        let shapes = build(&mut model);
+        for shape in &shapes {
+            ogeom::mesh::tessellate(&mut model, shape, Deflection::default(), T).unwrap();
+        }
+        parallel::set_threads(0);
+        ogeom::io::native::write(&model, &shapes, ogeom::io::native::WriteOptions::default())
+            .unwrap()
+    };
+    let serial = write(1);
+    let threaded = write(4);
+    assert_eq!(
+        serial, threaded,
+        "the native bytes must not depend on the thread count"
+    );
+}
+
+/// A mesh converted at one thread and at four serializes to the same bytes:
+/// recognition fits its seeds a batch at a time, the batch sized by the
+/// thread count, and the regions come out as seed-by-seed order gives them.
+#[test]
+fn parallel_mesh_conversion_is_bit_identical() {
+    let mut source = Model::new();
+    let block = ogeom::algo::make_box(&mut source, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = ogeom::topo::explore_unique(&source, &block, ogeom::topo::ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut source, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let mesh =
+        ogeom::mesh::triangulate(&source, &rounded, Deflection::with_chord(0.05).unwrap(), T)
+            .unwrap();
+    let write = |threads: usize| {
+        parallel::set_threads(threads);
+        let mut model = Model::new();
+        let out = ogeom::algo::solid_from_mesh(
+            &mut model,
+            &mesh,
+            &ogeom::algo::MeshSolidOptions::default(),
+            T,
+        )
+        .unwrap();
+        parallel::set_threads(0);
+        ogeom::io::native::write(
+            &model,
+            &[out.shape],
+            ogeom::io::native::WriteOptions::default(),
+        )
+        .unwrap()
+    };
+    let serial = write(1);
+    let threaded = write(4);
+    assert_eq!(
+        serial, threaded,
+        "the converted solid must not depend on the thread count"
+    );
+}
+
+/// An exact hidden-line drawing is the same at one thread and at four, to
+/// the bit and in the same order: edges, silhouettes and their visibility
+/// are worked out a curve at a time on separate threads, and gathered back
+/// in curve order. The torus has its silhouette marched, the drum's is a
+/// pair of rulings, and each part hides some of the others.
+#[test]
+fn parallel_exact_hidden_lines_are_bit_identical() {
+    let mut model = Model::new();
+    let shapes = build(&mut model);
+    let all = ogeom::algo::make_compound(&mut model, &shapes)
+        .unwrap()
+        .shape;
+    let view = ogeom::hlr::View::looking(
+        ogeom::math::Vector::new(-1.0, -0.5, -1.0),
+        ogeom::math::Vector::Z,
+        T,
+    )
+    .unwrap();
+    let draw = |threads: usize| {
+        parallel::set_threads(threads);
+        let drawing =
+            ogeom::hlr::exact::project_exact(&model, &all, &view, Deflection::default(), T)
+                .unwrap();
+        parallel::set_threads(0);
+        // Debug prints every coordinate in its shortest exact form.
+        format!("{drawing:?}")
+    };
+    let serial = draw(1);
+    assert!(serial.contains("Hidden") && serial.contains("Silhouette"));
+    assert_eq!(
+        serial,
+        draw(4),
+        "the drawing must not depend on the thread count"
+    );
+}
+
+/// A pre-cancelled watch stops the tessellation at its first checkpoint,
+/// and the error says cancelled, not a partial result, not a stall.
+#[test]
+fn a_cancelled_watch_stops_tessellation() {
+    let mut model = Model::new();
+    let shapes = build(&mut model);
+    let watch = progress::Watch::new();
+    watch.canceller().cancel();
+    let outcome = progress::watched(&watch, || {
+        ogeom::mesh::tessellate(&mut model, &shapes[0], Deflection::default(), T)
+    });
+    assert!(matches!(outcome, Err(OgeomError::Cancelled)));
+}
+
+/// The stage names of a boolean reach the watch's sink in pipeline order,
+/// and the cut still measures: a sink is a listener, not a participant.
+#[test]
+fn a_boolean_reports_its_stages() {
+    use std::sync::{Arc, Mutex};
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let drill_frame = Frame::new(
+        ogeom::math::Point::new(10.0, 10.0, -1.0),
+        ogeom::math::Direction::Z,
+        ogeom::math::Direction::X,
+        T,
+    )
+    .unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, drill_frame, 3.0, 12.0, T)
+        .unwrap()
+        .shape;
+
+    let heard: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let record = Arc::clone(&heard);
+    let watch = progress::Watch::with_sink(move |name| {
+        record.lock().unwrap().push(name.to_owned());
+    });
+    let cut = progress::watched(&watch, || {
+        ogeom::boolean::cut(&mut model, &block, &drill, T)
+    })
+    .unwrap()
+    .shape;
+
+    let stages = heard.lock().unwrap().clone();
+    assert!(
+        stages.iter().any(|s| s == "boolean: gather")
+            && stages.iter().any(|s| s == "boolean: split"),
+        "the pipeline names its stages: {stages:?}"
+    );
+    let volume = ogeom::algo::volume_properties(&model, &cut, Deflection::default(), T)
+        .unwrap()
+        .mass;
+    let expected = 20.0f64 * 20.0 * 10.0 - core::f64::consts::PI * 9.0 * 10.0;
+    assert!(
+        (volume - expected).abs() / expected < 0.01,
+        "{volume} vs {expected}"
+    );
+}
+
+/// The whole-shape mesh is the same at one thread and at four, to the bit.
+///
+/// `tessellate` writes its meshes into the model, so the test above can
+/// compare serialized bytes. `triangulate` hands its mesh straight back, and
+/// what has to be identical is that mesh: every position, every index, in
+/// order. A face landing in the wrong slot, or a piece appended out of turn,
+/// would show here and nowhere else.
+#[test]
+fn parallel_triangulation_returns_the_same_mesh() {
+    let mesh_at = |threads: usize| {
+        parallel::set_threads(threads);
+        let mut model = Model::new();
+        let shapes = build(&mut model);
+        let meshes: Vec<_> = shapes
+            .iter()
+            .map(|shape| ogeom::mesh::triangulate(&model, shape, Deflection::default(), T).unwrap())
+            .collect();
+        parallel::set_threads(0);
+        meshes
+    };
+    let serial = mesh_at(1);
+    let threaded = mesh_at(4);
+
+    assert_eq!(serial.len(), threaded.len());
+    for (one, many) in serial.iter().zip(&threaded) {
+        assert_eq!(
+            one.triangles, many.triangles,
+            "the triangles must not depend on the thread count"
+        );
+        assert_eq!(
+            one.positions.len(),
+            many.positions.len(),
+            "the vertex count must not depend on the thread count"
+        );
+        for (a, b) in one.positions.iter().zip(&many.positions) {
+            assert!(
+                a.x.to_bits() == b.x.to_bits()
+                    && a.y.to_bits() == b.y.to_bits()
+                    && a.z.to_bits() == b.z.to_bits(),
+                "a vertex moved between thread counts: {a:?} against {b:?}"
+            );
+        }
+    }
+}
+
+/// A boolean's answer does not depend on how many threads paved its sections.
+///
+/// The filler measures each section against the boundaries it crosses, and
+/// that measuring runs in parallel. What must not move is where the
+/// crossings land: a pave arriving in a different order would split an edge
+/// at the same places in a different sequence, and the rebuilt solid would
+/// differ in its vertex numbering even where its geometry agreed. Serialized
+/// bytes catch exactly that.
+#[test]
+fn a_parallel_boolean_is_bit_identical() {
+    let cut_at = |threads: usize| {
+        parallel::set_threads(threads);
+        let mut model = Model::new();
+        let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 10.0), T)
+            .unwrap()
+            .shape;
+        let mut solid = block;
+        for (x, y) in [(5.0, 5.0), (15.0, 5.0), (5.0, 15.0)] {
+            let frame = Frame::new(
+                Point::new(x, y, -1.0),
+                ogeom_math::Direction::Z,
+                ogeom_math::Direction::X,
+                T,
+            )
+            .unwrap();
+            let drill = ogeom::algo::make_cylinder(&mut model, frame, 2.0, 12.0, T)
+                .unwrap()
+                .shape;
+            solid = ogeom::boolean::cut(&mut model, &solid, &drill, T)
+                .unwrap()
+                .shape;
+        }
+        parallel::set_threads(0);
+        let shapes = vec![solid];
+        ogeom::io::native::write(&model, &shapes, ogeom::io::native::WriteOptions::default())
+            .unwrap()
+    };
+    let serial = cut_at(1);
+    let threaded = cut_at(4);
+    assert_eq!(
+        serial, threaded,
+        "the cut solid's bytes must not depend on the thread count"
+    );
+}
+
+/// A STEP import reads the same model however many threads derived its
+/// pcurves.
+///
+/// The reader derives a solid's pcurves in parallel and attaches them on its
+/// own thread, in file order. What must not move is the model: handles are
+/// issued in insertion order, so a pcurve attached out of turn would renumber
+/// everything after it. Serialized bytes are the honest comparison.
+#[test]
+fn a_parallel_step_read_is_bit_identical() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/corpus/nist_ctc_01_asme1_rd.stp"
+    );
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return; // The corpus is optional, and there is nothing to compare without it.
+    };
+    let read_at = |threads: usize| {
+        parallel::set_threads(threads);
+        let import = ogeom::io::read_step(&text, T).unwrap();
+        parallel::set_threads(0);
+        ogeom::io::native::write(
+            import.document.model(),
+            &import.solids,
+            ogeom::io::native::WriteOptions::default(),
+        )
+        .unwrap()
+    };
+    let serial = read_at(1);
+    let threaded = read_at(4);
+    assert_eq!(
+        serial, threaded,
+        "the imported model's bytes must not depend on the thread count"
+    );
+}
+
+/// A rounded box drilled by a drum standing on the top plane along the line
+/// where the top and side planes would meet, which the rounds have taken
+/// away; the box joined to a block that half overlaps it; and the box
+/// converted from its mesh back to a solid, all written as one native file.
+fn rounded_box_ops() -> String {
+    let mut model = Model::new();
+    let block = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 14.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let edges = ogeom::topo::explore_unique(&model, &block, ogeom::topo::ShapeType::Edge).unwrap();
+    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 2.0, T)
+        .unwrap()
+        .shape;
+    let radius = 2.1;
+    let frame = Frame::new(
+        Point::new(0.0, -2.6, 10.0 + radius),
+        ogeom::math::Direction::Y,
+        -ogeom::math::Direction::Z,
+        T,
+    )
+    .unwrap();
+    let drill = ogeom::algo::make_cylinder(&mut model, frame, radius, 19.2, T)
+        .unwrap()
+        .shape;
+    let cut = ogeom::boolean::cut(&mut model, &rounded, &drill, T)
+        .unwrap()
+        .shape;
+    let common = ogeom::boolean::common(&mut model, &rounded, &drill, T)
+        .unwrap()
+        .shape;
+    let rest = ogeom::boolean::cut(&mut model, &drill, &rounded, T)
+        .unwrap()
+        .shape;
+    let other = ogeom::algo::make_box(
+        &mut model,
+        Frame::new(
+            Point::new(10.0, 7.0, 5.0),
+            ogeom::math::Direction::Z,
+            ogeom::math::Direction::X,
+            T,
+        )
+        .unwrap(),
+        (15.0, 15.0, 15.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let fused = ogeom::boolean::fuse(&mut model, &rounded, &other, T)
+        .unwrap()
+        .shape;
+    let mesh = ogeom::mesh::triangulate(&model, &rounded, Deflection::with_chord(0.05).unwrap(), T)
+        .unwrap();
+    let converted = ogeom::algo::solid_from_mesh(
+        &mut model,
+        &mesh,
+        &ogeom::algo::MeshSolidOptions::default(),
+        T,
+    )
+    .unwrap()
+    .shape;
+    ogeom::io::native::write(
+        &model,
+        &[rounded, cut, common, rest, fused, converted],
+        ogeom::io::native::WriteOptions::default(),
+    )
+    .unwrap()
+}
+
+/// A boolean, a fillet and a conversion answer to the byte in two processes
+/// of their own, one at one thread and one at three, and as they do in this
+/// one. Anything keyed by an address, or read from the process's own state,
+/// can move between processes and nowhere else.
+///
+/// The children are this test binary run on this test alone, told by the
+/// environment to write the answer and stop.
+#[test]
+fn the_answer_is_the_same_in_another_process() {
+    const CHILD: &str = "OGEOM_FOUNDATIONS_CHILD";
+    const MARK: &str = "---- the answer ----";
+    if std::env::var_os(CHILD).is_some() {
+        println!("{MARK}\n{}{MARK}", rounded_box_ops());
+        return;
+    }
+    let here = rounded_box_ops();
+    let exe = std::env::current_exe().unwrap();
+    // The test's name as the harness lists it: its module path without the
+    // program's own name.
+    let name = match module_path!().split_once("::") {
+        Some((_, module)) => format!("{module}::the_answer_is_the_same_in_another_process"),
+        None => "the_answer_is_the_same_in_another_process".to_owned(),
+    };
+    for threads in ["1", "3"] {
+        let out = std::process::Command::new(&exe)
+            .args([
+                "--exact",
+                name.as_str(),
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(CHILD, "1")
+            .env("OGEOM_THREADS", threads)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "the child at {threads} threads failed"
+        );
+        let text = String::from_utf8(out.stdout).unwrap();
+        let answer = text
+            .split(MARK)
+            .nth(1)
+            .and_then(|s| s.strip_prefix('\n'))
+            .expect("the child wrote no answer");
+        assert!(
+            answer == here,
+            "the answer at {threads} threads in another process differs from this one's"
+        );
+    }
+}

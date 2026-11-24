@@ -26,8 +26,8 @@ symbols = [
     "ogeom_topo::Model::node",
 ]
 tests = [
-    "crates/ogeom-algo/tests/history_properties.rs",
-    "crates/ogeom/tests/built_by_hand.rs::a_hand_built_prism_closes_and_measures_its_closed_form",
+    "crates/ogeom-algo/tests/algo/history_properties.rs",
+    "crates/ogeom/tests/facade/built_by_hand.rs::a_hand_built_prism_closes_and_measures_its_closed_form",
 ]
 
 [[capability]]
@@ -46,7 +46,7 @@ verdict = "covered"
 symbols = ["ogeom_topo::EdgeRepr", "ogeom_topo::EdgeData", "ogeom_topo::VertexData"]
 tests = [
     "crates/ogeom-topo/src/entity.rs",
-    "crates/ogeom/tests/built_by_hand.rs",
+    "crates/ogeom/tests/facade/built_by_hand.rs",
 ]
 
 [[capability]]
@@ -74,7 +74,7 @@ symbols = [
     "ogeom_io::read", "ogeom_io::write", "ogeom_io::VERSION",
     "ogeom_io::read_into", "ogeom_topo::Model::absorb",
 ]
-tests = ["crates/ogeom/tests/brep_format.rs", "crates/ogeom/tests/absorb.rs"]
+tests = ["crates/ogeom/tests/facade/brep_format.rs", "crates/ogeom/tests/facade/absorb.rs"]
 
 # --- ogeom-core -----------------------------------------------------------
 
@@ -93,7 +93,7 @@ crate = "ogeom-core"
 verdict = "covered"
 symbols = ["ogeom_core::Watch", "ogeom_core::Canceller", "ogeom_core::Stage"]
 tests = [
-    "crates/ogeom/tests/foundations.rs::a_cancelled_watch_stops_tessellation",
+    "crates/ogeom/tests/corpus_suites/foundations.rs::a_cancelled_watch_stops_tessellation",
     "crates/ogeom-io/tests/step_corpus.rs::a_step_read_announces_each_solid_with_its_total",
 ]
 restriction = """Flat stages with per-stage (done, total) counts, enough for \
@@ -111,7 +111,7 @@ symbols = [
     "ogeom_math::Point", "ogeom_math::Vector", "ogeom_math::Direction",
     "ogeom_math::Frame", "ogeom_math::Point2", "ogeom_math::Axis",
 ]
-tests = ["crates/ogeom-math/tests/primitive_properties.rs"]
+tests = ["crates/ogeom-math/tests/math/primitive_properties.rs"]
 
 [[capability]]
 id = "math.transforms"
@@ -122,7 +122,7 @@ symbols = [
     "ogeom_math::Transform", "ogeom_math::Transform2",
     "ogeom_math::GeneralTransform", "ogeom_math::Quaternion",
 ]
-tests = ["crates/ogeom-math/tests/transform_properties.rs"]
+tests = ["crates/ogeom-math/tests/math/transform_properties.rs"]
 
 [[capability]]
 id = "math.analytic-carriers"
@@ -133,7 +133,7 @@ symbols = [
     "ogeom_math::Circle", "ogeom_math::Plane", "ogeom_math::Cylinder",
     "ogeom_math::Cone", "ogeom_math::Sphere", "ogeom_math::Torus",
 ]
-tests = ["crates/ogeom-math/tests/primitive_properties.rs"]
+tests = ["crates/ogeom-math/tests/math/primitive_properties.rs"]
 
 [[capability]]
 id = "math.equation-solving"
@@ -146,8 +146,8 @@ symbols = [
     "ogeom_math::minimize_local", "ogeom_math::global_minimum", "ogeom_math::swarm_minimum",
 ]
 tests = [
-    "crates/ogeom-math/tests/algebra_properties.rs",
-    "crates/ogeom-math/tests/global_minimum.rs",
+    "crates/ogeom-math/tests/math/algebra_properties.rs",
+    "crates/ogeom-math/tests/math/global_minimum.rs",
 ]
 
 [[capability]]
@@ -174,7 +174,7 @@ symbols = [
     "ogeom_math::integrate_2d",
 ]
 tests = [
-    "crates/ogeom-math/tests/algebra_properties.rs",
+    "crates/ogeom-math/tests/math/algebra_properties.rs",
     "crates/ogeom-math/src/integrate.rs::the_gauss_kronrod_pair_is_exact_to_its_degrees",
     "crates/ogeom-math/src/integrate.rs::a_rectangle_integrates_to_a_stated_tolerance",
 ]
@@ -228,8 +228,8 @@ symbols = [
     "ogeom_algo::linear_properties", "ogeom_algo::MassProperties",
 ]
 tests = [
-    "crates/ogeom/tests/built_by_hand.rs::a_hand_built_prism_closes_and_measures_its_closed_form",
-    "crates/ogeom/tests/trimmed_hole_mass.rs::a_trimmed_cylinder_bore_anywhere_gives_the_closed_form_moments",
+    "crates/ogeom/tests/facade/built_by_hand.rs::a_hand_built_prism_closes_and_measures_its_closed_form",
+    "crates/ogeom/tests/facade/trimmed_hole_mass.rs::a_trimmed_cylinder_bore_anywhere_gives_the_closed_form_moments",
 ]
 
 [[capability]]
@@ -275,7 +275,7 @@ stays refused by name: a wound whose sides meet in no curve and lie on no
 one surface, a removal that would leave a face with no boundary and no
 edge to grow to, and a gap the recovered edges do not bridge."""
 symbols = ["ogeom_bool::remove_faces"]
-tests = ["crates/ogeom/tests/defeature.rs"]
+tests = ["crates/ogeom/tests/facade/defeature.rs"]
 
 [[capability]]
 id = "algo.point-projection"
@@ -338,7 +338,7 @@ symbols = [
     "ogeom_intersect::SectionCurve",
 ]
 tests = [
-    "crates/ogeom-intersect/tests/instruments.rs",
+    "crates/ogeom-intersect/tests/intersect/instruments.rs",
     "crates/ogeom-intersect/src/surface.rs",
     "crates/ogeom-intersect/src/extrusion.rs",
 ]
@@ -356,9 +356,9 @@ symbols = [
     "ogeom_intersect::IntersectionCurve",
 ]
 tests = [
-    "crates/ogeom-intersect/tests/stress.rs",
-    "crates/ogeom-intersect/tests/hard.rs",
-    "crates/ogeom-intersect/tests/branch_points.rs",
+    "crates/ogeom-intersect/tests/intersect/stress.rs",
+    "crates/ogeom-intersect/tests/intersect/hard.rs",
+    "crates/ogeom-intersect/tests/intersect/branch_points.rs",
 ]
 
 # --- ogeom-heal -----------------------------------------------------------
@@ -380,7 +380,7 @@ symbols = [
     "ogeom_heal::repair_same_parameter", "ogeom_heal::SameParameterReport",
     "ogeom_intersect::exact_pcurve_of", "ogeom_algo::project_edge_onto_plane",
 ]
-tests = ["crates/ogeom-heal/src/same_parameter.rs", "crates/ogeom/tests/project_plane.rs"]
+tests = ["crates/ogeom-heal/src/same_parameter.rs", "crates/ogeom/tests/facade/project_plane.rs"]
 
 [[capability]]
 id = "heal.upgrade"
@@ -395,7 +395,7 @@ symbols = [
     "ogeom_heal::SplitOptions", "ogeom_heal::Split", "ogeom_heal::PieceOrigin",
 ]
 tests = [
-    "crates/ogeom/tests/upgrade.rs", "crates/ogeom/tests/divide.rs",
+    "crates/ogeom/tests/facade/upgrade.rs", "crates/ogeom/tests/facade/divide.rs",
     "crates/ogeom-heal/tests/split_face.rs",
 ]
 
@@ -478,7 +478,7 @@ symbols = [
     "ogeom_algo::SheetMethod", "ogeom_algo::SheetDistortion",
 ]
 tests = [
-    "crates/ogeom/tests/sheet_wrap.rs", "crates/ogeom/tests/sheet_inverse.rs",
+    "crates/ogeom/tests/facade/sheet_wrap.rs", "crates/ogeom/tests/facade/sheet_inverse.rs",
     "crates/ogeom-algo/src/sheet.rs",
 ]
 
@@ -555,12 +555,12 @@ symbols = [
     "ogeom_bool::rechart_clear_of_poles",
 ]
 tests = [
-    "crates/ogeom/tests/fix_shape.rs",
-    "crates/ogeom-bool/tests/self_union.rs",
-    "crates/ogeom/tests/sphere_pole_trim.rs",
-    "crates/ogeom/tests/exchange_tolerances.rs",
+    "crates/ogeom/tests/facade/fix_shape.rs",
+    "crates/ogeom-bool/tests/bool/self_union.rs",
+    "crates/ogeom/tests/facade/sphere_pole_trim.rs",
+    "crates/ogeom/tests/corpus_suites/exchange_tolerances.rs",
     "crates/ogeom-heal/src/reanchor.rs",
-    "crates/ogeom/tests/imported_corpus.rs",
+    "crates/ogeom/tests/corpus_suites/imported_corpus.rs",
 ]
 
 [[capability]]
@@ -569,7 +569,7 @@ title = "Recognizing that exact geometry is secretly analytic: a B-spline that i
 crate = "ogeom-heal"
 verdict = "covered"
 symbols = ["ogeom_heal::canonical_simplify", "ogeom_heal::recognize_surface", "ogeom_heal::Simplified"]
-tests = ["crates/ogeom/tests/canonical.rs"]
+tests = ["crates/ogeom/tests/facade/canonical.rs"]
 
 [[capability]]
 id = "heal.custom-remodelling"
@@ -586,8 +586,8 @@ symbols = [
     "ogeom_geom::BSplineSurface::restricted_to_degree",
 ]
 tests = [
-    "crates/ogeom/tests/boolean_options.rs",
-    "crates/ogeom/tests/remodel.rs",
+    "crates/ogeom-bool/tests/bool/boolean_options.rs",
+    "crates/ogeom/tests/facade/remodel.rs",
     "crates/ogeom-geom/src/convert.rs::a_curve_restricted_in_degree_holds_its_tolerance",
     "crates/ogeom-geom/src/convert.rs::a_patch_restricted_in_degree_holds_its_samples",
 ]
@@ -630,11 +630,11 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-mesh/src/triangulate.rs",
-    "crates/ogeom-mesh/tests/apex.rs",
-    "crates/ogeom/tests/face_meshes.rs::every_welded_triangle_names_the_face_it_lies_on",
-    "crates/ogeom/tests/step_conformance.rs::an_apex_or_a_pole_meshes_as_one_vertex_and_no_triangle_of_no_area",
-    "crates/ogeom/tests/foundations.rs::parallel_tessellation_is_bit_identical",
-    "crates/ogeom/tests/imported_corpus.rs::every_closed_corpus_solid_meshes_closed_drawn_by_curvature_alone",
+    "crates/ogeom-mesh/tests/mesh/apex.rs",
+    "crates/ogeom/tests/facade/face_meshes.rs::every_welded_triangle_names_the_face_it_lies_on",
+    "crates/ogeom/tests/facade/step_conformance.rs::an_apex_or_a_pole_meshes_as_one_vertex_and_no_triangle_of_no_area",
+    "crates/ogeom/tests/corpus_suites/foundations.rs::parallel_tessellation_is_bit_identical",
+    "crates/ogeom/tests/corpus_suites/imported_corpus.rs::every_closed_corpus_solid_meshes_closed_drawn_by_curvature_alone",
 ]
 
 [[capability]]
@@ -666,7 +666,7 @@ tests = [
     "crates/ogeom-mesh/src/simplify/verified.rs",
     "crates/ogeom-mesh/src/editable.rs",
     "crates/ogeom-mesh/src/editable/simplify.rs",
-    "crates/ogeom/tests/mesh_editable.rs::five_million_triangles_build_and_read_back",
+    "crates/ogeom/tests/facade/mesh_editable.rs::five_million_triangles_build_and_read_back",
 ]
 
 [[capability]]
@@ -713,7 +713,7 @@ symbols = [
     "ogeom_hlr::section", "ogeom_hlr::broken_section", "ogeom_hlr::half_section",
     "ogeom_hlr::hatch",
 ]
-tests = ["crates/ogeom/tests/exact_hlr.rs"]
+tests = ["crates/ogeom/tests/facade/exact_hlr.rs"]
 
 # --- ogeom-algo, construction and measurement ------------------------------
 
@@ -729,7 +729,7 @@ symbols = [
     "ogeom_algo::make_polygon", "ogeom_algo::make_compound",
     "ogeom_algo::find_plane", "ogeom_algo::attach_pcurve",
 ]
-tests = ["crates/ogeom/tests/built_by_hand.rs"]
+tests = ["crates/ogeom/tests/facade/built_by_hand.rs"]
 
 [[capability]]
 id = "algo.faces-from-planar-wires"
@@ -751,7 +751,7 @@ symbols = [
     "ogeom_algo::make_prism_tapered",
     "ogeom_algo::make_revolution",
 ]
-tests = ["crates/ogeom-algo/src/primitive.rs", "crates/ogeom/tests/built_by_hand.rs"]
+tests = ["crates/ogeom-algo/src/primitive.rs", "crates/ogeom/tests/facade/built_by_hand.rs"]
 
 [[capability]]
 id = "geom.adaptors"
@@ -770,7 +770,7 @@ symbols = [
     "ogeom_algo::check", "ogeom_algo::Diagnosis", "ogeom_algo::Problem",
     "ogeom_algo::Severity",
 ]
-tests = ["crates/ogeom-algo/src/check.rs", "crates/ogeom/tests/built_by_hand.rs"]
+tests = ["crates/ogeom-algo/src/check.rs", "crates/ogeom/tests/facade/built_by_hand.rs"]
 
 [[capability]]
 id = "algo.classification"
@@ -789,7 +789,7 @@ title = "Where a curve first or last meets a shape's trimmed faces, exactly, wit
 crate = "ogeom-algo"
 verdict = "covered"
 symbols = ["ogeom_algo::curve_hit", "ogeom_algo::Hit", "ogeom_algo::CurveHit"]
-tests = ["crates/ogeom-algo/tests/curve_hit.rs"]
+tests = ["crates/ogeom-algo/tests/algo/curve_hit.rs"]
 
 [[capability]]
 id = "algo.shape-distance"
@@ -802,7 +802,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-algo/src/proximity.rs",
-    "crates/ogeom/tests/analysis.rs::crossing_sheets_confess_and_a_box_does_not",
+    "crates/ogeom/tests/facade/analysis.rs::crossing_sheets_confess_and_a_box_does_not",
 ]
 
 [[capability]]
@@ -827,8 +827,8 @@ symbols = [
     "ogeom_algo::CurveFrames",
 ]
 tests = [
-    "crates/ogeom-algo/tests/frames.rs",
-    "crates/ogeom-offset/tests/frames_match_pipe.rs",
+    "crates/ogeom-algo/tests/algo/frames.rs",
+    "crates/ogeom-offset/tests/offset/frames_match_pipe.rs",
 ]
 
 [[capability]]
@@ -845,7 +845,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-geom/src/fit.rs", "crates/ogeom-algo/src/fit.rs",
-    "crates/ogeom-geom/tests/fit_scattered_over.rs",
+    "crates/ogeom-geom/tests/geom/fit_scattered_over.rs",
 ]
 
 [[capability]]
@@ -863,8 +863,8 @@ symbols = [
     "ogeom_algo::Crease", "ogeom_algo::Meeting",
 ]
 tests = [
-    "crates/ogeom-algo/tests/primitive_fits.rs",
-    "crates/ogeom-algo/tests/fit_grow.rs",
+    "crates/ogeom-algo/tests/algo/primitive_fits.rs",
+    "crates/ogeom-algo/tests/algo/fit_grow.rs",
     "crates/ogeom-algo/src/fit/primitive.rs",
     "crates/ogeom-algo/src/fit/tails.rs",
     "crates/ogeom-algo/src/cutoff.rs",
@@ -883,7 +883,7 @@ symbols = [
     "ogeom_algo::Zone",
 ]
 tests = [
-    "crates/ogeom-algo/tests/zone_fits.rs",
+    "crates/ogeom-algo/tests/algo/zone_fits.rs",
     "crates/ogeom-algo/src/fit/zone/lp.rs",
     "crates/ogeom-algo/src/fit/zone/slp.rs",
     "crates/ogeom-algo/src/fit/zone/hull.rs",
@@ -901,8 +901,8 @@ symbols = [
 tests = [
     "crates/ogeom-algo/src/outline.rs",
     "crates/ogeom-algo/src/fit/segments.rs",
-    "crates/ogeom/tests/mesh_shadow.rs::an_l_bracket_gives_its_outline_with_corners",
-    "crates/ogeom/tests/mesh_shadow.rs::a_cylinder_seen_along_its_axis_gives_one_circle",
+    "crates/ogeom/tests/facade/mesh_shadow.rs::an_l_bracket_gives_its_outline_with_corners",
+    "crates/ogeom/tests/facade/mesh_shadow.rs::a_cylinder_seen_along_its_axis_gives_one_circle",
     "crates/ogeom-algo/src/outline.rs::fill_below_fills_a_narrow_slot_and_a_small_hole",
 ]
 
@@ -916,7 +916,7 @@ symbols = [
     "ogeom_algo::Segment2",
 ]
 tests = [
-    "crates/ogeom-algo/tests/fit_segments_2d.rs",
+    "crates/ogeom-algo/tests/algo/fit_segments_2d.rs",
     "crates/ogeom-algo/src/fit/segments.rs",
 ]
 
@@ -932,9 +932,9 @@ symbols = [
     "ogeom_algo::Revolution", "ogeom_algo::Rim",
 ]
 tests = [
-    "crates/ogeom-algo/tests/orient.rs",
+    "crates/ogeom-algo/tests/algo/orient.rs",
     "crates/ogeom-algo/src/orient.rs",
-    "crates/ogeom/tests/orient_corpus.rs",
+    "crates/ogeom/tests/corpus_suites/orient_corpus.rs",
 ]
 
 [[capability]]
@@ -947,7 +947,7 @@ symbols = [
     "ogeom_algo::Rest",
 ]
 tests = [
-    "crates/ogeom-algo/tests/rest.rs",
+    "crates/ogeom-algo/tests/algo/rest.rs",
     "crates/ogeom-algo/src/hull3.rs",
 ]
 
@@ -962,7 +962,7 @@ symbols = [
     "ogeom_algo::MeshFeature", "ogeom_algo::ShapeFeature",
 ]
 tests = [
-    "crates/ogeom-algo/tests/distance.rs",
+    "crates/ogeom-algo/tests/algo/distance.rs",
     "crates/ogeom-mesh/src/bvh.rs",
 ]
 
@@ -976,7 +976,7 @@ symbols = [
     "ogeom_algo::Thickness", "ogeom_algo::Method",
 ]
 tests = [
-    "crates/ogeom-algo/tests/thickness.rs",
+    "crates/ogeom-algo/tests/algo/thickness.rs",
     "crates/ogeom-algo/src/thickness.rs",
 ]
 
@@ -991,7 +991,7 @@ symbols = [
     "ogeom_algo::Starts", "ogeom_algo::Registration",
     "ogeom_algo::FreeMotion", "ogeom_algo::SymmetryFit",
 ]
-tests = ["crates/ogeom-algo/tests/register.rs"]
+tests = ["crates/ogeom-algo/tests/algo/register.rs"]
 
 [[capability]]
 id = "algo.place-copy"
@@ -1015,7 +1015,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-algo/src/convert.rs",
-    "crates/ogeom/tests/remodel.rs::offset_faces_convert_to_nurbs_within_a_tolerance",
+    "crates/ogeom/tests/facade/remodel.rs::offset_faces_convert_to_nurbs_within_a_tolerance",
     "crates/ogeom-geom/src/convert.rs::a_helix_fits_to_a_stated_tolerance_at_its_own_parameters",
 ]
 
@@ -1036,7 +1036,7 @@ title = "Every operation emits history: what was generated, modified, deleted"
 crate = "ogeom-algo"
 verdict = "covered"
 symbols = ["ogeom_algo::History", "ogeom_algo::Built"]
-tests = ["crates/ogeom-algo/tests/history_properties.rs"]
+tests = ["crates/ogeom-algo/tests/algo/history_properties.rs"]
 
 # --- ogeom-bool -----------------------------------------------------------
 
@@ -1051,13 +1051,13 @@ symbols = [
     "ogeom_bool::split_sheet",
 ]
 tests = [
-    "crates/ogeom/tests/sheet_booleans.rs",
-    "crates/ogeom/tests/boolean_interference.rs",
-    "crates/ogeom/tests/boolean_contact.rs",
-    "crates/ogeom/tests/boolean_grazing_drill.rs",
-    "crates/ogeom/tests/boolean_pole_drill.rs",
-    "crates/ogeom/tests/boolean_options.rs",
-    "crates/ogeom-bool/tests/on_face.rs",
+    "crates/ogeom-bool/tests/bool/sheet_booleans.rs",
+    "crates/ogeom-bool/tests/bool/boolean_interference.rs",
+    "crates/ogeom/tests/facade/boolean_contact.rs",
+    "crates/ogeom/tests/facade/boolean_grazing_drill.rs",
+    "crates/ogeom/tests/facade/boolean_pole_drill.rs",
+    "crates/ogeom-bool/tests/bool/boolean_options.rs",
+    "crates/ogeom-bool/tests/bool/on_face.rs",
 ]
 
 [[capability]]
@@ -1067,10 +1067,10 @@ crate = "ogeom-bool"
 verdict = "covered"
 symbols = ["ogeom_bool::fuse_all", "ogeom_algo::History::joined", "ogeom_algo::History::only_for"]
 tests = [
-    "crates/ogeom/tests/fuse_all.rs",
-    "crates/ogeom/tests/fuse_all.rs::fifty_cubes_in_a_row_fuse_into_one_box_of_six_faces",
-    "crates/ogeom/tests/fuse_all.rs::an_overlapping_grid_gives_the_slab_whatever_the_order",
-    "crates/ogeom/tests/fuse_all.rs::a_row_of_overlapping_drums_has_the_inclusion_exclusion_volume",
+    "crates/ogeom/tests/facade/fuse_all.rs",
+    "crates/ogeom/tests/facade/fuse_all.rs::fifty_cubes_in_a_row_fuse_into_one_box_of_six_faces",
+    "crates/ogeom/tests/facade/fuse_all.rs::an_overlapping_grid_gives_the_slab_whatever_the_order",
+    "crates/ogeom/tests/facade/fuse_all.rs::a_row_of_overlapping_drums_has_the_inclusion_exclusion_volume",
 ]
 
 [[capability]]
@@ -1079,7 +1079,7 @@ title = "The cells builder: arbitrary take/remove over the fused arrangement"
 crate = "ogeom-bool"
 verdict = "covered"
 symbols = ["ogeom_bool::cells", "ogeom_bool::Cells"]
-tests = ["crates/ogeom/tests/boolean_options.rs"]
+tests = ["crates/ogeom-bool/tests/bool/boolean_options.rs"]
 
 [[capability]]
 id = "bool.make-volume"
@@ -1087,7 +1087,7 @@ title = "Making volumes from a soup of faces: the arrangement's closed cells"
 crate = "ogeom-bool"
 verdict = "covered"
 symbols = ["ogeom_bool::make_volume"]
-tests = ["crates/ogeom/tests/boolean_options.rs"]
+tests = ["crates/ogeom-bool/tests/bool/boolean_options.rs"]
 
 [[capability]]
 id = "bool.make-periodic"
@@ -1095,7 +1095,7 @@ title = "Making a shape periodic so instances tile without seam duplication"
 crate = "ogeom-bool"
 verdict = "covered"
 symbols = ["ogeom_bool::make_periodic"]
-tests = ["crates/ogeom/tests/boolean_options.rs"]
+tests = ["crates/ogeom-bool/tests/bool/boolean_options.rs"]
 
 [[capability]]
 id = "bool.cut-by-mesh-region"
@@ -1104,8 +1104,8 @@ crate = "ogeom-bool"
 verdict = "covered"
 symbols = ["ogeom_bool::cut_by_mesh_region", "ogeom_mesh::Side"]
 tests = [
-    "crates/ogeom/tests/cut_by_mesh_region.rs",
-    "crates/ogeom/tests/cut_by_mesh_region.rs::a_block_through_a_synthetic_fracture_gives_the_piece_above_it",
+    "crates/ogeom/tests/facade/cut_by_mesh_region.rs",
+    "crates/ogeom/tests/facade/cut_by_mesh_region.rs::a_block_through_a_synthetic_fracture_gives_the_piece_above_it",
 ]
 
 [[capability]]
@@ -1512,38 +1512,38 @@ symbols = [
     "ogeom_fillet::End", "ogeom_fillet::fillet_sheet_edges", "ogeom_fillet::fillet_faces",
 ]
 tests = [
-    "crates/ogeom/tests/blends.rs",
-    "crates/ogeom/tests/sheet_fillets.rs",
-    "crates/ogeom-fillet/tests/bridge.rs",
-    "crates/ogeom-fillet/tests/marched_blend.rs",
-    "crates/ogeom-fillet/tests/marched_fillet.rs",
-    "crates/ogeom-fillet/tests/chain.rs",
-    "crates/ogeom-fillet/tests/fillet.rs",
-    "crates/ogeom-fillet/tests/radius_per_edge.rs",
-    "crates/ogeom-fillet/tests/consumed_rim.rs",
-    "crates/ogeom-fillet/tests/consumed_marched.rs",
-    "crates/ogeom-fillet/tests/fillet_over_bevel.rs",
-    "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback",
-    "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches",
-    "crates/ogeom-fillet/tests/concave.rs::a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it",
-    "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_onto_a_strip_that_widens_past_its_setback",
-    "crates/ogeom-fillet/tests/concave.rs::a_round_rolls_round_the_corner_of_a_narrow_triangle",
-    "crates/ogeom-fillet/tests/marched_blend.rs::a_cylinder_square_on_a_plane_rounds_the_same_on_patches",
-    "crates/ogeom-fillet/tests/marched_blend.rs::a_straight_seat_between_two_patches_runs_off_their_ends",
-    "crates/ogeom-fillet/tests/tangent_chain.rs",
-    "crates/ogeom-fillet/tests/carried_rim.rs",
-    "crates/ogeom-fillet/tests/contact_regressions.rs",
-    "crates/ogeom-fillet/tests/rim_bounds.rs",
-    "crates/ogeom-fillet/tests/cap_history.rs",
-    "crates/ogeom-fillet/tests/corner_history.rs",
-    "crates/ogeom-fillet/tests/rolling_curved.rs",
-    "crates/ogeom-fillet/tests/switch_over.rs",
-    "crates/ogeom-fillet/tests/switch_over.rs::a_half_frustum_s_foot_rounds_through_its_pipe_corners",
-    "crates/ogeom-fillet/tests/switch_over.rs::a_half_frustum_s_top_loop_rounds_through_its_pipe_corners",
-    "crates/ogeom-fillet/tests/switch_over.rs::a_half_cylinder_s_foot_rounds_through_its_pipe_corners",
-    "crates/ogeom-fillet/tests/switch_over.rs::a_rib_under_a_drum_s_top_rounds_through_its_pipe_corners",
-    "crates/ogeom-fillet/tests/switch_over.rs::a_rib_under_a_drum_s_top_rolls_in_one_request",
-    "crates/ogeom-fillet/tests/switch_over.rs::a_rib_s_chain_short_of_an_upright_is_refused_by_name",
+    "crates/ogeom/tests/facade/blends.rs",
+    "crates/ogeom/tests/facade/sheet_fillets.rs",
+    "crates/ogeom-fillet/tests/fillet/bridge.rs",
+    "crates/ogeom-fillet/tests/fillet/marched_blend.rs",
+    "crates/ogeom-fillet/tests/fillet/marched_fillet.rs",
+    "crates/ogeom-fillet/tests/fillet/chain.rs",
+    "crates/ogeom-fillet/tests/fillet/fillet.rs",
+    "crates/ogeom-fillet/tests/fillet/radius_per_edge.rs",
+    "crates/ogeom-fillet/tests/fillet/consumed_rim.rs",
+    "crates/ogeom-fillet/tests/fillet/consumed_marched.rs",
+    "crates/ogeom-fillet/tests/fillet/fillet_over_bevel.rs",
+    "crates/ogeom-fillet/tests/fillet/concave.rs::a_round_rolls_on_the_far_edge_of_a_strip_narrower_than_its_setback",
+    "crates/ogeom-fillet/tests/fillet/concave.rs::a_round_rolls_on_a_far_edge_parallel_to_the_face_it_touches",
+    "crates/ogeom-fillet/tests/fillet/concave.rs::a_round_rolling_on_a_far_edge_refuses_where_the_ball_leaves_it",
+    "crates/ogeom-fillet/tests/fillet/concave.rs::a_round_rolls_onto_a_strip_that_widens_past_its_setback",
+    "crates/ogeom-fillet/tests/fillet/concave.rs::a_round_rolls_round_the_corner_of_a_narrow_triangle",
+    "crates/ogeom-fillet/tests/fillet/marched_blend.rs::a_cylinder_square_on_a_plane_rounds_the_same_on_patches",
+    "crates/ogeom-fillet/tests/fillet/marched_blend.rs::a_straight_seat_between_two_patches_runs_off_their_ends",
+    "crates/ogeom-fillet/tests/fillet/tangent_chain.rs",
+    "crates/ogeom-fillet/tests/fillet/carried_rim.rs",
+    "crates/ogeom-fillet/tests/fillet/contact_regressions.rs",
+    "crates/ogeom-fillet/tests/fillet/rim_bounds.rs",
+    "crates/ogeom-fillet/tests/fillet/cap_history.rs",
+    "crates/ogeom-fillet/tests/fillet/corner_history.rs",
+    "crates/ogeom-fillet/tests/fillet/rolling_curved.rs",
+    "crates/ogeom-fillet/tests/fillet/switch_over.rs",
+    "crates/ogeom-fillet/tests/fillet/switch_over.rs::a_half_frustum_s_foot_rounds_through_its_pipe_corners",
+    "crates/ogeom-fillet/tests/fillet/switch_over.rs::a_half_frustum_s_top_loop_rounds_through_its_pipe_corners",
+    "crates/ogeom-fillet/tests/fillet/switch_over.rs::a_half_cylinder_s_foot_rounds_through_its_pipe_corners",
+    "crates/ogeom-fillet/tests/fillet/switch_over.rs::a_rib_under_a_drum_s_top_rounds_through_its_pipe_corners",
+    "crates/ogeom-fillet/tests/fillet/switch_over.rs::a_rib_under_a_drum_s_top_rolls_in_one_request",
+    "crates/ogeom-fillet/tests/fillet/switch_over.rs::a_rib_s_chain_short_of_an_upright_is_refused_by_name",
 ]
 
 [[capability]]
@@ -1634,7 +1634,7 @@ inside a chain among them), a law over one arc of a crease that closes through o
 edges (the whole loop is given instead), and a ball at the law's largest radius that does not fit \
 the faces."""
 symbols = ["ogeom_fillet::fillet_edges_variable", "ogeom_fillet::RadiusLaw"]
-tests = ["crates/ogeom-fillet/tests/variable.rs"]
+tests = ["crates/ogeom-fillet/tests/fillet/variable.rs"]
 
 [[capability]]
 id = "fillet.setback-corners"
@@ -1707,12 +1707,12 @@ symbols = [
     "ogeom_fillet::fillet_edges_cornered",
 ]
 tests = [
-    "crates/ogeom-fillet/tests/setback.rs",
-    "crates/ogeom-fillet/tests/radius_per_edge.rs::three_radii_at_a_corner_close_with_one_patch_in_any_order",
-    "crates/ogeom-fillet/tests/mixed_vertex.rs",
-    "crates/ogeom-fillet/tests/cell_guard.rs",
-    "crates/ogeom-fillet/tests/blend_edges.rs::a_round_meeting_a_bevel_beside_a_sharp_edge_is_the_bevel_then_the_round",
-    "crates/ogeom-fillet/tests/blend_corpus_rounds.rs",
+    "crates/ogeom-fillet/tests/fillet/setback.rs",
+    "crates/ogeom-fillet/tests/fillet/radius_per_edge.rs::three_radii_at_a_corner_close_with_one_patch_in_any_order",
+    "crates/ogeom-fillet/tests/fillet/mixed_vertex.rs",
+    "crates/ogeom-fillet/tests/fillet/cell_guard.rs",
+    "crates/ogeom-fillet/tests/fillet/blend_edges.rs::a_round_meeting_a_bevel_beside_a_sharp_edge_is_the_bevel_then_the_round",
+    "crates/ogeom-fillet/tests/fillet/blend_corpus_rounds.rs",
 ]
 
 [[capability]]
@@ -1729,15 +1729,15 @@ symbols = [
     "ogeom_algo::make_faceted_solid",
 ]
 tests = [
-    "crates/ogeom-fillet/tests/polyhedral_chamfer.rs",
-    "crates/ogeom/tests/blends.rs", "crates/ogeom/tests/edge_chains.rs",
-    "crates/ogeom-fillet/tests/chamfer_corner.rs",
-    "crates/ogeom-fillet/tests/chamfer_cone_rim.rs",
-    "crates/ogeom-fillet/tests/chamfer_sphere_rim.rs",
-    "crates/ogeom-fillet/tests/chamfer_marched.rs",
-    "crates/ogeom-fillet/tests/periodic_pad.rs",
-    "crates/ogeom-fillet/tests/chamfer_marched_open.rs",
-    "crates/ogeom-fillet/tests/curved_chamfer.rs",
+    "crates/ogeom-fillet/tests/fillet/polyhedral_chamfer.rs",
+    "crates/ogeom/tests/facade/blends.rs", "crates/ogeom/tests/facade/edge_chains.rs",
+    "crates/ogeom-fillet/tests/fillet/chamfer_corner.rs",
+    "crates/ogeom-fillet/tests/fillet/chamfer_cone_rim.rs",
+    "crates/ogeom-fillet/tests/fillet/chamfer_sphere_rim.rs",
+    "crates/ogeom-fillet/tests/fillet/chamfer_marched.rs",
+    "crates/ogeom-fillet/tests/fillet/periodic_pad.rs",
+    "crates/ogeom-fillet/tests/fillet/chamfer_marched_open.rs",
+    "crates/ogeom-fillet/tests/fillet/curved_chamfer.rs",
 ]
 
 [[capability]]
@@ -1846,33 +1846,33 @@ symbols = [
     "ogeom_algo::make_profile_revolution_band",
 ]
 tests = [
-    "crates/ogeom-fillet/tests/asymmetric.rs",
-    "crates/ogeom-fillet/tests/asymmetric.rs::an_elliptical_round_meets_each_face_at_its_own_distance_whichever_is_named",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_concave_edge_fills_with_its_conic_segment_and_nothing_past_the_faces",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_drum_s_rim_takes_its_conic_corner_round_the_axis",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_boss_s_foot_fills_with_its_conic_corner_round_the_axis",
-    "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_linearly_take_the_integral_of_their_corners",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_tangent_loop_of_asymmetric_rounds_closes_round_a_pad",
-    "crates/ogeom-fillet/tests/asymmetric.rs::an_open_spline_crease_takes_its_conic_corner_along_its_length",
-    "crates/ogeom-fillet/tests/asymmetric.rs::asymmetric_rounds_close_a_box_corner_with_rounds_and_bevels",
-    "crates/ogeom-fillet/tests/asymmetric.rs::the_largest_pair_is_where_the_first_contact_leaves_its_face",
-    "crates/ogeom-fillet/tests/asymmetric.rs::an_edge_along_a_drum_s_ruling_takes_its_shoulder_conic_over_its_length",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_concave_edge_along_a_drum_s_ruling_fills_its_shoulder_conic",
-    "crates/ogeom-fillet/tests/asymmetric.rs::the_largest_pair_on_a_ruling_or_a_spline_crease_is_where_a_leg_leaves_its_face",
-    "crates/ogeom-fillet/tests/asymmetric.rs::bands_where_the_third_edge_is_left_sharp_meet_by_intersection",
-    "crates/ogeom-fillet/tests/asymmetric.rs::fills_where_the_third_edge_is_left_sharp_meet_by_intersection",
-    "crates/ogeom-fillet/tests/asymmetric.rs::asymmetric_rounds_close_concave_and_mixed_corners_on_one_patch",
-    "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_past_an_end_not_square_run_on_level_to_it",
-    "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_round_a_rim_take_the_integral_of_their_corners",
-    "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_along_a_spline_crease_take_the_integral_of_their_corners",
-    "crates/ogeom-fillet/tests/asymmetric.rs::distances_varying_along_a_tangent_chain_take_the_integral_of_their_corners",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_concave_edge_ending_at_a_face_not_square_fills_up_to_its_plane",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_convex_and_a_concave_band_beside_an_edge_left_sharp_close_on_one_patch",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_bevel_and_an_asymmetric_round_beside_an_edge_left_sharp_meet_by_intersection",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_bevel_and_an_asymmetric_fill_beside_an_edge_left_sharp_meet_by_intersection",
-    "crates/ogeom-fillet/tests/asymmetric.rs::the_largest_pair_on_a_concave_ruling_stops_where_the_shoulder_reaches_a_contact",
-    "crates/ogeom-fillet/tests/asymmetric.rs::a_convex_ruling_builds_until_its_section_reaches_the_drum",
-    "crates/ogeom-fillet/tests/asymmetric.rs::the_largest_pair_on_a_convex_ruling_stops_where_its_section_reaches_the_drum",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::an_elliptical_round_meets_each_face_at_its_own_distance_whichever_is_named",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_concave_edge_fills_with_its_conic_segment_and_nothing_past_the_faces",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_drum_s_rim_takes_its_conic_corner_round_the_axis",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_boss_s_foot_fills_with_its_conic_corner_round_the_axis",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::distances_varying_linearly_take_the_integral_of_their_corners",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_tangent_loop_of_asymmetric_rounds_closes_round_a_pad",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::an_open_spline_crease_takes_its_conic_corner_along_its_length",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::asymmetric_rounds_close_a_box_corner_with_rounds_and_bevels",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::the_largest_pair_is_where_the_first_contact_leaves_its_face",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::an_edge_along_a_drum_s_ruling_takes_its_shoulder_conic_over_its_length",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_concave_edge_along_a_drum_s_ruling_fills_its_shoulder_conic",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::the_largest_pair_on_a_ruling_or_a_spline_crease_is_where_a_leg_leaves_its_face",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::bands_where_the_third_edge_is_left_sharp_meet_by_intersection",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::fills_where_the_third_edge_is_left_sharp_meet_by_intersection",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::asymmetric_rounds_close_concave_and_mixed_corners_on_one_patch",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::distances_varying_past_an_end_not_square_run_on_level_to_it",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::distances_varying_round_a_rim_take_the_integral_of_their_corners",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::distances_varying_along_a_spline_crease_take_the_integral_of_their_corners",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::distances_varying_along_a_tangent_chain_take_the_integral_of_their_corners",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_concave_edge_ending_at_a_face_not_square_fills_up_to_its_plane",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_convex_and_a_concave_band_beside_an_edge_left_sharp_close_on_one_patch",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_bevel_and_an_asymmetric_round_beside_an_edge_left_sharp_meet_by_intersection",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_bevel_and_an_asymmetric_fill_beside_an_edge_left_sharp_meet_by_intersection",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::the_largest_pair_on_a_concave_ruling_stops_where_the_shoulder_reaches_a_contact",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::a_convex_ruling_builds_until_its_section_reaches_the_drum",
+    "crates/ogeom-fillet/tests/fillet/asymmetric.rs::the_largest_pair_on_a_convex_ruling_stops_where_its_section_reaches_the_drum",
 ]
 
 [[capability]]
@@ -2005,81 +2005,81 @@ symbols = [
     "ogeom_fillet::blend_edges_overflow",
 ]
 tests = [
-    "crates/ogeom-fillet/tests/overflow.rs",
-    "crates/ogeom-fillet/tests/overflow.rs::a_boss_s_foot_round_blends_into_the_edge_round_it_reaches",
-    "crates/ogeom-fillet/tests/overflow.rs::blend_into_round_off_falls_to_trim_through_or_is_refused",
-    "crates/ogeom-fillet/tests/blend_into_round.rs",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_blends_into_two_rounds_at_a_corner",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_into_two_rounds_fills_as_the_closing",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::a_conical_boss_s_foot_round_blends_into_the_edge_round",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::a_conical_boss_s_foot_round_fills_as_the_closing",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_blends_into_a_concave_round",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::a_foot_round_into_a_concave_round_fills_as_the_closing",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_of_a_cut_boss_blends_into_the_edge_round",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_against_a_wall_blends_into_the_edge_round",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::open_arcs_fill_as_the_closing_within_their_wedge",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_off_the_axis_is_not_blended",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_on_its_round_s_seat_is_not_blended",
-    "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_a_round_reaching_another_face",
-    "crates/ogeom-fillet/tests/overflow.rs::a_rolling_corner_takes_the_overflow_options",
-    "crates/ogeom-fillet/tests/overflow.rs::a_level_law_and_equal_distances_blend_into_the_edge_round",
-    "crates/ogeom-fillet/tests/overflow.rs::a_level_law_and_equal_distances_fill_as_the_closing",
-    "crates/ogeom-fillet/tests/overflow.rs::variable_and_two_distance_feet_take_the_options_off_as_the_round",
-    "crates/ogeom-fillet/tests/overflow.rs::trim_through_off_refuses_variable_and_two_distance_rounds_reaching_a_face",
-    "crates/ogeom-fillet/tests/overflow.rs::local_rounds_build_alike_with_every_option_off",
-    "crates/ogeom-fillet/tests/checked_overflow.rs",
-    "crates/ogeom-fillet/tests/checked_overflow.rs::a_foot_round_refused_by_its_options_is_named",
-    "crates/ogeom-fillet/tests/checked_overflow.rs::a_round_over_a_pocket_rim_refused_by_its_options_is_named",
-    "crates/ogeom-fillet/tests/checked_overflow.rs::a_band_end_over_a_cliff_refused_by_its_options_is_named",
-    "crates/ogeom-fillet/tests/checked_overflow.rs::a_rim_round_trimming_through_refused_by_its_options_is_named",
-    "crates/ogeom-fillet/tests/checked_overflow.rs::a_narrow_passage_refused_by_its_options_is_named",
-    "crates/ogeom-fillet/tests/checked_overflow.rs::a_request_that_builds_is_the_unchecked_result",
-    "crates/ogeom-fillet/tests/rolling_corner.rs::the_stairs_roll_alike_with_every_overflow_option_off",
-    "crates/ogeom-fillet/tests/hold_edge.rs",
-    "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_keeps_a_pocket_rim_the_ball_would_roll_over",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_rolls_the_ball_round_the_vertex_where_a_held_edge_ends",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_vertex_seat_cuts_away_the_reference",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_vertex_seat_at_the_end_follows_hold_edge_at_end",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_two_runs_on_one_band",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::two_runs_cut_away_the_reference",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_rests_the_ball_on_a_square_pocket_s_sides",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_ball_on_a_square_pocket_s_sides_cuts_away_the_reference",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_rests_the_ball_on_a_pocket_s_corners",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_ball_on_a_pocket_s_corners_cuts_away_the_reference",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_pocket_s_corners_with_hold_edge_off_go_to_trim_through",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_rests_the_ball_on_two_cliff_edges",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_ball_on_two_cliff_edges_cuts_away_the_reference",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_ball_on_two_cliff_edges_with_hold_edge_off_goes_to_trim_through",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_a_chain_of_edges_along_one_line",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_chain_cuts_away_the_one_edge_s_reference",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_a_band_ending_on_oblique_end_faces",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::oblique_band_ends_cut_away_the_reference",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_a_canal_ending_on_an_oblique_end_face",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::an_oblique_canal_end_cuts_away_the_reference",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_a_canal_ending_on_a_steep_end_face",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::steep_canal_ends_cut_away_the_reference",
-    "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_at_the_end_keeps_a_cliff_edge_the_band_s_end_runs_over",
-    "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_off_falls_to_trim_through_or_is_refused",
-    "crates/ogeom-fillet/tests/hold_edge.rs::hold_edge_at_end_off_falls_to_trim_through_or_is_refused",
-    "crates/ogeom-fillet/tests/hold_edge_ends.rs",
-    "crates/ogeom-fillet/tests/hold_edge_ends.rs::hold_edge_runs_the_round_on_past_a_leaning_end_on_a_drum",
-    "crates/ogeom-fillet/tests/hold_edge_ends.rs::a_leaning_end_on_a_drum_follows_the_options",
-    "crates/ogeom-fillet/tests/hold_edge_ends.rs::feet_that_never_reach_the_end_face_go_on_to_trim_through",
-    "crates/ogeom-fillet/tests/hold_edge_ends.rs::a_held_edge_crossing_the_round_s_edge_past_the_end_goes_on_to_trim_through",
-    "crates/ogeom-fillet/tests/hold_edge_ends.rs::a_vertex_piece_cut_by_the_end_face_follows_the_options",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_a_vertex_piece_cut_by_the_end_face",
-    "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_vertex_piece_cut_by_the_end_face_cuts_away_the_reference",
-    "crates/ogeom-fillet/tests/narrow_passage.rs",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::a_through_slot_narrower_than_twice_the_radius",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::a_stadium_pocket_narrower_than_twice_the_radius",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::a_pocket_whose_corner_rounds_are_tighter_than_the_radius",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::a_pocket_whose_corners_are_kinked_arcs",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::each_strategy_off_passes_a_blend_made_passage_on",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::a_kinked_corner_needs_whole_face_or_partial_face",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::passages_the_union_does_not_round_are_refused_by_name",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::a_slot_exactly_twice_the_radius_wide_answers_in_time",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::one_round_of_a_slot_twice_the_radius_wide_answers_in_time",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs::a_boss_s_foot_round_blends_into_the_edge_round_it_reaches",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs::blend_into_round_off_falls_to_trim_through_or_is_refused",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::a_foot_round_blends_into_two_rounds_at_a_corner",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::a_foot_round_into_two_rounds_fills_as_the_closing",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::a_conical_boss_s_foot_round_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::a_conical_boss_s_foot_round_fills_as_the_closing",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::a_foot_round_blends_into_a_concave_round",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::a_foot_round_into_a_concave_round_fills_as_the_closing",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::an_open_arc_of_a_cut_boss_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::an_open_arc_against_a_wall_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::open_arcs_fill_as_the_closing_within_their_wedge",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::an_open_arc_ending_off_the_axis_is_not_blended",
+    "crates/ogeom-fillet/tests/fillet/blend_into_round.rs::an_open_arc_ending_on_its_round_s_seat_is_not_blended",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs::trim_through_off_refuses_a_round_reaching_another_face",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs::a_rolling_corner_takes_the_overflow_options",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs::a_level_law_and_equal_distances_blend_into_the_edge_round",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs::a_level_law_and_equal_distances_fill_as_the_closing",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs::variable_and_two_distance_feet_take_the_options_off_as_the_round",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs::trim_through_off_refuses_variable_and_two_distance_rounds_reaching_a_face",
+    "crates/ogeom-fillet/tests/fillet/overflow.rs::local_rounds_build_alike_with_every_option_off",
+    "crates/ogeom-fillet/tests/fillet/checked_overflow.rs",
+    "crates/ogeom-fillet/tests/fillet/checked_overflow.rs::a_foot_round_refused_by_its_options_is_named",
+    "crates/ogeom-fillet/tests/fillet/checked_overflow.rs::a_round_over_a_pocket_rim_refused_by_its_options_is_named",
+    "crates/ogeom-fillet/tests/fillet/checked_overflow.rs::a_band_end_over_a_cliff_refused_by_its_options_is_named",
+    "crates/ogeom-fillet/tests/fillet/checked_overflow.rs::a_rim_round_trimming_through_refused_by_its_options_is_named",
+    "crates/ogeom-fillet/tests/fillet/checked_overflow.rs::a_narrow_passage_refused_by_its_options_is_named",
+    "crates/ogeom-fillet/tests/fillet/checked_overflow.rs::a_request_that_builds_is_the_unchecked_result",
+    "crates/ogeom-fillet/tests/fillet/rolling_corner.rs::the_stairs_roll_alike_with_every_overflow_option_off",
+    "crates/ogeom-fillet/tests/fillet/hold_edge.rs",
+    "crates/ogeom-fillet/tests/fillet/hold_edge.rs::hold_edge_keeps_a_pocket_rim_the_ball_would_roll_over",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_rolls_the_ball_round_the_vertex_where_a_held_edge_ends",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::a_vertex_seat_cuts_away_the_reference",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::a_vertex_seat_at_the_end_follows_hold_edge_at_end",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_holds_two_runs_on_one_band",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::two_runs_cut_away_the_reference",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_rests_the_ball_on_a_square_pocket_s_sides",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::a_ball_on_a_square_pocket_s_sides_cuts_away_the_reference",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_rests_the_ball_on_a_pocket_s_corners",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::a_ball_on_a_pocket_s_corners_cuts_away_the_reference",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::a_pocket_s_corners_with_hold_edge_off_go_to_trim_through",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_rests_the_ball_on_two_cliff_edges",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::a_ball_on_two_cliff_edges_cuts_away_the_reference",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::a_ball_on_two_cliff_edges_with_hold_edge_off_goes_to_trim_through",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_holds_a_chain_of_edges_along_one_line",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::a_chain_cuts_away_the_one_edge_s_reference",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_holds_a_band_ending_on_oblique_end_faces",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::oblique_band_ends_cut_away_the_reference",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_holds_a_canal_ending_on_an_oblique_end_face",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::an_oblique_canal_end_cuts_away_the_reference",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_holds_a_canal_ending_on_a_steep_end_face",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::steep_canal_ends_cut_away_the_reference",
+    "crates/ogeom-fillet/tests/fillet/hold_edge.rs::hold_edge_at_the_end_keeps_a_cliff_edge_the_band_s_end_runs_over",
+    "crates/ogeom-fillet/tests/fillet/hold_edge.rs::hold_edge_off_falls_to_trim_through_or_is_refused",
+    "crates/ogeom-fillet/tests/fillet/hold_edge.rs::hold_edge_at_end_off_falls_to_trim_through_or_is_refused",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_ends.rs",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_ends.rs::hold_edge_runs_the_round_on_past_a_leaning_end_on_a_drum",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_ends.rs::a_leaning_end_on_a_drum_follows_the_options",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_ends.rs::feet_that_never_reach_the_end_face_go_on_to_trim_through",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_ends.rs::a_held_edge_crossing_the_round_s_edge_past_the_end_goes_on_to_trim_through",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_ends.rs::a_vertex_piece_cut_by_the_end_face_follows_the_options",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::hold_edge_holds_a_vertex_piece_cut_by_the_end_face",
+    "crates/ogeom-fillet/tests/fillet/hold_edge_seats.rs::a_vertex_piece_cut_by_the_end_face_cuts_away_the_reference",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs::a_through_slot_narrower_than_twice_the_radius",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs::a_stadium_pocket_narrower_than_twice_the_radius",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs::a_pocket_whose_corner_rounds_are_tighter_than_the_radius",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs::a_pocket_whose_corners_are_kinked_arcs",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs::each_strategy_off_passes_a_blend_made_passage_on",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs::a_kinked_corner_needs_whole_face_or_partial_face",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs::passages_the_union_does_not_round_are_refused_by_name",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs::a_slot_exactly_twice_the_radius_wide_answers_in_time",
+    "crates/ogeom-fillet/tests/fillet/narrow_passage.rs::one_round_of_a_slot_twice_the_radius_wide_answers_in_time",
 ]
 
 [[capability]]
@@ -2156,15 +2156,15 @@ symbols = [
     "ogeom_fillet::DistanceLawSize",
 ]
 tests = [
-    "crates/ogeom-fillet/tests/law_limits.rs",
-    "crates/ogeom-fillet/tests/blend_seat.rs",
-    "crates/ogeom-fillet/tests/exact_limits.rs::planar_limits_build_below_and_are_refused_above",
-    "crates/ogeom-fillet/tests/exact_limits.rs::curved_and_corpus_limits_build_below_and_are_refused_above",
-    "crates/ogeom-fillet/tests/exact_limits.rs::the_chopped_corner_s_edge_alone_rounds_past_the_corner",
-    "crates/ogeom-fillet/tests/largest.rs",
-    "crates/ogeom-fillet/tests/limit_chamfers.rs",
-    "crates/ogeom-fillet/tests/limit_overflow.rs",
-    "crates/ogeom-fillet/tests/largest_chamfer_all.rs",
+    "crates/ogeom-fillet/tests/fillet/law_limits.rs",
+    "crates/ogeom-fillet/tests/fillet/blend_seat.rs",
+    "crates/ogeom-fillet/tests/fillet/exact_limits.rs::planar_limits_build_below_and_are_refused_above",
+    "crates/ogeom-fillet/tests/fillet/exact_limits.rs::curved_and_corpus_limits_build_below_and_are_refused_above",
+    "crates/ogeom-fillet/tests/fillet/exact_limits.rs::the_chopped_corner_s_edge_alone_rounds_past_the_corner",
+    "crates/ogeom-fillet/tests/fillet/largest.rs",
+    "crates/ogeom-fillet/tests/fillet/limit_chamfers.rs",
+    "crates/ogeom-fillet/tests/fillet/limit_overflow.rs",
+    "crates/ogeom-fillet/tests/fillet/largest_chamfer_all.rs",
     "crates/ogeom-fillet/src/limit.rs",
 ]
 
@@ -2181,14 +2181,14 @@ symbols = [
     "ogeom_fillet::chamfer_edges_cornered",
 ]
 tests = [
-    "crates/ogeom-fillet/tests/chamfer_overflow.rs",
-    "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_boss_s_foot_bevel_blends_into_the_edge_round_it_reaches",
-    "crates/ogeom-fillet/tests/chamfer_overflow.rs::blend_into_round_off_trims_through_as_before_and_both_off_refuse",
-    "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_notch_trims_through_and_trim_through_off_refuses_it",
-    "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_foot_bevel_builds_either_side_of_the_tangent_line",
-    "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_foot_bevel_grazing_the_tangent_line_is_refused_by_name",
-    "crates/ogeom-fillet/tests/checked_overflow.rs::a_foot_bevel_refused_by_its_options_is_named",
-    "crates/ogeom-fillet/tests/checked_overflow.rs::a_notch_refused_with_trim_through_off_is_named",
+    "crates/ogeom-fillet/tests/fillet/chamfer_overflow.rs",
+    "crates/ogeom-fillet/tests/fillet/chamfer_overflow.rs::a_boss_s_foot_bevel_blends_into_the_edge_round_it_reaches",
+    "crates/ogeom-fillet/tests/fillet/chamfer_overflow.rs::blend_into_round_off_trims_through_as_before_and_both_off_refuse",
+    "crates/ogeom-fillet/tests/fillet/chamfer_overflow.rs::a_notch_trims_through_and_trim_through_off_refuses_it",
+    "crates/ogeom-fillet/tests/fillet/chamfer_overflow.rs::a_foot_bevel_builds_either_side_of_the_tangent_line",
+    "crates/ogeom-fillet/tests/fillet/chamfer_overflow.rs::a_foot_bevel_grazing_the_tangent_line_is_refused_by_name",
+    "crates/ogeom-fillet/tests/fillet/checked_overflow.rs::a_foot_bevel_refused_by_its_options_is_named",
+    "crates/ogeom-fillet/tests/fillet/checked_overflow.rs::a_notch_refused_with_trim_through_off_is_named",
 ]
 
 [[capability]]
@@ -2197,7 +2197,7 @@ title = "Filleting and chamfering the corners of planar wires"
 crate = "ogeom-fillet"
 verdict = "covered"
 symbols = ["ogeom_fillet::fillet_corner_2d", "ogeom_fillet::chamfer_corner_2d"]
-tests = ["crates/ogeom-fillet/tests/variants.rs"]
+tests = ["crates/ogeom-fillet/tests/fillet/variants.rs"]
 
 # --- ogeom-offset ---------------------------------------------------------
 
@@ -2218,10 +2218,10 @@ symbols = [
     "ogeom_offset::Walls",
 ]
 tests = [
-    "crates/ogeom-offset/tests/shape.rs", "crates/ogeom/tests/direct_edit.rs",
-    "crates/ogeom-offset/tests/thick_sheet.rs",
-    "crates/ogeom-offset/tests/thick_both_sides.rs",
-    "crates/ogeom/tests/sheet_offset.rs", "crates/ogeom/tests/offset_solid.rs",
+    "crates/ogeom-offset/tests/offset/shape.rs", "crates/ogeom/tests/facade/direct_edit.rs",
+    "crates/ogeom-offset/tests/offset/thick_sheet.rs",
+    "crates/ogeom-offset/tests/offset/thick_both_sides.rs",
+    "crates/ogeom/tests/facade/sheet_offset.rs", "crates/ogeom/tests/facade/offset_solid.rs",
 ]
 
 [[capability]]
@@ -2234,8 +2234,8 @@ symbols = [
     "ogeom_offset::thicken_open_wire", "ogeom_offset::Cap",
 ]
 tests = [
-    "crates/ogeom-offset/tests/wire2d.rs",
-    "crates/ogeom-offset/tests/open_chain.rs",
+    "crates/ogeom-offset/tests/offset/wire2d.rs",
+    "crates/ogeom-offset/tests/offset/open_chain.rs",
 ]
 
 [[capability]]
@@ -2436,13 +2436,13 @@ symbols = [
     "ogeom_offset::PipeContact",
 ]
 tests = [
-    "crates/ogeom-offset/tests/sweep.rs", "crates/ogeom/tests/evolved.rs",
-    "crates/ogeom/tests/pipe_shell_exact.rs", "crates/ogeom/tests/helical_sweep.rs",
-    "crates/ogeom/tests/pipe_evolving.rs", "crates/ogeom/tests/pipe_laws.rs",
-    "crates/ogeom/tests/pipe_rings.rs",
-    "crates/ogeom/tests/pipe_corners.rs", "crates/ogeom/tests/pipe_placed.rs",
-    "crates/ogeom-offset/tests/open_wire_corners.rs",
-    "crates/ogeom-offset/tests/open_wire_skinned.rs",
+    "crates/ogeom-offset/tests/offset/sweep.rs", "crates/ogeom/tests/facade/evolved.rs",
+    "crates/ogeom/tests/facade/pipe_shell_exact.rs", "crates/ogeom/tests/facade/helical_sweep.rs",
+    "crates/ogeom/tests/facade/pipe_evolving.rs", "crates/ogeom/tests/facade/pipe_laws.rs",
+    "crates/ogeom/tests/facade/pipe_rings.rs",
+    "crates/ogeom/tests/facade/pipe_corners.rs", "crates/ogeom/tests/facade/pipe_placed.rs",
+    "crates/ogeom-offset/tests/offset/open_wire_corners.rs",
+    "crates/ogeom-offset/tests/offset/open_wire_skinned.rs",
 ]
 
 [[capability]]
@@ -2471,7 +2471,7 @@ symbols = [
     "ogeom_offset::make_loft", "ogeom_offset::make_loft_skinned",
     "ogeom_algo::sweep::roles::SWEEP_BOTTOM", "ogeom_algo::sweep::roles::SWEEP_TOP",
 ]
-tests = ["crates/ogeom-offset/tests/sweep_history.rs"]
+tests = ["crates/ogeom-offset/tests/offset/sweep_history.rs"]
 
 [[capability]]
 id = "offset.loft"
@@ -2510,12 +2510,12 @@ symbols = [
     "ogeom_offset::make_loft_solid",
 ]
 tests = [
-    "crates/ogeom/tests/surface_lofts.rs",
-    "crates/ogeom/tests/loft_exact.rs",
-    "crates/ogeom/tests/mechanical_part.rs",
-    "crates/ogeom/tests/loft.rs",
-    "crates/ogeom/tests/loft_solid.rs",
-    "crates/ogeom-offset/tests/sweep.rs",
+    "crates/ogeom/tests/facade/surface_lofts.rs",
+    "crates/ogeom/tests/facade/loft_exact.rs",
+    "crates/ogeom/tests/facade/mechanical_part.rs",
+    "crates/ogeom/tests/facade/loft.rs",
+    "crates/ogeom/tests/facade/loft_solid.rs",
+    "crates/ogeom-offset/tests/offset/sweep.rs",
 ]
 
 [[capability]]
@@ -2529,7 +2529,7 @@ symbols = [
     "ogeom_algo::make_filling_n", "ogeom_algo::FillBoundary", "ogeom_algo::FillSide",
     "ogeom_algo::Filled",
 ]
-tests = ["crates/ogeom/tests/filling.rs", "crates/ogeom-offset/tests/filling_n.rs"]
+tests = ["crates/ogeom/tests/facade/filling.rs", "crates/ogeom-offset/tests/offset/filling_n.rs"]
 
 [[capability]]
 id = "offset.draft"
@@ -2558,9 +2558,9 @@ supports meet, which a draft (the same faces on turned supports) does \
 not do."""
 symbols = ["ogeom_offset::apply_draft"]
 tests = [
-    "crates/ogeom/tests/features.rs::four_walls_drafted_about_the_base_make_a_frustum",
-    "crates/ogeom-offset/tests/draft.rs",
-    "crates/ogeom-offset/tests/draft.rs::walls_below_an_oblique_neutral_turn_about_their_surfaces_crossing",
+    "crates/ogeom/tests/facade/features.rs::four_walls_drafted_about_the_base_make_a_frustum",
+    "crates/ogeom-offset/tests/offset/draft.rs",
+    "crates/ogeom-offset/tests/offset/draft.rs::walls_below_an_oblique_neutral_turn_about_their_surfaces_crossing",
 ]
 
 [[capability]]
@@ -2574,9 +2574,9 @@ symbols = [
     "ogeom_offset::make_rib",
 ]
 tests = [
-    "crates/ogeom/tests/features.rs::the_form_features_are_the_compositions_they_say_they_are",
-    "crates/ogeom-offset/tests/open_chain.rs::a_rib_across_a_channel_fills_the_slot_below_its_chain",
-    "crates/ogeom-offset/tests/open_chain.rs::a_gusset_past_a_short_wall_stays_within_the_chains_end",
+    "crates/ogeom/tests/facade/features.rs::the_form_features_are_the_compositions_they_say_they_are",
+    "crates/ogeom-offset/tests/offset/open_chain.rs::a_rib_across_a_channel_fills_the_slot_below_its_chain",
+    "crates/ogeom-offset/tests/offset/open_chain.rs::a_gusset_past_a_short_wall_stays_within_the_chains_end",
 ]
 
 [[capability]]
@@ -2586,7 +2586,7 @@ crate = "ogeom-offset"
 verdict = "covered"
 symbols = ["ogeom_offset::make_prism_until", "ogeom_offset::make_revolution_until"]
 tests = [
-    "crates/ogeom-offset/tests/prism_until.rs", "crates/ogeom/tests/revolution_until.rs",
+    "crates/ogeom-offset/tests/offset/prism_until.rs", "crates/ogeom/tests/facade/revolution_until.rs",
 ]
 
 [[capability]]
@@ -2595,7 +2595,7 @@ title = "Projecting wires normally onto faces, pcurves riding along"
 crate = "ogeom-offset"
 verdict = "covered"
 symbols = ["ogeom_offset::normal_projection", "ogeom_offset::Projected"]
-tests = ["crates/ogeom/tests/features.rs::a_wire_projects_onto_the_faces_it_lands_on"]
+tests = ["crates/ogeom/tests/facade/features.rs::a_wire_projects_onto_the_faces_it_lands_on"]
 
 # --- ogeom-doc ------------------------------------------------------------
 
@@ -2609,8 +2609,8 @@ symbols = [
     "ogeom_doc::Instance",
 ]
 tests = [
-    "crates/ogeom/tests/document.rs",
-    "crates/ogeom/tests/assembly_corpus.rs",
+    "crates/ogeom/tests/facade/document.rs",
+    "crates/ogeom/tests/corpus_suites/assembly_corpus.rs",
 ]
 
 [[capability]]
@@ -2622,7 +2622,7 @@ symbols = [
     "ogeom_doc::Colour", "ogeom_doc::Layer", "ogeom_doc::Material",
     "ogeom_doc::Texture",
 ]
-tests = ["crates/ogeom/tests/document.rs", "crates/ogeom/tests/exchange.rs"]
+tests = ["crates/ogeom/tests/facade/document.rs", "crates/ogeom/tests/corpus_suites/exchange.rs"]
 
 [[capability]]
 id = "doc.pmi"
@@ -2634,7 +2634,7 @@ symbols = [
     "ogeom_doc::DatumReference", "ogeom_doc::DatumModifier", "ogeom_doc::DatumModifierKind",
     "ogeom_doc::DatumTarget", "ogeom_doc::Callout", "ogeom_doc::Pmi",
 ]
-tests = ["crates/ogeom/tests/pmi_corpus.rs"]
+tests = ["crates/ogeom/tests/corpus_suites/pmi_corpus.rs"]
 
 [[capability]]
 id = "doc.properties"
@@ -2645,7 +2645,7 @@ symbols = [
     "ogeom_doc::Property", "ogeom_doc::PropertyValue",
     "ogeom_doc::ValidationProperties",
 ]
-tests = ["crates/ogeom/tests/exchange.rs"]
+tests = ["crates/ogeom/tests/corpus_suites/exchange.rs"]
 
 [[capability]]
 id = "doc.saved-views"
@@ -2653,7 +2653,7 @@ title = "Saved views and standalone note objects in the exchange document"
 crate = "ogeom-doc"
 verdict = "covered"
 symbols = ["ogeom_doc::View", "ogeom_doc::Note"]
-tests = ["crates/ogeom/tests/saved_views.rs"]
+tests = ["crates/ogeom/tests/facade/saved_views.rs"]
 
 # --- tranche 2: the unmapped packages, usage-ordered ----------------------
 
@@ -2680,7 +2680,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-algo/src/measure.rs::every_curves_bound_contains_the_curve",
-    "crates/ogeom/tests/tight_bounds.rs",
+    "crates/ogeom/tests/facade/tight_bounds.rs",
 ]
 
 [[capability]]
@@ -2709,8 +2709,8 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-math/src/elementary.rs::curvature_of_a_circle_is_the_reciprocal_of_its_radius",
-    "crates/ogeom-geom/tests/curvature.rs",
-    "crates/ogeom/tests/blends.rs",
+    "crates/ogeom-geom/tests/geom/curvature.rs",
+    "crates/ogeom/tests/facade/blends.rs",
 ]
 
 [[capability]]
@@ -2745,7 +2745,7 @@ symbols = [
     "ogeom_math::derivatives", "ogeom_math::evaluate_surface",
     "ogeom_math::rational_derivatives",
 ]
-tests = ["crates/ogeom-math/tests/bspline_properties.rs"]
+tests = ["crates/ogeom-math/tests/math/bspline_properties.rs"]
 
 [[capability]]
 id = "geom.extension"
@@ -2762,7 +2762,7 @@ symbols = [
     "ogeom_algo::extend_face", "ogeom_algo::Extension",
 ]
 tests = [
-    "crates/ogeom-algo/tests/extend_face.rs",
+    "crates/ogeom-algo/tests/algo/extend_face.rs",
     "crates/ogeom-algo/src/measure.rs::a_window_widened_to_hold_a_point_holds_it_with_room_to_spare",
     "crates/ogeom-algo/src/measure.rs::a_patch_widened_to_hold_a_point_is_continued_to_it",
     "crates/ogeom-geom/src/curve.rs::a_rational_arc_extended_stays_on_its_circle",
@@ -2793,7 +2793,7 @@ symbols = [
     "ogeom_algo::medial_graph", "ogeom_algo::MedialGraph",
     "ogeom_algo::MedialBranch", "ogeom_algo::MedialVertex", "ogeom_algo::MedialSite",
 ]
-tests = ["crates/ogeom-algo/tests/medial.rs", "crates/ogeom-algo/tests/medial_graph.rs"]
+tests = ["crates/ogeom-algo/tests/algo/medial.rs", "crates/ogeom-algo/tests/algo/medial_graph.rs"]
 
 [[capability]]
 id = "mesh.spatial-index"
@@ -2820,7 +2820,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-mesh/src/section.rs",
-    "crates/ogeom/tests/mesh_section.rs::a_million_triangles_section_quickly",
+    "crates/ogeom/tests/facade/mesh_section.rs::a_million_triangles_section_quickly",
 ]
 
 [[capability]]
@@ -2835,8 +2835,8 @@ symbols = [
 tests = [
     "crates/ogeom-mesh/src/planar.rs",
     "crates/ogeom-mesh/src/shadow.rs",
-    "crates/ogeom/tests/mesh_shadow.rs::a_million_triangle_torus_casts_a_ring",
-    "crates/ogeom/tests/mesh_shadow.rs::a_through_hole_is_kept",
+    "crates/ogeom/tests/facade/mesh_shadow.rs::a_million_triangle_torus_casts_a_ring",
+    "crates/ogeom/tests/facade/mesh_shadow.rs::a_through_hole_is_kept",
 ]
 
 [[capability]]
@@ -2850,7 +2850,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-mesh/src/editable/cut.rs",
-    "crates/ogeom/tests/mesh_editable.rs::five_million_triangles_cut_and_capped",
+    "crates/ogeom/tests/facade/mesh_editable.rs::five_million_triangles_cut_and_capped",
 ]
 
 [[capability]]
@@ -2865,7 +2865,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-mesh/src/editable/fill.rs",
-    "crates/ogeom/tests/mesh_editable.rs::a_hole_of_five_hundred_edges_filled_in_five_million_triangles",
+    "crates/ogeom/tests/facade/mesh_editable.rs::a_hole_of_five_hundred_edges_filled_in_five_million_triangles",
 ]
 
 [[capability]]
@@ -2880,7 +2880,7 @@ symbols = [
 ]
 tests = [
     "crates/ogeom-mesh/src/editable/remesh/tests.rs",
-    "crates/ogeom/tests/mesh_editable.rs::a_hundred_thousand_triangles_remeshed",
+    "crates/ogeom/tests/facade/mesh_editable.rs::a_hundred_thousand_triangles_remeshed",
 ]
 
 [[capability]]
@@ -2893,8 +2893,8 @@ symbols = [
     "ogeom_mesh::OFFSET_EDGE_ANGLE", "ogeom_mesh::OFFSET_FARTHEST",
 ]
 tests = [
-    "crates/ogeom/tests/mesh_offset.rs",
-    "crates/ogeom/tests/mesh_offset.rs::five_million_triangles_offset",
+    "crates/ogeom/tests/facade/mesh_offset.rs",
+    "crates/ogeom/tests/facade/mesh_offset.rs::five_million_triangles_offset",
 ]
 
 [[capability]]
@@ -2922,9 +2922,9 @@ symbols = [
     "ogeom_algo::Form", "ogeom_mesh::Line", "ogeom_mesh::Lies",
 ]
 tests = [
-    "crates/ogeom/tests/volume_difference.rs",
-    "crates/ogeom/tests/volume_difference.rs::a_million_triangle_scan_in_bounded_time",
-    "crates/ogeom/tests/volume_difference.rs::a_million_triangle_scan_of_a_curved_solid_in_bounded_time",
+    "crates/ogeom-bool/tests/bool/volume_difference.rs",
+    "crates/ogeom-bool/tests/bool/volume_difference.rs::a_million_triangle_scan_in_bounded_time",
+    "crates/ogeom-bool/tests/bool/volume_difference.rs::a_million_triangle_scan_of_a_curved_solid_in_bounded_time",
 ]
 
 [[capability]]
@@ -2977,8 +2977,8 @@ symbols = [
     "ogeom_algo::IrregularCorner", "ogeom_mesh::PointIndex::points",
 ]
 tests = [
-    "crates/ogeom/tests/network.rs",
-    "crates/ogeom/tests/network.rs::six_patches_on_a_hundred_thousand_points_in_bounded_time",
+    "crates/ogeom/tests/facade/network.rs",
+    "crates/ogeom/tests/facade/network.rs::six_patches_on_a_hundred_thousand_points_in_bounded_time",
     "crates/ogeom-algo/src/network/solve.rs",
 ]
 
@@ -2993,8 +2993,8 @@ symbols = [
     "ogeom_mesh::NEIGHBOURS",
 ]
 tests = [
-    "crates/ogeom/tests/mesh_smooth.rs",
-    "crates/ogeom/tests/mesh_smooth.rs::five_million_triangles_smoothed",
+    "crates/ogeom/tests/facade/mesh_smooth.rs",
+    "crates/ogeom/tests/facade/mesh_smooth.rs::five_million_triangles_smoothed",
 ]
 
 [[capability]]
@@ -3003,7 +3003,7 @@ title = "Hatching faces: iso and free-direction line families clipped to the tri
 crate = "ogeom-mesh"
 verdict = "covered"
 symbols = ["ogeom_mesh::hatch_face", "ogeom_hlr::iso_curves"]
-tests = ["crates/ogeom/tests/hatch.rs"]
+tests = ["crates/ogeom/tests/facade/hatch.rs"]
 
 [[capability]]
 id = "io.step"
@@ -3012,14 +3012,14 @@ crate = "ogeom-io"
 verdict = "covered"
 symbols = ["ogeom_io::read_step", "ogeom_io::write_step", "ogeom_io::StepImport", "ogeom_io::StepReport"]
 tests = [
-    "crates/ogeom/tests/exchange.rs",
-    "crates/ogeom/tests/imported_corpus.rs",
-    "crates/ogeom/tests/assembly_corpus.rs",
-    "crates/ogeom/tests/pmi_corpus.rs",
-    "crates/ogeom/tests/step_geometry_kinds.rs",
-    "crates/ogeom/tests/step_surface_curves.rs",
-    "crates/ogeom-io/tests/sheet_export.rs",
-    "crates/ogeom-io/tests/step_construction.rs",
+    "crates/ogeom/tests/corpus_suites/exchange.rs",
+    "crates/ogeom/tests/corpus_suites/imported_corpus.rs",
+    "crates/ogeom/tests/corpus_suites/assembly_corpus.rs",
+    "crates/ogeom/tests/corpus_suites/pmi_corpus.rs",
+    "crates/ogeom/tests/facade/step_geometry_kinds.rs",
+    "crates/ogeom/tests/facade/step_surface_curves.rs",
+    "crates/ogeom-io/tests/io/sheet_export.rs",
+    "crates/ogeom-io/tests/io/step_construction.rs",
 ]
 
 [[capability]]
@@ -3113,15 +3113,15 @@ several pieces and a surface trimmed by a boundary of its own excepted; a
 line reads back over its own length from its start, and a surface other
 than a plane or a B-spline over its patch's parameters."""
 symbols = ["ogeom_io::read_iges", "ogeom_io::read_iges_file", "ogeom_io::write_iges", "ogeom_io::write_iges_reported", "ogeom_io::IgesExport", "ogeom_io::IgesImport", "ogeom_io::IgesReport"]
-tests = ["crates/ogeom/tests/iges_roundtrip.rs",
-    "crates/ogeom-io/tests/iges_construction.rs",
-    "crates/ogeom-io/tests/sheet_export.rs",
+tests = ["crates/ogeom/tests/facade/iges_roundtrip.rs",
+    "crates/ogeom-io/tests/io/iges_construction.rs",
+    "crates/ogeom-io/tests/io/sheet_export.rs",
     "crates/ogeom-io/src/iges/read.rs::hyperbola_and_parabola_conic_arcs_read_as_their_curves",
     "crates/ogeom-io/src/iges/read.rs::a_ruled_surface_reads_as_the_patch_between_its_curves",
     "crates/ogeom-io/src/iges/read.rs::offset_entities_displace_the_way_the_file_says",
     "crates/ogeom-io/src/iges/read.rs::copious_data_paths_read_as_their_polylines",
     "crates/ogeom-io/src/iges/read.rs::a_parameter_space_trim_lifts_through_a_revolved_ellipse",
-    "crates/ogeom/tests/iges_surface_decks.rs",
+    "crates/ogeom/tests/facade/iges_surface_decks.rs",
 ]
 
 [[capability]]
@@ -3134,11 +3134,11 @@ symbols = [
     "ogeom_io::read_dxf", "ogeom_io::write_dxf", "ogeom_io::DxfOut",
 ]
 tests = [
-    "crates/ogeom-io/tests/dxf.rs::every_entity_written_reads_back_as_itself",
-    "crates/ogeom-io/tests/dxf.rs::a_bulge_reads_back_as_the_arc_it_was_made_from",
-    "crates/ogeom-io/tests/dxf.rs::the_r2000_file_holds_every_section_table_and_handle_a_strict_reader_needs",
-    "crates/ogeom-io/tests/dxf.rs::circles_arcs_and_bulged_closed_polylines_read_as_written",
-    "crates/ogeom/tests/exchange.rs::a_drawing_written_as_dxf_reads_back_layer_by_layer",
+    "crates/ogeom-io/tests/io/dxf.rs::every_entity_written_reads_back_as_itself",
+    "crates/ogeom-io/tests/io/dxf.rs::a_bulge_reads_back_as_the_arc_it_was_made_from",
+    "crates/ogeom-io/tests/io/dxf.rs::the_r2000_file_holds_every_section_table_and_handle_a_strict_reader_needs",
+    "crates/ogeom-io/tests/io/dxf.rs::circles_arcs_and_bulged_closed_polylines_read_as_written",
+    "crates/ogeom/tests/corpus_suites/exchange.rs::a_drawing_written_as_dxf_reads_back_layer_by_layer",
 ]
 
 [[capability]]
@@ -3147,7 +3147,7 @@ title = "VRML scenes"
 crate = "ogeom-io"
 verdict = "covered"
 symbols = ["ogeom_io::write_vrml", "ogeom_io::read_vrml"]
-tests = ["crates/ogeom/tests/exchange.rs", "crates/ogeom/tests/vrml_read.rs"]
+tests = ["crates/ogeom/tests/corpus_suites/exchange.rs", "crates/ogeom/tests/facade/vrml_read.rs"]
 
 [[capability]]
 id = "io.mesh-formats"
@@ -3159,7 +3159,7 @@ symbols = [
     "ogeom_io::read_ply", "ogeom_io::write_3mf", "ogeom_io::read_3mf",
     "ogeom_io::ThreeMfImport", "ogeom_io::ImportedMesh", "ogeom_io::ExportMesh",
 ]
-tests = ["crates/ogeom/tests/gltf_reading.rs", "crates/ogeom/tests/exchange.rs"]
+tests = ["crates/ogeom/tests/facade/gltf_reading.rs", "crates/ogeom/tests/corpus_suites/exchange.rs"]
 
 [[capability]]
 id = "io.ply"
@@ -3174,7 +3174,7 @@ tests = [
     "crates/ogeom-io/src/ply.rs::binary_ply_round_trips_a_mesh_and_a_cloud",
     "crates/ogeom-io/src/ply.rs::every_encoding_and_list_type_reads_alike",
     "crates/ogeom-io/src/ply.rs::truncated_and_hostile_ply_is_refused_by_name",
-    "crates/ogeom/tests/exchange.rs::obj_and_ply_come_back_as_the_mesh_they_were",
+    "crates/ogeom/tests/corpus_suites/exchange.rs::obj_and_ply_come_back_as_the_mesh_they_were",
 ]
 
 [[capability]]
@@ -3203,7 +3203,7 @@ tests = [
     "crates/ogeom-io/src/obj.rs::a_textured_cube_reads_its_face_colours",
     "crates/ogeom-io/src/obj.rs::kd_colours_faces_without_a_texture",
     "crates/ogeom-io/src/obj.rs::hostile_materials_and_textures_never_panic",
-    "crates/ogeom/tests/exchange.rs::a_textured_obj_on_disk_reads_its_texture_colours",
+    "crates/ogeom/tests/corpus_suites/exchange.rs::a_textured_obj_on_disk_reads_its_texture_colours",
 ]
 
 [[capability]]
@@ -3234,7 +3234,7 @@ tests = [
     "crates/ogeom-io/src/threemf.rs::component_and_object_roles_read_by_name",
     "crates/ogeom-io/src/threemf.rs::colour_groups_and_textures_read_as_mesh_colours",
     "crates/ogeom-io/src/threemf.rs::hostile_packages_never_panic",
-    "crates/ogeom/tests/exchange.rs::per_triangle_colours_and_supports_are_read_with_a_warning",
+    "crates/ogeom/tests/corpus_suites/exchange.rs::per_triangle_colours_and_supports_are_read_with_a_warning",
 ]
 
 [[capability]]
@@ -3243,7 +3243,7 @@ title = "Colour values and their names"
 crate = "ogeom-doc"
 verdict = "covered"
 symbols = ["ogeom_doc::Colour"]
-tests = ["crates/ogeom/tests/exchange.rs"]
+tests = ["crates/ogeom/tests/corpus_suites/exchange.rs"]
 
 [[capability]]
 id = "fillet.bitangent"
@@ -3268,7 +3268,7 @@ symbols = [
     "ogeom_algo::SurfaceKind", "ogeom_algo::FitConstraints", "ogeom_algo::RegionRefusal",
     "ogeom_algo::RegionFallback", "ogeom_algo::FallbackReason",
 ]
-tests = ["crates/ogeom/tests/mesh_solid.rs", "crates/ogeom/tests/mesh_steps.rs"]
+tests = ["crates/ogeom/tests/facade/mesh_solid.rs", "crates/ogeom/tests/facade/mesh_steps.rs"]
 
 [[capability]]
 id = "offset.middle-path"
@@ -3276,4 +3276,4 @@ title = "Extracting the middle path of a pipe-like solid"
 crate = "ogeom-offset"
 verdict = "covered"
 symbols = ["ogeom_offset::middle_path", "ogeom_offset::MiddlePath"]
-tests = ["crates/ogeom-offset/tests/middle.rs"]
+tests = ["crates/ogeom-offset/tests/offset/middle.rs"]

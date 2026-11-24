@@ -66,10 +66,11 @@ echo "== docs =="
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --quiet
 
 echo "== book =="
-# The guide's code blocks are included by anchor from crates/ogeom/tests/book.rs,
-# which the test pass above just ran, so a book that builds is a book whose
-# examples passed. Install the builder with `cargo install mdbook --locked`;
-# an absent mdbook fails here on purpose, because a skipped gate is a silent one.
+# The guide's code blocks are included by anchor from
+# crates/ogeom/tests/facade/book.rs, which the test pass above just ran, so a
+# book that builds is a book whose examples passed. Install the builder with
+# `cargo install mdbook --locked`; an absent mdbook fails here on purpose,
+# because a skipped gate is a silent one.
 mdbook build docs/book
 
 echo "== capabilities =="
