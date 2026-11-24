@@ -335,8 +335,8 @@ pub(super) fn extended_sweep(
             // A cylinder ends the fill only where it spans the fill's end:
             // each point of the end section meets it, run along the crease,
             // on the face itself, read at the vertex's height along the
-            // axis. Elsewhere the fill stops square, as it does at any face
-            // but a plane.
+            // axis. Elsewhere a constant fill stops square and a varying one
+            // is refused.
             let hull_at = |s: f64| {
                 let mut hull = section.conic_net_at(s).map_or_else(
                     || vec![section.contact(0, s), section.contact(1, s)],

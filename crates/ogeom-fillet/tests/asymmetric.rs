@@ -3157,6 +3157,181 @@ fn bands_where_the_third_edge_is_left_sharp_meet_by_intersection() {
     assert!((v - exact).abs() <= 1e-5, "volume {v} against {exact}");
 }
 
+/// The half of a drum of radius 5 and height 4 past x = 0, its seam
+/// behind the axis so its top rim is one arc: the half drum, the top's arc
+/// and straight edges, the top, the flat and the drum's face.
+fn d_shape(m: &mut Model) -> (Shape, Shape, Shape, [Shape; 3]) {
+    let back = Frame::new(
+        Point::new(0.0, 0.0, 0.0),
+        Direction::Z,
+        Direction::new(-X, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let drum = ogeom_algo::make_cylinder(m, back, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(-6.0, -6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let half = ogeom_algo::make_box(m, at, (6.0, 12.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let d = ogeom_bool::cut(m, &drum, &half, T).unwrap().shape;
+    let mid = |m: &Model, p: Point| {
+        use ogeom_geom::Curve3d as _;
+        explore_unique(m, &d, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                ogeom_algo::placed_edge_curve(m, e, T)
+                    .unwrap()
+                    .is_some_and(|(c, (lo, hi))| {
+                        c.point_at(f64::midpoint(lo, hi), T).unwrap().distance(p) < 1e-6
+                    })
+            })
+            .expect("the edge")
+    };
+    let arc = mid(m, Point::new(5.0, 0.0, 4.0));
+    let straight = mid(m, Point::new(0.0, 0.0, 4.0));
+    let top = face_at(m, &d, Point::new(2.0, 0.0, 4.0));
+    let flat = face_at(m, &d, Point::new(0.0, 0.0, 2.0));
+    let wall = face_at(m, &d, Point::new(5.0, 0.0, 2.0));
+    (d, arc, straight, [top, flat, wall])
+}
+
+/// A curved edge at a vertex left sharp: on the D-shaped half drum, an
+/// asymmetric round of the top's arc and a round or asymmetric round of
+/// its straight edge, the uprights at the arc's ends left sharp. The arc's
+/// band is its conic revolved over the arc's half turn, ending in the flat
+/// through the axis; the straight band runs to the drum, square to it
+/// there. Both hang from the top, so the solid loses at each point of the
+/// top the deeper of the two bands' depths there: the straight band's at
+/// its distance from the flat, the arc's at its distance in from the rim.
+/// That is integrated over the half disc, split where either band's
+/// contact or their crossing runs. The same solid in either order and
+/// naming the other faces. A circular round on the arc, or a bevel on the
+/// straight edge (its prism ending at the drum), is refused by name.
+#[test]
+fn an_asymmetric_round_of_a_rim_s_arc_beside_an_edge_left_sharp_meets_the_other_band_by_intersection()
+ {
+    let w = conic(0.4);
+    let asym = |face: &Shape, a: f64, b: f64| Blend::RoundDistances {
+        face: face.clone(),
+        on_face: a,
+        on_other: b,
+        profile: RoundProfile::Conic(0.4),
+    };
+    let (cap, rim_wall) = (1.0, 0.6);
+    let arc_depth = |rho: f64| conic_depth(cap, rim_wall, w, 5.0 - rho);
+    let taken = |straight: &dyn Fn(f64) -> f64, reach: f64| {
+        // Over y >= 0 at each x, the arc's depth grows toward the rim.
+        let across = |x: f64| {
+            let top = x.mul_add(-x, 25.0).max(0.0).sqrt();
+            let h = straight(x);
+            let mut cuts = vec![0.0, top];
+            let inner = 5.0 - cap;
+            if x < inner {
+                cuts.push(inner.mul_add(inner, -x * x).sqrt());
+            }
+            let gap = |y: f64| arc_depth(x.hypot(y).min(5.0)) - h;
+            if h > 0.0 && gap(0.0) < 0.0 && gap(top) > 0.0 {
+                let (mut lo, mut hi) = (0.0, top);
+                for _ in 0..80 {
+                    let mid = f64::midpoint(lo, hi);
+                    if gap(mid) > 0.0 {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                cuts.push(f64::midpoint(lo, hi));
+            }
+            cuts.sort_by(f64::total_cmp);
+            cuts.windows(2)
+                .map(|p| integrate_between(p[0], p[1], |y| h.max(arc_depth(x.hypot(y).min(5.0)))))
+                .sum::<f64>()
+        };
+        let mut xs = [0.0, reach.min(5.0), 5.0 - cap, 5.0];
+        xs.sort_by(f64::total_cmp);
+        2.0 * xs
+            .windows(2)
+            .map(|p| integrate_between(p[0], p[1], across))
+            .sum::<f64>()
+    };
+    let solid = 50.0 * core::f64::consts::PI;
+    let circle = FRAC_1_SQRT_2;
+
+    // A round of radius 0.8 on the straight edge.
+    let mut m = Model::new();
+    let (d, arc, straight, [top, flat, wall]) = d_shape(&mut m);
+    let exact = solid - taken(&|x| conic_depth(0.8, 0.8, circle, x), 0.8);
+    let v = either_order(
+        &mut m,
+        &d,
+        &[
+            (arc.clone(), asym(&top, cap, rim_wall)),
+            (straight.clone(), Blend::Round(0.8)),
+        ],
+    );
+    assert!(
+        (v - exact).abs() <= 1e-7,
+        "round: volume {v} against {exact}"
+    );
+    let again = ogeom_fillet::blend_edges(
+        &mut m,
+        &d,
+        &[
+            (arc.clone(), asym(&wall, rim_wall, cap)),
+            (straight.clone(), Blend::Round(0.8)),
+        ],
+        ChamferCorner::Point,
+        T,
+    )
+    .unwrap();
+    assert_eq!(
+        volume(&m, &again.shape).to_bits(),
+        v.to_bits(),
+        "naming the wall"
+    );
+
+    // An asymmetric round of 0.9 along the top and 0.5 down the flat.
+    let exact = solid - taken(&|x| conic_depth(0.9, 0.5, w, x), 0.9);
+    let v = either_order(
+        &mut m,
+        &d,
+        &[
+            (arc.clone(), asym(&top, cap, rim_wall)),
+            (straight.clone(), asym(&flat, 0.5, 0.9)),
+        ],
+    );
+    assert!(
+        (v - exact).abs() <= 1e-7,
+        "asymmetric: volume {v} against {exact}"
+    );
+
+    let refused = |m: &mut Model, request: &[(Shape, Blend)], words: &str| {
+        let message = ogeom_fillet::blend_edges(m, &d, request, ChamferCorner::Point, T)
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains(words), "{message}");
+    };
+    refused(
+        &mut m,
+        &[
+            (arc.clone(), Blend::Round(0.8)),
+            (straight.clone(), asym(&top, 0.9, 0.5)),
+        ],
+        "an asymmetric round on a rim's arc ending there",
+    );
+    refused(
+        &mut m,
+        &[
+            (arc, asym(&top, cap, rim_wall)),
+            (straight, bevel(&flat, 0.5, 0.9)),
+        ],
+        "its prism stops square there",
+    );
+}
+
 /// A 20 x 20 x 10 block with the quarter above z = 5 past x = 10 and
 /// y = 10 taken out: the pocket's inside corner at (10, 10, 5), its three
 /// concave edges along x, y and z, the floor and the walls x = 10 and

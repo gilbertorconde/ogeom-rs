@@ -351,9 +351,11 @@ struct Corners {
 /// another edge of the request other than as one tangent chain. Refused by
 /// name unless it is a convex corner of three planes whose three edges are
 /// all in the request, each straight, or a vertex of three edges two of
-/// which are rounds on straight edges between planes of one convexity, the
-/// third left sharp; and no edge at either meets an edge of the request
-/// elsewhere other than at another such vertex.
+/// which are blended and of one convexity, each a round or bevel on a
+/// straight edge between planes or an asymmetric round on a rim's arc
+/// ending there in a plane through the axis, the third left sharp; and no
+/// edge at either meets an edge of the request elsewhere other than at
+/// another such vertex.
 fn read_corners(
     model: &Model,
     solid: &Shape,
@@ -442,7 +444,14 @@ fn read_corners(
                 } else {
                     crate::support::planar_seat(model, solid, &all[k].0, tol).ok()
                 };
-                convex.push(seat.map(|s| s.convex));
+                let sense = match seat {
+                    Some(seat) => Some(seat.convex),
+                    None if all[k].1 == 2 => {
+                        rim_arc_sense(model, solid, &asymmetric[all[k].2], &vertex, tol)?
+                    }
+                    None => None,
+                };
+                convex.push(sense);
             }
             if let [Some(a), Some(b)] = convex[..]
                 && a == b
@@ -458,10 +467,12 @@ fn read_corners(
             ogeom_bail!(
                 Construction,
                 "an asymmetric round meets another blended edge at a vertex whose third \
-                 edge is left sharp, and the two bands meet there only where both are \
-                 rounds or bevels on straight edges between planes that both cut or both \
-                 fill, or a convex and a concave round of a request of rounds alone close \
-                 on one patch; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+                 edge is left sharp, and the two bands meet there only where both cut or \
+                 both fill and each is a round or a bevel on a straight edge between \
+                 planes, or an asymmetric round on a rim's arc ending there in a plane \
+                 through the rim's axis, or where a convex and a concave round of a \
+                 request of rounds alone close on one patch; see docs/CAPABILITIES.md, \
+                 fillet.asymmetric-rounds"
             );
         }
         if meeting != 3 || here.len() != 3 {
@@ -596,6 +607,41 @@ fn read_corners(
         }
     }
     Ok(Corners { corners, edges })
+}
+
+/// Whether the asymmetric round `a` on an arc of a rim cuts (`Some(true)`)
+/// or fills (`Some(false)`) where its band meets another at `vertex` by
+/// intersection: its tool is the conic revolved over the arc's own turn,
+/// capped in the planes through the axis at the arc's ends, so every face
+/// following the rim at `vertex` must be such a plane. `None` for any other
+/// edge or end.
+fn rim_arc_sense(
+    model: &Model,
+    solid: &Shape,
+    a: &Asymmetric,
+    vertex: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Option<bool>> {
+    let rim = match crate::asym::rim_conic(
+        model, solid, &a.edge, &a.face, a.on_face, a.on_other, a.profile, tol,
+    ) {
+        Ok(Some(rim)) if !rim.whole => rim,
+        Ok(_) | Err(ogeom_core::OgeomError::Construction(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let Some(data) = model.node(vertex).and_then(|n| n.data().as_vertex()) else {
+        ogeom_bail!(Dangling, "a vertex is not in this model");
+    };
+    let at = vertex.transform(model.datums())?.apply(data.point);
+    let hosts = [&rim.seat.cap_face, &rim.seat.wall_face];
+    let Some(planes) = crate::support::following_planes(model, solid, &a.edge, hosts, at)? else {
+        return Ok(None);
+    };
+    let radial = planes.iter().all(|(_, origin, normal)| {
+        normal.dot(rim.seat.up).abs() <= tol.angular()
+            && (rim.seat.centre - *origin).dot(*normal).abs() <= tol.confusion()
+    });
+    Ok(radial.then_some(!rim.seat.additive()))
 }
 
 /// Refuses by name where an end of the straight bevel `edge` meets a face
