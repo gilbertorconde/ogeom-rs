@@ -32,10 +32,17 @@ ogeom-algo.workspace = true
 ogeom-intersect.workspace = true
 # A void's orientation is read off its meshed signed volume.
 ogeom-mesh.workspace = true
-# Constructive solids read as the booleans their trees name.
-ogeom-bool.workspace = true
+# An IGES boolean tree reads as the booleans it names (feature `iges-csg`).
+ogeom-bool = { workspace = true, optional = true }
 # Textures an OBJ or a 3MF colours its mesh with may be JPEG.
 zune-jpeg.workspace = true
+
+[features]
+default = ["iges-csg"]
+# Evaluate IGES boolean trees (entity 180). Without it a tree is refused with a
+# warning and the reader does not depend on the booleans; every other
+# constructive solid still reads.
+iges-csg = ["dep:ogeom-bool"]
 
 [dev-dependencies]
 # The round trip is only worth testing against shapes something really built,

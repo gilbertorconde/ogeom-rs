@@ -233,7 +233,7 @@ and groups (402) read as the document's layers. Constructive solids read
 as the solids they describe: the block, wedge, cylinder, cone frustum,
 sphere, torus and ellipsoid primitives (150 to 168), solids of revolution
 and linear extrusion, boolean trees (180) through the kernel's own
-booleans, solid assemblies (184) and solid instances (430). A trim given only
+booleans (`ogeom-io`'s default `iges-csg` feature), solid assemblies (184) and solid instances (430). A trim given only
 in the parameters of a plane, cylinder, cone, sphere or torus is lifted
 through the format's parameterization, each surface framed by the reference
 direction it names; on a tabulated cylinder (fractions of its directrix and
@@ -352,4 +352,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: d0345caf0ed0d03a -->
+<!-- ledger-checksum: a303b5e1526dc4ff -->

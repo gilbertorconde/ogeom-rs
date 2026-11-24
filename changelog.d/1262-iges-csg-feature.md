@@ -1,0 +1,3 @@
+- **Added: `ogeom-io` feature `iges-csg`, on by default** (#1262).
+  - It evaluates IGES boolean trees (entity 180) and is the only reason `ogeom-io` depends on `ogeom-bool`. With `default-features = false`, `ogeom-io` builds without the booleans. A boolean tree is then skipped with a warning that names the feature. Primitives, assemblies and instances still read.
+  - The facade `ogeom` turns it on, so `ogeom::io::read_iges` reads as before. `ogeom-heal`'s tests leave it off.

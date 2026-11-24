@@ -42,7 +42,7 @@ ogeom-bool.workspace = true
 ogeom-heal.workspace = true
 ogeom-fillet.workspace = true
 ogeom-offset.workspace = true
-ogeom-io.workspace = true
+ogeom-io = { workspace = true, features = ["iges-csg"] }
 ogeom-hlr.workspace = true
 ogeom-doc.workspace = true
 
