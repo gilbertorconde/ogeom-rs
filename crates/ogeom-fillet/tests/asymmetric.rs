@@ -3227,9 +3227,10 @@ fn d_shape(m: &mut Model) -> (Shape, Shape, Shape, [Shape; 3]) {
 /// top the deeper of the two bands' depths there: the straight band's at
 /// its distance from the flat, the arc's at its distance in from the rim.
 /// That is integrated over the half disc, split where either band's
-/// contact or their crossing runs. The same solid in either order and
-/// naming the other faces. A circular round on the arc, or a bevel on the
-/// straight edge (its prism ending at the drum), is refused by name.
+/// contact or their crossing runs. The same with a circular round on the
+/// arc, its band the torus. The same solid in either order and naming the
+/// other faces. A bevel on the straight edge, its prism ending at the
+/// drum, is refused by name.
 #[test]
 fn an_asymmetric_round_of_a_rim_s_arc_beside_an_edge_left_sharp_meets_the_other_band_by_intersection()
  {
@@ -3242,7 +3243,10 @@ fn an_asymmetric_round_of_a_rim_s_arc_beside_an_edge_left_sharp_meets_the_other_
     };
     let (cap, rim_wall) = (1.0, 0.6);
     let arc_depth = |rho: f64| conic_depth(cap, rim_wall, w, 5.0 - rho);
-    let taken = |straight: &dyn Fn(f64) -> f64, reach: f64| {
+    let taken_by = |straight: &dyn Fn(f64) -> f64,
+                    reach: f64,
+                    arc_depth: &dyn Fn(f64) -> f64,
+                    cap: f64| {
         // Over y >= 0 at each x, the arc's depth grows toward the rim.
         let across = |x: f64| {
             let top = x.mul_add(-x, 25.0).max(0.0).sqrt();
@@ -3277,6 +3281,8 @@ fn an_asymmetric_round_of_a_rim_s_arc_beside_an_edge_left_sharp_meets_the_other_
             .map(|p| integrate_between(p[0], p[1], across))
             .sum::<f64>()
     };
+    let taken =
+        |straight: &dyn Fn(f64) -> f64, reach: f64| taken_by(straight, reach, &arc_depth, cap);
     let solid = 50.0 * core::f64::consts::PI;
     let circle = FRAC_1_SQRT_2;
 
@@ -3334,13 +3340,20 @@ fn an_asymmetric_round_of_a_rim_s_arc_beside_an_edge_left_sharp_meets_the_other_
             .to_string();
         assert!(message.contains(words), "{message}");
     };
-    refused(
+    // A circular round of 0.8 on the arc, its band the torus.
+    let round_arc = |rho: f64| conic_depth(0.8, 0.8, circle, 5.0 - rho);
+    let exact = solid - taken_by(&|x| conic_depth(0.9, 0.5, w, x), 0.9, &round_arc, 0.8);
+    let v = either_order(
         &mut m,
+        &d,
         &[
             (arc.clone(), Blend::Round(0.8)),
             (straight.clone(), asym(&top, 0.9, 0.5)),
         ],
-        "an asymmetric round on a rim's arc ending there",
+    );
+    assert!(
+        (v - exact).abs() <= 1e-7,
+        "round arc: volume {v} against {exact}"
     );
     refused(
         &mut m,

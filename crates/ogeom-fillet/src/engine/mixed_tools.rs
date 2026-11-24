@@ -106,6 +106,16 @@ pub(crate) fn blend(
     };
     let mut tools = Vec::new();
     for (e, radius) in rounds.iter().filter(|(e, _)| at_corner(e)) {
+        if crate::support::planar_seat(&scratch, solid, e, tol).is_err()
+            && let Some(a) = round_on_rim(&scratch, solid, e, *radius, tol)?
+        {
+            let grouped = patched(&scratch, e)?;
+            tools.push((
+                e.clone(),
+                super::conic_tools::tool(&mut scratch, solid, &a, grouped, tol)?,
+            ));
+            continue;
+        }
         crate::support::ball_fits(&scratch, solid, e, *radius, false, tol)?;
         let seat = crate::support::planar_seat(&scratch, solid, e, tol)?;
         let extend = !patched(&scratch, e)?;
@@ -352,8 +362,8 @@ struct Corners {
 /// name unless it is a convex corner of three planes whose three edges are
 /// all in the request, each straight, or a vertex of three edges two of
 /// which are blended and of one convexity, each a round or bevel on a
-/// straight edge between planes or an asymmetric round on a rim's arc
-/// ending there in a plane through the axis, the third left sharp; and no
+/// straight edge between planes or a round on a rim's arc ending there in
+/// a plane through the axis, the third left sharp; and no
 /// edge at either meets an edge of the request elsewhere other than at
 /// another such vertex.
 fn read_corners(
@@ -449,6 +459,12 @@ fn read_corners(
                     None if all[k].1 == 2 => {
                         rim_arc_sense(model, solid, &asymmetric[all[k].2], &vertex, tol)?
                     }
+                    None if all[k].1 == 0 => {
+                        match round_on_rim(model, solid, &all[k].0, rounds[all[k].2].1, tol)? {
+                            Some(a) => rim_arc_sense(model, solid, &a, &vertex, tol)?,
+                            None => None,
+                        }
+                    }
                     None => None,
                 };
                 convex.push(sense);
@@ -485,8 +501,8 @@ fn read_corners(
                 "an asymmetric round meets another blended edge at a vertex whose third \
                  edge is left sharp, and the two bands meet there only where both cut or \
                  both fill and each is a round or a bevel on a straight edge between \
-                 planes, or an asymmetric round on a rim's arc ending there in a plane \
-                 through the rim's axis, or where a convex and a concave round of a \
+                 planes, or a round on a rim's arc ending there in a plane through the \
+                 rim's axis, or where a convex and a concave round of a \
                  request of rounds alone close on one patch; see docs/CAPABILITIES.md, \
                  fillet.asymmetric-rounds"
             );
@@ -658,6 +674,48 @@ fn rim_arc_sense(
             && (rim.seat.centre - *origin).dot(*normal).abs() <= tol.confusion()
     });
     Ok(radial.then_some(!rim.seat.additive()))
+}
+
+/// The circular round of `radius` on an open arc of a rim as the
+/// asymmetric round of equal distances with the elliptical section, which
+/// is that round: each leg the ball's tangent from the rim, `r cot(alpha /
+/// 2)` where cap and wall meet at `alpha`. `None` for any other edge.
+fn round_on_rim(
+    model: &Model,
+    solid: &Shape,
+    edge: &Shape,
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<Asymmetric>> {
+    let Ok((Curve::Circle(circle), _)) = crate::support::edge_curve(model, edge, tol) else {
+        return Ok(None);
+    };
+    let Ok(seat) = crate::support::revolved_seat(model, solid, edge, &circle, tol) else {
+        return Ok(None);
+    };
+    let profile = crate::RoundProfile::Elliptical;
+    let face = seat.cap_face.clone();
+    let rim = match crate::asym::rim_conic(model, solid, edge, &face, radius, radius, profile, tol)
+    {
+        Ok(Some(rim)) if !rim.whole => rim,
+        Ok(_) | Err(ogeom_core::OgeomError::Construction(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let [wall, at, cap] = rim.points;
+    let (a, b) = (wall - at, cap - at);
+    let cos = (a / a.magnitude()).dot(b / b.magnitude()).clamp(-1.0, 1.0);
+    let sin = (1.0 - cos * cos).max(0.0).sqrt();
+    if sin <= tol.angular() {
+        return Ok(None);
+    }
+    let leg = radius * (1.0 + cos) / sin;
+    Ok(Some(Asymmetric {
+        edge: edge.clone(),
+        face,
+        on_face: leg,
+        on_other: leg,
+        profile,
+    }))
 }
 
 /// Refuses by name where an end of the straight bevel `edge` meets a face
