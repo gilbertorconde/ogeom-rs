@@ -1,5 +1,5 @@
 //! Rounds on solids with curved faces through the trimmed assembly: each
-//! edge's strip in closed form, handed to [`assemble`](super::trimmed::assemble) with the corners
+//! edge's strip in closed form, handed to [`assemble`](super::trimmed::assemble::assemble) with the corners
 //! where the contacts cross ([`curved_corners`]).
 //!
 //! A straight edge between two planes, or between a plane and a cylinder
