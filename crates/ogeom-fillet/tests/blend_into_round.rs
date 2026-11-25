@@ -1,6 +1,7 @@
 //! Blend into round beyond a cylinder's foot on one convex round: a foot
 //! round reaching two rounds at a corner, a conical boss's foot (narrowing
-//! or undercut), and a foot reaching a concave round. Each is measured
+//! or undercut, on one round or across a rounded corner), and a foot
+//! reaching a concave round. Each is measured
 //! against the morphological closing, sampled without the construction.
 #![allow(
     deprecated,
@@ -220,24 +221,32 @@ impl Closing {
         }
     }
 
-    /// The spine at angle `t` about the axis, where the two offsets meet.
+    /// The spine at angle `t` about the axis, where the two offsets meet:
+    /// the height `z` at which the floor's offset over the wall's offset
+    /// at `z` comes back to `z`, by secant steps, which a leaning wall
+    /// needs where plain substitution would crawl.
     fn spine(&self, t: f64) -> Point {
-        let mut z = FOOT;
-        let mut q = Point::new(0.0, 0.0, 0.0);
-        for _ in 0..100 {
+        let (c, s) = (t.cos(), t.sin());
+        let under = |z: f64| {
             let rho = self.offset_radius(z);
-            let (x, y) = (
-                rho.mul_add(t.cos(), self.axis.0),
-                rho.mul_add(t.sin(), self.axis.1),
-            );
-            let next = self.offset_height(x, y);
-            q = Point::new(x, y, next);
-            if (next - z).abs() <= 1e-15 {
+            (rho.mul_add(c, self.axis.0), rho.mul_add(s, self.axis.1))
+        };
+        let gap = |z: f64| {
+            let (x, y) = under(z);
+            self.offset_height(x, y) - z
+        };
+        let (mut z0, mut f0) = (FOOT, gap(FOOT));
+        let mut z1 = z0 + f0;
+        for _ in 0..100 {
+            let f1 = gap(z1);
+            if f1.abs() <= 1e-15 * (1.0 + z1.abs()) || f1 == f0 {
                 break;
             }
-            z = next;
+            let next = z1 - f1 * (z1 - z0) / (f1 - f0);
+            (z0, f0, z1) = (z1, f1, next);
         }
-        q
+        let (x, y) = under(z1);
+        Point::new(x, y, z1)
     }
 
     fn distance_to_free(&self, p: Point) -> f64 {
@@ -377,7 +386,32 @@ impl Closing {
     /// first range runs in the root's square.
     fn slanted_ring(&self, t: f64, out: f64, g: &[(f64, f64)]) -> f64 {
         let mut cuts = vec![self.foot];
-        for r in &self.rounds {
+        let at = |rho: f64| {
+            (
+                rho.mul_add(t.cos(), self.axis.0),
+                rho.mul_add(t.sin(), self.axis.1),
+            )
+        };
+        if self.corner.is_some() {
+            // The floor's region is convex: the radial leaves it once.
+            let past = |rho: f64| {
+                let (x, y) = at(rho);
+                self.outside(x, y).is_some()
+            };
+            if past(out) {
+                let (mut lo, mut hi) = (self.foot, out);
+                for _ in 0..80 {
+                    let mid = 0.5 * (lo + hi);
+                    if past(mid) {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                cuts.push(0.5 * (lo + hi));
+            }
+        }
+        for r in self.rounds.iter().filter(|_| self.corner.is_none()) {
             let towards = r.n.0.mul_add(t.cos(), r.n.1 * t.sin());
             let cross = -r.past(self.axis.0, self.axis.1) / towards;
             if towards > 0.0 && cross > self.foot && cross < out {
@@ -801,13 +835,27 @@ fn concave() -> Case {
     }
 }
 
+/// The foot `foot` of `s` rounded at `FOOT` through a blend request under
+/// `overflow`.
+fn round_foot(
+    m: &mut Model,
+    s: &Shape,
+    foot: &[Shape],
+    overflow: Overflow,
+) -> ogeom_core::OgeomResult<ogeom_algo::Built> {
+    ogeom_fillet::BlendRequest::new()
+        .round(foot.iter().cloned(), FOOT)
+        .overflow(overflow)
+        .build(m, s, T)
+}
+
 /// The case's foot rounded at `FOOT` by default: valid and closed, one
 /// fitted face per round reached, meeting its neighbours G1. Blend into
 /// round off falls to trim through, which refuses the foot by name as
 /// before, and every behaviour off refuses it naming blend into round.
 fn blends_smoothly(mut case: Case) {
     let (m, s, foot) = (&mut case.m, &case.s, &case.foot);
-    let built = fillet_edges(m, s, foot, FOOT, T).unwrap();
+    let built = round_foot(m, s, foot, Overflow::default()).unwrap();
     let found = ogeom_algo::check(m, &built.shape, T).unwrap();
     assert!(found.is_valid(), "{:?}", found.problems);
     for shell in explore_unique(m, &built.shape, ShapeType::Shell).unwrap() {
@@ -823,12 +871,12 @@ fn blends_smoothly(mut case: Case) {
 
     let mut off = Overflow::default();
     off.blend_into_round = false;
-    let err = fillet_edges_overflow(m, s, foot, FOOT, off, T).unwrap_err();
+    let err = round_foot(m, s, foot, off).unwrap_err();
     assert!(
         err.to_string().contains("does not reach so far"),
         "trim through's refusal: {err}"
     );
-    let err = fillet_edges_overflow(m, s, foot, FOOT, Overflow::none(), T).unwrap_err();
+    let err = round_foot(m, s, foot, Overflow::none()).unwrap_err();
     assert!(err.to_string().contains("blend into round"), "{err}");
 }
 
@@ -838,7 +886,7 @@ fn blends_smoothly(mut case: Case) {
 fn fills_as_the_closing(mut case: Case) {
     let (m, s, foot) = (&mut case.m, &case.s, &case.foot);
     let before = volume(m, s);
-    let built = fillet_edges(m, s, foot, FOOT, T).unwrap();
+    let built = round_foot(m, s, foot, Overflow::default()).unwrap();
     let (coarse, fine) = (case.reference.volume(32), case.reference.volume(64));
     let bound = (fine - coarse).abs().max(1e-9);
     let got = volume(m, &built.shape) - before;
@@ -1191,11 +1239,22 @@ fn corner_block(m: &mut Model, vertical: Option<f64>) -> Shape {
 /// circle crossing both tangent lines and the corner between them; the
 /// corner is rounded at `rho` seen from above (nought for the sphere).
 fn crossing(vertical: Option<f64>, (x, y): (f64, f64), r: f64) -> Case {
+    leaning_crossing(vertical, (x, y), r, 0.0)
+}
+
+/// [`crossing`] with the boss's wall leaning by `k`: a cone, its radius
+/// `r` at the floor and `r + 15 k` at its top, where `k` is not nought.
+fn leaning_crossing(vertical: Option<f64>, (x, y): (f64, f64), r: f64, k: f64) -> Case {
     let mut m = Model::new();
     let block = corner_block(&mut m, vertical);
-    let boss = ogeom_algo::make_cylinder(&mut m, at(x, y, 15.0), r, 15.0, T)
-        .unwrap()
-        .shape;
+    let base = at(x, y, 15.0);
+    let boss = if k == 0.0 {
+        ogeom_algo::make_cylinder(&mut m, base, r, 15.0, T)
+    } else {
+        ogeom_algo::make_cone(&mut m, base, r, 15.0f64.mul_add(k, r), 15.0, T)
+    }
+    .unwrap()
+    .shape;
     let s = ogeom_bool::fuse(&mut m, &block, &boss, T).unwrap().shape;
     let foot = foot_rim(&m, &s, (x, y, 15.0), r);
     let side = Round {
@@ -1210,7 +1269,7 @@ fn crossing(vertical: Option<f64>, (x, y): (f64, f64), r: f64) -> Case {
         reference: Closing {
             axis: (x, y),
             foot: r,
-            slope: 0.0,
+            slope: k,
             rounds: vec![convex_edge_round(), side],
             corner: Some(vertical.map_or(0.0, |v| v - 5.0)),
         },
@@ -1259,6 +1318,72 @@ fn a_foot_round_across_a_torus_corner_fills_as_the_closing() {
 #[ignore = "heavy: the sampled reference takes about 20 s"]
 fn a_foot_round_across_a_sphere_corner_fills_as_the_closing() {
     fills_as_the_closing(sphere_corner());
+}
+
+/// A cone r 5 at the floor narrowing to 3 at its top (the lean of
+/// [`conical`]), at `(11, 11)` by the corner of [`torus_corner`]: its foot
+/// round's contact circle (radius 7.63) crosses `y = 5` at `x = 15.7`,
+/// passes 2.0 beyond the arc r 7 about `(12, 12)` and comes back across
+/// `x = 5`. As the ball drops over the rounds its centre moves out along
+/// the radial, so it changes rounds where that centre, not the contact
+/// circle, crosses the plane square to the outline at the arc's ends.
+fn conical_torus_corner() -> Case {
+    leaning_crossing(Some(12.0), (11.0, 11.0), 5.0, LEAN)
+}
+
+/// A cone r 3.5 narrowing to 1.5, at `(9, 9.3)` by the corner of
+/// [`sphere_corner`]: its contact circle (radius 6.13) crosses both
+/// tangent lines and passes 0.25 beyond the top's corner at `(5, 5)`,
+/// where the ball rests on the sphere.
+fn conical_sphere_corner() -> Case {
+    leaning_crossing(None, (9.0, 9.3), 3.5, LEAN)
+}
+
+/// An undercut cone r 5 at the floor widening to 7 at its top (the lean of
+/// [`an_undercut_boss_s_foot_round_blends_into_the_edge_round`]), at
+/// `(11, 11)` by the same corner: its contact circle (radius 8.43) crosses
+/// `y = 5` at `x = 16.9` and passes 2.8 beyond the arc. The ball's centre
+/// comes in toward the axis as it drops over the rounds.
+fn undercut_torus_corner() -> Case {
+    leaning_crossing(Some(12.0), (11.0, 11.0), 5.0, UNDERCUT)
+}
+
+/// A conical boss's foot round across a torus corner: three fitted pieces
+/// meeting each other and the torus pieces G1, as on a cylinder's foot.
+#[test]
+fn a_conical_boss_s_foot_round_blends_across_a_torus_corner() {
+    blends_smoothly(conical_torus_corner());
+}
+
+/// The same across a sphere rounding the corner.
+#[test]
+fn a_conical_boss_s_foot_round_blends_across_a_sphere_corner() {
+    blends_smoothly(conical_sphere_corner());
+}
+
+#[test]
+fn an_undercut_boss_s_foot_round_blends_across_a_torus_corner() {
+    blends_smoothly(undercut_torus_corner());
+}
+
+#[test]
+#[ignore = "heavy: the sampled reference takes about 90 s"]
+fn a_conical_boss_s_foot_round_across_a_torus_corner_fills_as_the_closing() {
+    fills_as_the_closing(conical_torus_corner());
+}
+
+#[test]
+#[ignore = "heavy: the sampled reference takes about 90 s"]
+fn a_conical_boss_s_foot_round_across_a_sphere_corner_fills_as_the_closing() {
+    fills_as_the_closing(conical_sphere_corner());
+}
+
+/// Under the undercut wall the reference's slanted lines are split where
+/// each leaves the floor's region round the corner.
+#[test]
+#[ignore = "heavy: the sampled reference takes about 90 s"]
+fn an_undercut_boss_s_foot_round_across_a_torus_corner_fills_as_the_closing() {
+    fills_as_the_closing(undercut_torus_corner());
 }
 
 /// The two top edges rounded alone meet in a crease, the upright edge left

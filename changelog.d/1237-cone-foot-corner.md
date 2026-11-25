@@ -1,0 +1,4 @@
+- **Added: blend into round for a conical boss's foot across a rounded corner** (#1237).
+  - A foot round on a cone, narrowing or undercut, whose ball reaches two rounds meeting round a corner a torus or a sphere rounds, now rests on each round in turn, as on a cylinder's foot. It used to go on to trim through.
+  - On a cone the ball's centre moves along the radial as it drops over the rounds, so the point under it and its height are solved together and the seats between rounds follow that point.
+  - Still not blended: a creased corner, concave rounds or rounds of different radii at the corner, an open arc or a bevel reaching a corner. The rule is in ADR 0001, part "a cone's foot round a corner".
