@@ -2733,10 +2733,11 @@ fn measured_overlaps(
 /// Whether the stretch `(lo, hi)` of the fitted `curve` near `e` starts
 /// at one of the curve's own ends lying on `e` (inside it, or at one of
 /// its ends, a vertex both leave tangentially) and ends inside both, the
-/// two nearest at that own end and standing apart halfway along by more
-/// than both curves state: a touch at the curve's end, not a run along
-/// the edge (see [`measured_overlaps`]). A fitted copy of the edge that
-/// ends with it stays within those radii, and is a run.
+/// two nearest at that own end and, halfway along, standing apart by more
+/// than both curves state or parting as from a touch: a touch at the
+/// curve's end, not a run along the edge (see [`measured_overlaps`]). A
+/// fitted copy of the edge that ends with it stays within those radii,
+/// and is a run.
 fn touches_from_own_end(
     curve: &Curve,
     (lo, hi): (f64, f64),
@@ -2765,7 +2766,14 @@ fn touches_from_own_end(
             return Ok(false);
         }
     }
-    Ok(off(f64::midpoint(from, to))? > tolerance + e.tolerance)
+    // Parting from a touch as the square of the way or faster (an
+    // osculating curve parts as the cube), the two stand halfway out at an
+    // eighth or more of the distance they reach. A curve held loosely, its
+    // measuring width twice what it states, is still within those radii
+    // halfway, and a touch by how it parts. A run along the edge
+    // before the parting stands nearer it halfway.
+    let at_mid = off(f64::midpoint(from, to))?;
+    Ok(at_mid > tolerance + e.tolerance || at_mid - at_own >= (off(to)? - at_own) / 8.0)
 }
 
 /// The radius an edge holds to where stretches end at it: its widest
