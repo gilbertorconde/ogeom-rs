@@ -93,7 +93,8 @@ pub fn self_crossings(
 ///
 /// [`OgeomError::Cancelled`](ogeom_core::OgeomError::Cancelled) and
 /// [`OgeomError::Dangling`](ogeom_core::OgeomError::Dangling) only.
-pub(crate) fn crossings(
+#[doc(hidden)]
+pub fn crossings(
     model: &Model,
     solid: &Shape,
     kept: &ogeom_mesh::FaceMeshCache,

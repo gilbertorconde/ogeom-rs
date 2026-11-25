@@ -3143,9 +3143,9 @@ mod tests {
             .iter()
             .map(|d| apex + Vector::new(d[0], d[1], d[2]))
             .collect();
-        // The convex hull of the six directions, its facets each wound
-        // outward, away from the apex inside it.
-        let hull: [[u32; 3]; 8] = [
+        // The convex hull of the six directions, which the builder winds
+        // outward.
+        let hull: Vec<Vec<usize>> = [
             [3, 1, 4],
             [5, 2, 4],
             [5, 3, 4],
@@ -3154,28 +3154,10 @@ mod tests {
             [0, 1, 4],
             [0, 3, 2],
             [0, 3, 1],
-        ];
-        let triangles = hull
-            .iter()
-            .map(|&[a, b, c]| {
-                let [pa, pb, pc] = [a, b, c].map(|i| positions[i as usize]);
-                if (pb - pa).cross(pc - pa).dot(pa - apex) > 0.0 {
-                    [a, b, c]
-                } else {
-                    [a, c, b]
-                }
-            })
-            .collect();
-        let mesh = ogeom_topo::Triangulation {
-            positions,
-            triangles,
-            ..ogeom_topo::Triangulation::default()
-        };
-        let options = crate::mesh_solid::MeshSolidOptions {
-            recognize: false,
-            ..crate::mesh_solid::MeshSolidOptions::default()
-        };
-        crate::mesh_solid::solid_from_mesh(model, &mesh, &options, T)
+        ]
+        .map(Vec::from)
+        .into();
+        crate::make_polyhedron(model, &positions, &hull, T)
             .unwrap()
             .shape
     }

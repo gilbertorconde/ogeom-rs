@@ -36,7 +36,7 @@ pub fn to_mesh(
 
 /// As [`to_mesh`], with the mesh's normals already gathered from `index`,
 /// for a caller that measures to the same mesh many times.
-pub(crate) fn to_mesh_with(
+pub fn to_mesh_with(
     index: &Bvh,
     pseudo: &Pseudonormals,
     points: &[Point],
@@ -60,7 +60,7 @@ pub(crate) fn to_mesh_with(
 
 /// A mesh's normals at its faces, edges and vertices, the corners welded
 /// where their positions are equal.
-pub(crate) struct Pseudonormals {
+pub struct Pseudonormals {
     /// Each triangle's unit normal, zero for a degenerate one.
     face: Vec<Vector>,
     /// Each triangle's edges' pseudonormals, edge `k` from corner `k`: the
@@ -82,8 +82,18 @@ fn key(p: Point) -> [u64; 3] {
     [p.x, p.y, p.z].map(|c| (c + 0.0).to_bits())
 }
 
+impl std::fmt::Debug for Pseudonormals {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pseudonormals")
+            .field("triangles", &self.face.len())
+            .field("vertices", &self.vertex.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Pseudonormals {
-    pub(crate) fn of(index: &Bvh) -> Self {
+    /// The normals of the mesh `index` holds.
+    pub fn of(index: &Bvh) -> Self {
         let count = index.triangle_count();
         let triangles: Vec<[Point; 3]> = (0..count)
             .filter_map(|t| index.triangle(u32::try_from(t).ok()?))
