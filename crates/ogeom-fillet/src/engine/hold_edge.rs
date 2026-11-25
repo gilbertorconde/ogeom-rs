@@ -48,7 +48,7 @@ use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{Curve, Curve3d as _, CylinderSurface, Surface as _, SurfaceGeometry};
 use ogeom_math::{Aabb, Cylinder, Direction, Frame, Point, Vector};
-use ogeom_topo::{Model, Shape};
+use ogeom_topo::{EdgeRepr, Model, Shape};
 
 use super::curved::{Curved, SheetCurve, read};
 use super::overflow::{ToolFace, arc, boundary_from, closed, segment};
@@ -1615,6 +1615,12 @@ pub(crate) fn reach(
     if edges.is_empty() || !radius.is_finite() || radius <= eps {
         return Ok(None);
     }
+    // Only a straight chain is held, and placing a curve keeps its kind, so
+    // an edge on any other stored curve is refused here, before the
+    // convexity probes below that a refusal would otherwise pay for.
+    if edges.iter().any(|e| stored_off_line(model, e)) {
+        return Ok(None);
+    }
     for edge in edges {
         let kinds = ogeom_topo::ancestors_of(model, solid, edge, ogeom_topo::ShapeType::Face)?;
         let planes = kinds.iter().all(|f| {
@@ -1862,6 +1868,21 @@ pub(crate) fn reach(
         return Ok(None);
     }
     Ok(Some(hold.clone()))
+}
+
+/// Whether `edge` stands on a stored curve in space other than a line.
+fn stored_off_line(model: &Model, edge: &Shape) -> bool {
+    let Some(EdgeRepr::Curve3d { curve, .. }) = model
+        .node(edge)
+        .and_then(|n| n.data().as_edge())
+        .and_then(|d| d.curve3d())
+    else {
+        return false;
+    };
+    model
+        .geometry()
+        .curve(*curve)
+        .is_some_and(|c| !matches!(c, Curve::Line(_)))
 }
 
 /// Whether nothing of the solid but the round's faces, its end faces and
