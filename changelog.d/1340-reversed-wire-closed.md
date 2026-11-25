@@ -1,0 +1,3 @@
+- **Fixed: `is_wire_closed` answers the same for a wire and its reverse** (#1340).
+  - It compared the first stored edge's start with the last stored edge's end; under a reversed wire, such as the boundary of a face used against its stored sense, those are not the walk's ends, so a closed wire of three or more edges read as open.
+  - It now walks the edges in traversal order, so `make_loft`, `make_loft_solid` and the skinned lofts take a reversed closed wire as a section.
