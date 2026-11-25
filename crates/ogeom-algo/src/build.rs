@@ -509,13 +509,15 @@ fn check_connected(model: &Model, edges: &[Shape], tol: Tolerances) -> OgeomResu
     Ok(())
 }
 
-/// Whether a wire's last edge returns to its first edge's start.
+/// Whether a wire's walk returns to where it starts: its last edge, in
+/// traversal order, ends at its first edge's start. The answer is the same
+/// for a wire and its reverse.
 ///
 /// # Errors
 ///
 /// As [`edge_vertices`].
 pub fn is_wire_closed(model: &Model, wire: &Shape, tol: Tolerances) -> OgeomResult<bool> {
-    let edges = model.children_of(wire)?;
+    let edges = model.ordered_children_of(wire)?;
     let (Some(first), Some(last)) = (edges.first(), edges.last()) else {
         return Ok(false);
     };
