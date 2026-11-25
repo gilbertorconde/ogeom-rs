@@ -31,7 +31,7 @@
 //! is; folding it back would re-tear it.
 
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::{BSpline2d, BSplineCurve, Surface, SurfaceGeometry};
+use ogeom_geom::{BSpline2d, BSplineCurve, Curve, Surface, SurfaceGeometry};
 use ogeom_math::Point2;
 
 use crate::march::Traced;
@@ -132,6 +132,21 @@ pub fn approximate_branch(
     // error bounds every coordinate.
     let unwrapped_a = unwrap_periodic(a, &kept_a, tol);
     let unwrapped_b = unwrap_periodic(b, &kept_b, tol);
+    // The fit holds space and both charts to one distance and one
+    // tolerance, so each chart enters it in lengths ([`chart_weights`]) and
+    // its image is read back in its own parameters.
+    let (weight_a, weight_b) = (chart_weights(a, tol), chart_weights(b, tol));
+    let (fit_a, fit_b) = (
+        weighed(&unwrapped_a, weight_a),
+        weighed(&unwrapped_b, weight_b),
+    );
+    let unweighed = |(space, on_a, on_b): Joint| -> OgeomResult<Joint> {
+        Ok((
+            space,
+            unweighed(&on_a, weight_a, tol)?,
+            unweighed(&on_b, weight_b, tol)?,
+        ))
+    };
     // A closed branch takes the loop-smoothing fit: the join's tangents are
     // constrained to agree in all seven coordinates, so the section curve and
     // both pcurves cross their own seam without a crease. A loop winding
@@ -150,24 +165,14 @@ pub fn approximate_branch(
     let free = || -> OgeomResult<Joint> {
         if branch.closed() {
             let closed = ogeom_geom::fit::fit_points_joint_closed(
-                &points,
-                &unwrapped_a,
-                &unwrapped_b,
-                3,
-                tolerance,
-                tol,
+                &points, &fit_a, &fit_b, 3, tolerance, tol,
             )?;
             if !closed.0.met
                 && winds_periodically(a, &unwrapped_a)
                 && winds_periodically(b, &unwrapped_b)
             {
                 let winding = ogeom_geom::fit::fit_points_joint_winding(
-                    &points,
-                    &unwrapped_a,
-                    &unwrapped_b,
-                    3,
-                    tolerance,
-                    tol,
+                    &points, &fit_a, &fit_b, 3, tolerance, tol,
                 )?;
                 if winding.0.error < closed.0.error {
                     return Ok(winding);
@@ -175,15 +180,9 @@ pub fn approximate_branch(
             }
             Ok(closed)
         } else {
-            ogeom_geom::fit::fit_points_joint(
-                &points,
-                &unwrapped_a,
-                &unwrapped_b,
-                3,
-                tolerance,
-                tol,
-            )
+            ogeom_geom::fit::fit_points_joint(&points, &fit_a, &fit_b, 3, tolerance, tol)
         }
+        .and_then(unweighed)
     };
     // The walk steps by how far its chord sags, which for a cubic is far
     // finer than the fit needs: between samples a step `h` apart on a curve
@@ -192,37 +191,22 @@ pub fn approximate_branch(
     // places a cubic's spans, every sample measures the fit, and only a
     // fit that misses one is made the free way as well, the closer of the
     // two standing.
-    let stations = cubic_stations(&points, &unwrapped_a, &unwrapped_b, tolerance);
+    let stations = cubic_stations(&points, &fit_a, &fit_b, tolerance);
     let seeded = |closed: bool| {
         ogeom_geom::fit::fit_points_joint_from(
-            &points,
-            &unwrapped_a,
-            &unwrapped_b,
-            &stations,
-            closed,
-            3,
-            tolerance,
-            tol,
+            &points, &fit_a, &fit_b, &stations, closed, 3, tolerance, tol,
         )
+        .and_then(unweighed)
     };
     let held = |closed: bool| {
         ogeom_geom::fit::fit_points_joint_from_held(
-            &points,
-            &unwrapped_a,
-            &unwrapped_b,
-            &stations,
-            closed,
-            3,
-            tolerance,
-            tol,
+            &points, &fit_a, &fit_b, &stations, closed, 3, tolerance, tol,
         )
+        .and_then(unweighed)
     };
     let meets_itself = {
         let n = points.len();
-        let (pa, pb) = (
-            unwrapped_a[n - 1] - unwrapped_a[0],
-            unwrapped_b[n - 1] - unwrapped_b[0],
-        );
+        let (pa, pb) = (fit_a[n - 1] - fit_a[0], fit_b[n - 1] - fit_b[0]);
         let gap = (points[n - 1] - points[0]).square_magnitude()
             + pa.square_magnitude()
             + pb.square_magnitude();
@@ -593,8 +577,13 @@ fn measured_error(
     // fit's chart residual carried through each surface's stretch bounds it
     // at the samples. The smaller of the two stands.
     let crossing = if lifted.unsettled {
+        // The residual weighs each chart's parameters as lengths.
+        let in_chart = |surface: &SurfaceGeometry| {
+            let (wu, wv) = chart_weights(surface, tol);
+            space.error / wu.min(wv)
+        };
         let charted =
-            space_error(a, on_a, space.error, tol).max(space_error(b, on_b, space.error, tol));
+            space_error(a, on_a, in_chart(a), tol).max(space_error(b, on_b, in_chart(b), tol));
         lifted.lifted_off.max(charted.max(space.error))
     } else {
         lifted.lifted_off
@@ -612,14 +601,98 @@ fn measured_error(
     }
 }
 
+/// How many model units one unit of each of `surface`'s parameters weighs
+/// in a joint fit, along `u` and along `v`.
+///
+/// The joint fit's one distance sets its chord-length parameters, its
+/// stations and the residual held to the tolerance, over space and both
+/// charts together, so a chart's parameters must enter it as lengths, and
+/// as the same lengths whatever the model's unit. A parameter that is a
+/// length (a plane's, a cylinder's or cone's height, a line's, a parabola's)
+/// is one already and weighs one. An angle, or a free-form curve's or
+/// patch's parameter, keeps its value in every unit, and weighs one
+/// millimetre per unit, read in model units. Taken as one model unit, it
+/// would ask a chart in metres for a thousandth of the resolution it is
+/// held to in millimetres, at many times the work. In millimetres every
+/// weight is one.
+fn chart_weights(surface: &SurfaceGeometry, tol: Tolerances) -> (f64, f64) {
+    let free = 1.0 / tol.scale();
+    let weight = |length: bool| if length { 1.0 } else { free };
+    let (u, v) = parameters_are_lengths(surface);
+    (weight(u), weight(v))
+}
+
+/// Whether each of `surface`'s parameters, `u` and `v`, is a length.
+fn parameters_are_lengths(surface: &SurfaceGeometry) -> (bool, bool) {
+    match surface {
+        SurfaceGeometry::Plane(_) => (true, true),
+        SurfaceGeometry::Cylinder(_) | SurfaceGeometry::Cone(_) => (false, true),
+        SurfaceGeometry::Sphere(_) | SurfaceGeometry::Torus(_) | SurfaceGeometry::BSpline(_) => {
+            (false, false)
+        }
+        SurfaceGeometry::Revolution(s) => (false, parameter_is_length(s.curve())),
+        SurfaceGeometry::Extrusion(s) => (parameter_is_length(s.curve()), true),
+        SurfaceGeometry::Trimmed(s) => parameters_are_lengths(s.basis()),
+        SurfaceGeometry::Offset(s) => parameters_are_lengths(s.basis()),
+    }
+}
+
+/// Whether `curve`'s parameter is a length.
+fn parameter_is_length(curve: &Curve) -> bool {
+    match curve {
+        Curve::Line(_) | Curve::Parabola(_) => true,
+        Curve::Circle(_)
+        | Curve::Ellipse(_)
+        | Curve::Hyperbola(_)
+        | Curve::BSpline(_)
+        | Curve::Helix(_)
+        | Curve::OnSurface(_) => false,
+        Curve::Trimmed(c) => parameter_is_length(c.basis()),
+        Curve::Offset(c) => parameter_is_length(c.basis()),
+    }
+}
+
+/// A chart's samples scaled by its weights, as the joint fit takes them.
+fn weighed(image: &[Point2], (wu, wv): (f64, f64)) -> Vec<Point2> {
+    image
+        .iter()
+        .map(|p| Point2::new(p.x * wu, p.y * wv))
+        .collect()
+}
+
+/// A fitted image back in its chart's own parameters, undoing [`weighed`].
+fn unweighed(image: &BSpline2d, (wu, wv): (f64, f64), tol: Tolerances) -> OgeomResult<BSpline2d> {
+    if wu == 1.0 && wv == 1.0 {
+        return Ok(image.clone());
+    }
+    let control = image
+        .control_points()
+        .iter()
+        .map(|held| {
+            let p = held.point();
+            ogeom_math::Weighted::new(Point2::new(p.x / wu, p.y / wv), held.weight, tol)
+        })
+        .collect::<OgeomResult<Vec<_>>>()?;
+    if image.is_rational() {
+        BSpline2d::rational(image.knots().clone(), control)
+    } else {
+        let points = control
+            .into_iter()
+            .map(ogeom_math::Weighted::point)
+            .collect();
+        BSpline2d::new(image.knots().clone(), points, tol)
+    }
+}
+
 /// A joint fit: the curve, and its images on the two surfaces.
 type Joint = (ogeom_geom::fit::Fitted<BSplineCurve>, BSpline2d, BSpline2d);
 
 /// The samples a cubic fit's knots start at, by index, the first and last
 /// among them: each stretch between two holds a cubic's estimated miss,
 /// `L Θ³ / 384` for a stretch `L` long turning through `Θ`, to an eighth
-/// of `tolerance`, in space and in either chart, the turn read off the
-/// trace's own polylines.
+/// of `tolerance`, in space and in either chart weighed as the joint fit
+/// takes it ([`chart_weights`]), the turn read off the trace's own
+/// polylines.
 fn cubic_stations(
     points: &[ogeom_math::Point],
     image_a: &[Point2],

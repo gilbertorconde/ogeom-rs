@@ -110,10 +110,11 @@ fn a_marched_section_is_the_same_in_inches() {
     same_as_in_millimetres(25.4);
 }
 
-/// Slow: in metres the section's fit takes about ten times as long as in
-/// the other units.
+// Before the joint fit weighed an angle as a millimetre in every unit, the
+// section in metres held its charts a thousand times finer than in
+// millimetres and took about twelve times as long.
+
 #[test]
-#[ignore = "heavy"]
 fn a_marched_section_is_the_same_in_metres() {
     same_as_in_millimetres(1e3);
 }

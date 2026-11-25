@@ -1,0 +1,3 @@
+- **Fixed: an intersection curve's fit does the same work in every unit** (#1364).
+  - The joint fit of a marched section and its two pcurves counted a chart's angle as one model unit, so in metres it held the charts a thousand times finer than in millimetres. It now counts an angle or free-form parameter as one millimetre and a length parameter as itself.
+  - A torus cut by a tilted plane now sections in about the same time in micrometres, millimetres, inches and metres (metres was about 13 times slower), and gives the millimetre curve's length in every unit. Millimetre results are unchanged.

@@ -341,6 +341,14 @@ below, and its square, is a normal `f64`: from about `7.5e-161` to about
 | `APPROXIMATION` | `CONFUSION * 1e1` | curve/surface fitting target |
 | `P_CONFUSION` | `CONFUSION * 1e-2` | parametric-space confusion |
 
+A measure that mixes positions and surface parameters, as the joint fit of
+an intersection curve and its two pcurves does, counts each parameter as a
+length. A parameter that is a length already (a plane's, a cylinder's or
+cone's height, a line's) counts as itself. An angle, or a free-form curve's
+or patch's parameter, keeps its value in every unit and counts one
+millimetre per unit. So the fit does the same work, to the same curve, in
+any unit, and in millimetres every parameter counts as itself.
+
 ---
 
 ## 10. Geometry is reached through traits
