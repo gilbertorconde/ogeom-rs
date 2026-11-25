@@ -48,6 +48,8 @@ INTERNAL: set[str] = {
     "ogeom_algo::interpolate",
     "ogeom_algo::approximate",
     "ogeom_algo::approximate_within",
+    # Moved to `ogeom_mesh`; the old path is kept until 0.23.0.
+    "ogeom_algo::single_precision_quantum",
 }
 
 LEXEME = re.compile(
