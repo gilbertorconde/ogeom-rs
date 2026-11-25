@@ -5506,7 +5506,18 @@ fn derive_pcurve(
             // parameters, so same-parameter is preserved by construction.
             match crate::pcurves::fit_projected_pcurve(curve, range, surface, tol) {
                 Ok((fitted, error, met, worst_off, warning)) => {
-                    let off = lifted(&fitted);
+                    // Fitted at the curve's own parameters, the pcurve claims
+                    // same parameter, and an edge split at a parameter of its
+                    // curve is read there on the pcurve: its pace is charged.
+                    let off = ogeom_algo::pcurve_fit::lifted_gap(
+                        (curve, range),
+                        (&fitted, range),
+                        surface,
+                        true,
+                        tol,
+                    )
+                    .unwrap_or(0.0)
+                    .max(lifted(&fitted));
                     PreparedPcurve::Fitted {
                         curve: fitted,
                         error,

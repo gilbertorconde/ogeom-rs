@@ -4,3 +4,4 @@
   - Added `ogeom_geom::fit::fit_points_2d_at_weighted`: the fixed-parameter 2D fit with its residuals weighted per coordinate.
   - A round of a cut cone's two rulings now states the same edge tolerances in micrometres, millimetres, inches and metres. Before, its widest edge was 2e-5 mm in millimetres, 5.2e-5 mm in micrometres and 6.7e-5 mm in inches and metres.
   - Millimetre results change where a fit's chart was uneven: those fits are now tighter, and the edges they widen state smaller tolerances.
+  - The STEP reader's edge with a fitted pcurve states the pcurve's same-parameter gap, not only its nearest-point gap. A fitted pcurve claims same parameter, and a boolean splitting the edge reads it at its curve's parameter: a cut through a spline fillet's seam met its pieces 4.6e-6 mm apart, under edges stating 2.2e-7 mm, and the common's volume was read 1e-3 mm³ short.
