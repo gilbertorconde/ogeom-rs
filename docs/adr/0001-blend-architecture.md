@@ -4031,7 +4031,8 @@ those, with the nearest point of `a`'s region as the rule.
   curve, not a line along the edge: the band is not straight, and the
   pieces above do not apply. A held edge on a curved `a` (a rim on a
   drum) has no plane to rest the ball over. Both go on to trim through,
-  unchanged.
+  unchanged. (The part "Hold edge, a held edge on a drum" below builds
+  the rim on a drum.)
 - **A held edge of any curve.** A held edge may be any curve lying in
   `a`'s plane (an ellipse, a B-spline). The ball's foot on it is the
   curve's nearest point to the centre, found from the nearest of 256
@@ -4080,7 +4081,8 @@ dominating); the builds, joins and kept edges are in the default one.
   trim through by name. With trim through off too, each is refused
   naming hold edge.
 - A cone beside the edge, and a bore's rim on the drum, give the same
-  as hold edge off.
+  as hold edge off. (The part "Hold edge, a held edge on a drum" below
+  builds the bore's rim; its test moved to `tests/hold_edge_on_drum.rs`.)
 
 **Hold edge, end faces (#1237).** The parts above cut the round at an
 end face by one piece's section: the band's ellipse, or a fitted piece's
@@ -4238,6 +4240,93 @@ cliff line meets `y = 4`). Built with trim through off.
   its line within 1e-9, and the result holds the two jumps' spheres.
 - The canal's quarter-leaning end (`x = 20 + z / 4`) now also builds with
   trim through off: 63.109947457 against 63.109947560.
+
+**Hold edge, a held edge on a drum (#1237).** The parts above rest the
+ball over `a`'s plane: the walk that tells `a`'s region from the edge,
+the feet's drop onto `a`, and the arc where the foot jumps all lie in
+it. A held edge on a curved `a` has no such plane. The first curved `a`
+taken is the one that keeps the band straight: a drum, a cylinder whose
+axis runs along the edge with the solid inside it, beside a plane `b`.
+The rule is the rolling-ball definition of the parts above [2], the
+ball touching `b` and resting on the nearest point of `a`'s region.
+
+- **The band.** `a`'s offset is the coaxial cylinder the radius inside
+  the drum, and `b`'s the plane the radius inside: they meet in a line
+  along the edge, so the band is a cylinder, as with the two the other
+  way round (the part "Hold edge, curved faces and general held edges").
+- **The ball off the band.** Its centre stays on `b`'s offset, in the
+  plane square to the edge through the band's centre, and moves along
+  that offset toward the drum until it stands the radius from its seat,
+  or leaves the drum (the seat is then not reached, and the request is
+  not held). The ball's arc runs from its contact on `b` to its foot, as
+  above.
+- **The region.** A point of the drum lies on `a` where the walk to it
+  from the edge, round the axis at its station along the edge, crosses
+  the held edges an even number of times; a drop onto `a` is along the
+  drum's radius. From inside the drum the nearest point of its surface
+  is the drop along the radius, and the distance grows away from it both
+  ways, so where that point lies off `a` the nearest point of the region
+  lies on its edges.
+- **Fitted held edges.** Where two curved faces meet (a bore into the
+  drum) the edge's curve is fitted, off the drum by up to the edge's own
+  tolerance. A held edge on the drum is one whose curve lies on it within
+  that tolerance, and it is read projected onto the drum along its radii,
+  with its derivatives carried through the projection. The feet then lie
+  on `a`, and where the band's contact crosses the edge it is the foot,
+  so the band and the piece share that ball's arc exactly. Read raw, the
+  nearest point slides along the edge by the fit's slope times the
+  radius (1.2e-5 on the bore below) and the pieces part there. Where a
+  fitted edge stands nearer the band's centre than the radius, by its
+  fit, the ball there is the band's.
+- **Not held on the drum**, the request going on to trim through: a foot
+  on a vertex, a foot jumping between edges (its arc lies in `a`'s
+  plane), a circle across the drum (it is read as a seat by neither
+  rule), a held stretch reaching an end face, a leaning end face (it cuts
+  the drum in an ellipse), a cylinder for `b`, and a drum with the solid
+  outside it. A cone beside the edge stays as the part "Hold edge, curved
+  faces and general held edges" left it: its offset meets `a`'s in a
+  conic, and the band is not straight.
+
+**What is built.** The parts above with `a` a drum and `b` a plane, the
+end faces square to the edge, every edge of the drum within reach a
+ruling or any curve on it but a circle, the ball resting on the band and
+on held edges only, each held stretch short of the band's ends. The
+tool's edges across `a` at the ends are arcs about the drum's axis, its
+face on `a` the drum, and the drum's bulge between the edge and each foot
+is counted in the box it can take up. The tool, its proofs and the
+options are those of the parts above.
+
+**Oracle** (`tests/hold_edge_on_drum.rs`). Independent of the
+construction. Every centre lies on `b`'s offset, the plane `z = -r`, so
+over a point of it at distance `s` from the path of the centres the
+balls' upper envelope stands at `z = -r + sqrt(r^2 - s^2)`, from the
+nearest centre. The cut is the solid between that envelope and the top
+of the solid (the top over `y >= 0`, the drum's front over `y < 0`),
+less the bore, over the strip from the path out to the feet, the
+normals' strip stretched by `1 + s y'' / L^3`. The centre at `x` is
+found by bisection along the offset until the exact rim (the circle of
+the bore on the drum, by its own formula, nearest point by Newton) stands
+`r` off; the path's slope is `-(c - f).x / (c - f).y` at the foot `f`,
+and `y''` its central difference. The band's sections are the closed
+form of the part "Hold edge, curved faces and general held edges"; the
+held stretch is integrated by Gauss-Legendre on 24 and 48 points in `x`
+and `s`, split at the bore's middle and where the top of the solid turns,
+the bound their difference. Self-checks: the sampled band section matches
+its closed form to 1e-12, and the two halves of the held stretch match
+to 1e-10 (the part is symmetric).
+
+| case (r 4) | cut away (built) | reference | error | bound | worst G1 | rim off its curve |
+|---|---|---|---|---|---|---|
+| part 30 long, front a drum r 10 about `(y, z) = (8, -6)`, a bore r 2 along `y` about `(x, z) = (15, -4.5)`, held from `x = 14.2007` to `15.7993` | 31.532301962 | 31.532301965 | 3.2e-9 | 3.2e-12 | 4.8e-7 rad | 2.0e-7 |
+
+- The result is valid and closed, the fitted piece meets the band, the
+  top and the drum within 1e-5 rad of tangent, and the rim is kept over
+  every foot, within its fit (2.0e-7) of the exact circle on the drum.
+- With hold edge and trim through off it is refused naming hold edge.
+- A bore whose rim the balls rest on up to an end face, the same part
+  between ends leaning to `x = 0.3 z` and `x = 30 + 0.3 z`, and a slot
+  across the drum whose sides cut it in circles give the same as hold
+  edge off.
 
 ### Amendment: largest-size readings confirmed by the build (#1173)
 

@@ -2011,7 +2011,19 @@ never reach the end face (no ball \
 past the face stands on it carried on, or it crosses the round's own \
 edge, before the round clears the face), a \
 cone or any other curved face beside the edge but that cylinder, or a \
-held edge on a curved face are not held: they go on to trim through. With hold edge (or hold edge at the end, for a stretch at the \
+held edge on a curved face but the drum below are not held: they go on \
+to trim through. Hold edge is also built for a round of a straight edge \
+between a drum (a cylinder whose axis runs along the edge, the solid \
+inside it) and a plane, ending on end faces square to the edge, whose \
+contact on the drum runs past sharp convex edges of it (any curve on the \
+drum but a circle, such as a bore's rim, read projected onto the drum \
+within its own tolerance) over stretches short of the band's ends: the \
+ball touches the plane, its centre moving along the plane's offset \
+toward the drum until it stands the radius from the held edge, each \
+piece fitted and meeting the band G1. On the drum a vertex seat, a foot \
+jumping between edges, a circle across the drum, a stretch reaching an \
+end face, a leaning end face, a cylinder on the other side and a concave \
+drum are not held: they go on to trim through. With hold edge (or hold edge at the end, for a stretch at the \
 end) off and trim through off, a request hold edge would take is refused \
 by name. Trim through is the engine's own \
 construction (the round keeps its surface, the faces it reaches are \
@@ -2137,6 +2149,13 @@ tests = [
     "crates/ogeom-fillet/tests/hold_edge_ends.rs::feet_that_never_reach_the_end_face_go_on_to_trim_through",
     "crates/ogeom-fillet/tests/hold_edge_ends.rs::a_held_edge_crossing_the_round_s_edge_past_the_end_goes_on_to_trim_through",
     "crates/ogeom-fillet/tests/hold_edge_ends.rs::a_vertex_piece_cut_by_the_end_face_follows_the_options",
+    "crates/ogeom-fillet/tests/hold_edge_on_drum.rs",
+    "crates/ogeom-fillet/tests/hold_edge_on_drum.rs::a_rim_on_the_drum_cuts_away_the_reference",
+    "crates/ogeom-fillet/tests/hold_edge_on_drum.rs::the_drum_rim_reference_reads_the_band",
+    "crates/ogeom-fillet/tests/hold_edge_on_drum.rs::a_rim_on_the_drum_with_hold_edge_off_is_refused_by_name",
+    "crates/ogeom-fillet/tests/hold_edge_on_drum.rs::a_rim_on_the_drum_reaching_an_end_goes_on_to_trim_through",
+    "crates/ogeom-fillet/tests/hold_edge_on_drum.rs::a_rim_on_the_drum_between_leaning_ends_goes_on_to_trim_through",
+    "crates/ogeom-fillet/tests/hold_edge_on_drum.rs::a_slot_across_the_drum_goes_on_to_trim_through",
     "crates/ogeom-fillet/tests/hold_edge_seats.rs::hold_edge_holds_a_vertex_piece_cut_by_the_end_face",
     "crates/ogeom-fillet/tests/hold_edge_seats.rs::a_vertex_piece_cut_by_the_end_face_cuts_away_the_reference",
     "crates/ogeom-fillet/tests/narrow_passage.rs",
