@@ -2158,7 +2158,9 @@ fn dshaft(rng: &mut Rng) -> Result<Scene, Verdict> {
         let edges = shared_edges(&model, &fa, &fb);
         solid = built(
             "round",
-            ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+            ogeom::fillet::BlendRequest::new()
+                .round(edges.iter().cloned(), rho)
+                .build(&mut model, &solid, T),
         )?;
         if let Some((arc, t)) = old_round(supports, v, -1.0, rho) {
             let (area, _) = region(&[supports[0].piece(v, t[0]), arc, supports[1].piece(t[1], v)]);
@@ -2301,7 +2303,9 @@ fn rod(rng: &mut Rng) -> Result<Scene, Verdict> {
         let edges = shared_edges(&model, &wall_at(&model, &solid)?, &top_at(&model, &solid)?);
         solid = built(
             "round",
-            ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+            ogeom::fillet::BlendRequest::new()
+                .round(edges.iter().cloned(), rho)
+                .build(&mut model, &solid, T),
         )?;
         if let Some((arc, t)) = old_round(supports, v, 1.0, rho) {
             let (area, _) = region(&[supports[0].piece(v, t[0]), arc, supports[1].piece(t[1], v)]);
@@ -2435,7 +2439,9 @@ fn drums(rng: &mut Rng) -> Result<Scene, Verdict> {
         let edges = shared_edges(&model, &fa, &fb);
         solid = built(
             "round",
-            ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+            ogeom::fillet::BlendRequest::new()
+                .round(edges.iter().cloned(), rho)
+                .build(&mut model, &solid, T),
         )?;
         if let Some((arc, t)) = old_round(supports, v, 1.0, rho) {
             let (area, _) = region(&[supports[0].piece(v, t[0]), arc, supports[1].piece(t[1], v)]);
@@ -2703,7 +2709,9 @@ fn bore(rng: &mut Rng) -> Result<Scene, Verdict> {
             let c = small * rng.range(0.03, 0.35);
             solid = built(
                 "chamfer",
-                ogeom::fillet::chamfer_edges(&mut model, &solid, &edges, c, T),
+                ogeom::fillet::BlendRequest::new()
+                    .chamfer(edges.iter().cloned(), c)
+                    .build(&mut model, &solid, T),
             )?;
             let (c1, c2) = (P2::new(radius, height - c), P2::new(radius + c, height));
             input -= ring(&[Piece::Seg(v, c1), Piece::Seg(c1, c2), Piece::Seg(c2, v)]);
@@ -2714,7 +2722,9 @@ fn bore(rng: &mut Rng) -> Result<Scene, Verdict> {
             let rho = small * rng.range(0.03, 0.35);
             solid = built(
                 "round",
-                ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+                ogeom::fillet::BlendRequest::new()
+                    .round(edges.iter().cloned(), rho)
+                    .build(&mut model, &solid, T),
             )?;
             let (arc, t) = old_round(supports, v, -1.0, rho).unwrap();
             input -= ring(&[supports[0].piece(v, t[0]), arc, supports[1].piece(t[1], v)]);
@@ -2827,7 +2837,9 @@ fn boss(rng: &mut Rng) -> Result<Scene, Verdict> {
         let rho = small * rng.range(0.03, 0.35);
         solid = built(
             "round",
-            ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+            ogeom::fillet::BlendRequest::new()
+                .round(edges.iter().cloned(), rho)
+                .build(&mut model, &solid, T),
         )?;
         let (arc, t) = old_round(supports, v, 1.0, rho).unwrap();
         input += ring(&[supports[0].piece(v, t[0]), arc, supports[1].piece(t[1], v)]);
@@ -2961,7 +2973,9 @@ fn frustum(rng: &mut Rng) -> Result<Scene, Verdict> {
         let rho = small * rng.range(0.03, 0.3);
         solid = built(
             "round",
-            ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+            ogeom::fillet::BlendRequest::new()
+                .round(edges.iter().cloned(), rho)
+                .build(&mut model, &solid, T),
         )?;
         let (arc, t) = old_round(supports, v, -1.0, rho).unwrap();
         input -= ring(&[supports[0].piece(v, t[0]), arc, supports[1].piece(t[1], v)]);
@@ -3067,7 +3081,9 @@ fn cone_foot(rng: &mut Rng) -> Result<Scene, Verdict> {
         let rho = small * rng.range(0.03, 0.3);
         solid = built(
             "round",
-            ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+            ogeom::fillet::BlendRequest::new()
+                .round(edges.iter().cloned(), rho)
+                .build(&mut model, &solid, T),
         )?;
         let (arc, t) = old_round(supports, v, 1.0, rho).unwrap();
         input += ring(&[supports[0].piece(v, t[0]), arc, supports[1].piece(t[1], v)]);
@@ -3267,7 +3283,9 @@ fn leaning(rng: &mut Rng) -> Result<Scene, Verdict> {
             let edges = shared_edges(&model, &wall, &top);
             solid = built(
                 "round",
-                ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+                ogeom::fillet::BlendRequest::new()
+                    .round(edges.iter().cloned(), rho)
+                    .build(&mut model, &solid, T),
             )?;
             strip = Some(rho);
             what = format!(", foot rounded {rho}");
@@ -3481,7 +3499,9 @@ fn tee(rng: &mut Rng) -> Result<Scene, Verdict> {
         let edges = shared_edges(&model, &a, &b);
         solid = built(
             "round",
-            ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+            ogeom::fillet::BlendRequest::new()
+                .round(edges.iter().cloned(), rho)
+                .build(&mut model, &solid, T),
         )?;
         strip = Some(rho);
         what = format!(", crease rounded {rho}");
@@ -3629,7 +3649,9 @@ fn slanted(rng: &mut Rng) -> Result<Scene, Verdict> {
             let edges = shared_edges(&model, &wall, &cap);
             solid = built(
                 "round",
-                ogeom::fillet::fillet_edges(&mut model, &solid, &edges, rho, T),
+                ogeom::fillet::BlendRequest::new()
+                    .round(edges.iter().cloned(), rho)
+                    .build(&mut model, &solid, T),
             )?;
             strip = Some(rho);
             what = format!(", rim rounded {rho}");

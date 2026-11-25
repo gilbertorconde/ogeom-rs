@@ -488,7 +488,10 @@ fn fillet_block() -> Option<Stats> {
             .unwrap()
             .shape;
         let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
-        let rolled = ogeom::fillet::fillet_edges(&mut model, &block, &edges[..1], 1.0, T).unwrap();
+        let rolled = ogeom::fillet::BlendRequest::new()
+            .round(edges[..1].iter().cloned(), 1.0)
+            .build(&mut model, &block, T)
+            .unwrap();
         std::hint::black_box(&rolled.shape);
     }))
 }
@@ -504,7 +507,10 @@ fn fillet_box_all() -> Option<Stats> {
     Some(sample(
         || model.clone(),
         |mut model| {
-            let rolled = ogeom::fillet::fillet_edges(&mut model, &block, &edges, 1.0, T).unwrap();
+            let rolled = ogeom::fillet::BlendRequest::new()
+                .round(edges.iter().cloned(), 1.0)
+                .build(&mut model, &block, T)
+                .unwrap();
             std::hint::black_box(&rolled.shape);
         },
     ))
@@ -520,7 +526,10 @@ fn limit_box_all() -> Option<Stats> {
         .shape;
     let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
     Some(time(|| {
-        let r = ogeom::fillet::largest_fillet_radius_all(&model, &block, &edges, 20.0, T).unwrap();
+        let r = ogeom::fillet::BlendRequest::new()
+            .round(edges.iter().cloned(), 1.0)
+            .largest(&model, &block, ogeom::fillet::Vary::Scale, 20.0, T)
+            .unwrap();
         std::hint::black_box(r);
     }))
 }
@@ -544,7 +553,10 @@ fn limit_drum_rim() -> Option<Stats> {
         })
         .unwrap();
     Some(time(|| {
-        let r = ogeom::fillet::largest_fillet_radius(&model, &drum, &rim, 10.0, T).unwrap();
+        let r = ogeom::fillet::BlendRequest::new()
+            .round([rim.clone()], 1.0)
+            .largest(&model, &drum, ogeom::fillet::Vary::Scale, 10.0, T)
+            .unwrap();
         std::hint::black_box(r);
     }))
 }

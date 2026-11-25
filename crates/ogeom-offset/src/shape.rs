@@ -473,7 +473,9 @@ pub fn make_thick_solid_with(
             if edges.is_empty() {
                 moved
             } else {
-                ogeom_fillet::fillet_edges(model, &moved.shape, &edges, reach, tol)?
+                ogeom_fillet::BlendRequest::new()
+                    .round(edges.iter().cloned(), reach)
+                    .build(model, &moved.shape, tol)?
             }
         } else {
             moved
@@ -750,7 +752,9 @@ pub fn make_thick_solid_sided(
         if edges.is_empty() {
             return Ok(moved);
         }
-        let rounded = ogeom_fillet::fillet_edges(model, &moved.shape, &edges, depth, tol)?;
+        let rounded = ogeom_fillet::BlendRequest::new()
+            .round(edges.iter().cloned(), depth)
+            .build(model, &moved.shape, tol)?;
         Ok(Built::new(
             rounded.shape,
             moved.history.then(&rounded.history),
