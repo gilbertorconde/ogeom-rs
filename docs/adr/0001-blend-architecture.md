@@ -3716,9 +3716,10 @@ solid's air. What follows settles how it reads on more shapes.
   the bands' fills: the oracle below measures it.
 
 **What stays refused by name.** A floor that is not planar; a corner
-face that is not a cylinder (an elliptic corner, for instance); a band
-that would cross a thin wall into air beyond; walls lower than the
-radius. Each goes on to the engine, which refuses it by name.
+face that is not a cylinder (an elliptic corner, for instance, which the
+part "Narrow passages, elliptic corners" below builds); a band that would
+cross a thin wall into air beyond; walls lower than the radius. Each goes
+on to the engine, which refuses it by name.
 
 **Oracle** (`tests/narrow_passage.rs`). The reference is the plan's
 erosion, computed without the construction. Over the plan `P` of the
@@ -3753,6 +3754,58 @@ wall moved out `z cot(alpha)`) and the arc's reach there,
   name ("partial face is off") with it off.
 - Refused by name: a pocket with elliptic corners, a thin rib 2 from a
   wall with air behind it, a slot whose floor is a cylinder.
+
+**Narrow passages, elliptic corners.** The rule of the part "Narrow
+passages" stands for a corner face that is an elliptic cylinder square to
+the floor, its rim edge an arc of an ellipse in the floor's plane.
+
+- **Tight all along.** The arc's radius of curvature must stay below the
+  radius everywhere on it. On an ellipse that radius is greatest at an end
+  of the arc or at an end of the minor axis within it, so the check is
+  exact. A corner whose radius of curvature reaches the radius somewhere
+  is no tight zone there: the ball touching the floor rolls along the arc,
+  and the round is the rolling ball's own, which this rule does not give.
+  Such a corner is refused by name.
+- **Read as the circular corner.** At a square corner the arc must stand
+  within the radius of both walls, and each band runs on to the next
+  wall's plane, mitred with the other. Between two facing walls the arc
+  must be tangent to both, and each band runs on to the plane square to
+  its edge through the arc's far point, the arc's greatest reach along
+  the edge. The fill is the union of the bands' fills cut to the solid's
+  air, and the corner face is buried where the fill covers it.
+- **Whole face.** No constant-radius round makes an ellipse, so an
+  elliptic corner needs `narrow_whole_face` even where it is tangent to
+  both walls. With whole face and partial face off it is refused by name.
+- A corner face of any other curve (a B-spline, for instance) stays
+  refused by name.
+
+**Oracle** (`tests/narrow_passage.rs`). Over each point of the plan the
+fill stands `H(s)` tall, `s` its distance to the nearer wall plane. The
+elliptic pocket's fill is the sharp rectangle's strip integral less, at
+each corner, the integral of `H(min(u, v))` over the corner material under
+the arc (`u`, `v` the distances to the two walls), each column split
+where the arc crosses the diagonal, `H`'s own integral in closed form. The
+elliptic stadium's is the strip integral with each strip as long as the
+straight walls plus the two half ellipses' chords at its distance from the
+wall. Gauss-Legendre on 24 and 48 points, `s = t^2` where a square root
+starts; the bound is their difference. With equal semi-axes the corner
+reference reproduces the circular corner's to 1e-9, and swapping the
+semi-axes (columns taken the other way) gives the same value to 1e-12.
+
+| case (r 4, floor 7 deep) | strategy | fill built | reference | error | tolerance |
+|---|---|---|---|---|---|
+| pocket 20 by 14, quarter-ellipse corners 2.5 by 2 | whole face | 196.670045010 | 196.670045233 | 2.2e-7 | 1e-6 |
+| stadium 20 by 6, half-ellipse ends reaching 3.2 | whole face | 118.866546517 | 118.866546517 | 1.2e-10 | 1e-6 |
+
+- Each result checks valid with a closed shell, and every round meets its
+  own wall G1 (worst 0 rad).
+- The pocket's error comes from the corner faces' trimming curves, where
+  each round meets the elliptic cylinder: they are fitted, and lie within
+  6.3e-8 of both surfaces, under the model's confusion of 1e-7. The
+  original solid's volume matches its closed form to 4e-12.
+- Refused by name: the elliptic pocket with whole face and partial face
+  off ("whole face and partial face are off"); quarter ellipses 3.5 by 2,
+  whose radius of curvature reaches 6.1 at the long walls.
 
 **Hold edge, more seats.** The public documentation surveyed above
 gives the edge seat by the ball (it touches one original face and is

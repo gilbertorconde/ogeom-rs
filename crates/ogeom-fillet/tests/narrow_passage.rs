@@ -9,10 +9,10 @@
 )]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use core::f64::consts::{FRAC_1_SQRT_2, PI};
+use core::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI};
 
 use ogeom_core::Tolerances;
-use ogeom_fillet::{Overflow, fillet_edges, fillet_edges_overflow};
+use ogeom_fillet::{BlendRequest, Overflow, fillet_edges, fillet_edges_overflow};
 use ogeom_geom::{
     CircleCurve, Curve, Curve3d as _, EllipseCurve, LineCurve, PlaneSurface, Surface as _,
     SurfaceGeometry,
@@ -408,7 +408,11 @@ fn floor_left(m: &Model, s: &Shape) -> bool {
 fn check_case(name: &str, m: &mut Model, s: &Shape, overflow: Overflow, oracle: (f64, f64)) -> f64 {
     let edges = rim(m, s);
     let before = volume(m, s);
-    let built = fillet_edges_overflow(m, s, &edges, R, overflow, T).unwrap();
+    let built = BlendRequest::new()
+        .round(edges, R)
+        .overflow(overflow)
+        .build(m, s, T)
+        .unwrap();
     assert!(valid(m, &built.shape), "{name}: the result checks invalid");
     assert!(
         ogeom_algo::is_shell_closed(
@@ -1089,18 +1093,14 @@ fn refused(m: &mut Model, s: &Shape, edges: &[Shape]) -> String {
         .to_string()
 }
 
-#[test]
-#[ignore = "heavy"]
-fn a_pocket_whose_corners_are_elliptic_arcs_is_refused_by_name() {
-    // Each corner a quarter ellipse tangent to both walls, its curvature
-    // tighter than the radius at both ends: no constant-radius round made
-    // it and it is no cylinder, so no strategy takes it, and the engine
-    // refuses it by name.
-    let mut m = Model::new();
-    let (x0, x1, y0, y1, a, b) = (10.0, 30.0, 8.0, 22.0, 2.5, 2.0);
-    let q = PI / 2.0;
-    let s = pocket(
-        &mut m,
+/// The rectangular pocket `x` 10 to 30, `y` 8 to 22, each corner a quarter
+/// ellipse tangent to both walls, its semi-axis `a` along `x` and `b`
+/// along `y`.
+fn elliptic_corners(m: &mut Model, a: f64, b: f64) -> Shape {
+    let (x0, x1, y0, y1) = (10.0, 30.0, 8.0, 22.0);
+    let q = FRAC_PI_2;
+    pocket(
+        m,
         &[
             Piece::Line(x0 + a, y0, x1 - a, y0),
             Piece::Ellipse {
@@ -1135,10 +1135,172 @@ fn a_pocket_whose_corners_are_elliptic_arcs_is_refused_by_name() {
                 t1: 3.0 * q,
             },
         ],
+    )
+}
+
+/// The stadium pocket `x` 10 to 30, `y` 12 to 18, its ends half ellipses
+/// tangent to both walls, reaching `a` along `x` past the walls' ends.
+fn elliptic_stadium(m: &mut Model, a: f64) -> Shape {
+    let (x0, x1) = (10.0, 30.0);
+    let q = FRAC_PI_2;
+    pocket(
+        m,
+        &[
+            Piece::Line(x0 + a, 12.0, x1 - a, 12.0),
+            Piece::Ellipse {
+                c: (x1 - a, 15.0),
+                a,
+                b: 3.0,
+                t0: -q,
+                t1: q,
+            },
+            Piece::Line(x1 - a, 18.0, x0 + a, 18.0),
+            Piece::Ellipse {
+                c: (x0 + a, 15.0),
+                a,
+                b: 3.0,
+                t0: q,
+                t1: 3.0 * q,
+            },
+        ],
+    )
+}
+
+/// The integral of `H` from 0 to `x`, in closed form: `R x` less the
+/// quarter circle's area over `[R - x, R]`.
+fn h_integral(x: f64) -> f64 {
+    let g = |w: f64| (w * (R * R - w * w).max(0.0).sqrt() + R * R * (w / R).asin()) / 2.0;
+    R.mul_add(x, -(g(R) - g(R - x)))
+}
+
+/// The fill over one corner's material, where a quarter ellipse about the
+/// point `(a, b)` from the corner, its semi-axis `a` along the distance
+/// `u` to the first wall and `b` along the distance `v` to the second,
+/// bounds it. Over each point the fill stands `H(min(u, v))` tall; each
+/// column `u` runs up to the arc, split where the arc crosses the
+/// diagonal.
+fn ellipse_corner_fill(a: f64, b: f64, n: usize) -> f64 {
+    let below = |u: f64| b - b * (1.0 - ((a - u) / a).powi(2)).max(0.0).sqrt();
+    let (mut lo, mut hi) = (0.0, a);
+    for _ in 0..80 {
+        let mid = 0.5 * (lo + hi);
+        if below(mid) > mid {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let diagonal = 0.5 * (lo + hi);
+    integral(|u| h(u).mul_add(below(u) - u, h_integral(u)), diagonal, n)
+        + plain(|u| h_integral(below(u)), diagonal, a, n)
+}
+
+#[test]
+fn the_ellipse_reference_reads_a_circle_as_the_circle_s() {
+    // The elliptic corner's reference with both semi-axes equal against the
+    // circular corner's, which the closed forms above check; and the closed
+    // form of `H`'s integral against quadrature.
+    for rc in [2.0, 3.0] {
+        let (ellipse, circle) = (ellipse_corner_fill(rc, rc, 48), corner_fill(rc, rc, 48));
+        assert!((ellipse - circle).abs() < 1e-9, "{ellipse} {circle}");
+    }
+    for x in [0.5, 2.0, R] {
+        let direct = integral(h, x, 48);
+        assert!((h_integral(x) - direct).abs() < 1e-12, "{x}");
+    }
+}
+
+#[test]
+fn a_pocket_whose_corners_are_elliptic_arcs() {
+    // Each corner a quarter ellipse, 2.5 along `x` and 2 along `y`: its
+    // radius of curvature runs from 1.6 to 3.125, tighter than the radius
+    // 4 all along, so the ball touching both walls never reaches it.
+    let (a, b) = (2.5, 2.0);
+    let mut m = Model::new();
+    let s = elliptic_corners(&mut m, a, b);
+    assert_eq!(rim(&m, &s).len(), 8);
+    let oracle = reference(|n| rectangle_fill(20.0, 14.0, n) - 4.0 * ellipse_corner_fill(a, b, n));
+    check_case(
+        "pocket elliptic corners 2.5 by 2",
+        &mut m,
+        &s,
+        Overflow::default(),
+        oracle,
     );
+}
+
+#[test]
+fn a_stadium_pocket_whose_ends_are_half_ellipses() {
+    // Ends 3.2 along `x` and 3 across: radius of curvature from 2.81 at
+    // the tip to 3.41 at the walls. Each band runs on to the end's tip.
+    let a = 3.2;
+    let mut m = Model::new();
+    let s = elliptic_stadium(&mut m, a);
+    assert_eq!(rim(&m, &s).len(), 4);
+    let oracle = reference(|n| {
+        let straight = 2.0f64.mul_add(-a, 20.0);
+        2.0 * integral(
+            |s| {
+                h(s) * (2.0 * a)
+                    .mul_add((1.0 - ((3.0 - s) / 3.0).powi(2)).max(0.0).sqrt(), straight)
+            },
+            3.0,
+            n,
+        )
+    });
+    check_case(
+        "stadium elliptic ends 3.2",
+        &mut m,
+        &s,
+        Overflow::default(),
+        oracle,
+    );
+}
+
+#[test]
+fn an_elliptic_corner_needs_whole_face() {
+    // No constant-radius round makes an ellipse: with whole face and
+    // partial face off the pocket is refused naming them, and whole face
+    // alone builds it.
+    let mut blend_only = narrow_off();
+    blend_only.narrow_blend_made = true;
+    let mut m = Model::new();
+    let s = elliptic_corners(&mut m, 2.5, 2.0);
     let edges = rim(&m, &s);
-    assert_eq!(edges.len(), 8);
-    let why = refused(&mut m, &s, &edges);
+    let why = BlendRequest::new()
+        .round(edges.clone(), R)
+        .overflow(blend_only)
+        .build(&mut m, &s, T)
+        .expect_err("refused by name")
+        .to_string();
+    assert!(why.contains("whole face and partial face are off"), "{why}");
+    let mut whole = narrow_off();
+    whole.narrow_whole_face = true;
+    let before = volume(&m, &s);
+    let built = BlendRequest::new()
+        .round(edges, R)
+        .overflow(whole)
+        .build(&mut m, &s, T)
+        .unwrap();
+    let expected = rectangle_fill(20.0, 14.0, 48) - 4.0 * ellipse_corner_fill(2.5, 2.0, 48);
+    assert!((volume(&m, &built.shape) - before - expected).abs() < 1e-6);
+}
+
+#[test]
+fn an_elliptic_corner_looser_than_the_radius_is_refused_by_name() {
+    // Quarter ellipses 3.5 along `x` and 2 along `y`: the radius of
+    // curvature reaches 6.1 where the arc meets the long walls, looser than
+    // the radius 4, so the ball rolls along the arc there and the corner is
+    // no tight zone. No strategy takes it, and the engine refuses it by
+    // name.
+    let mut m = Model::new();
+    let s = elliptic_corners(&mut m, 3.5, 2.0);
+    let edges = rim(&m, &s);
+    let why = BlendRequest::new()
+        .round(edges, R)
+        .build(&mut m, &s, T)
+        .expect_err("refused by name")
+        .to_string();
     assert!(why.contains("builds no round of this kind"), "{why}");
 }
 
