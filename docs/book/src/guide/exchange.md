@@ -121,6 +121,14 @@ you can model on:
   `MeshSolidOptions::patches` (on by default), as a fitted B-spline patch.
 - It reads meshes as other kernels draw them: a drum or cone drawn in
   strips from rim to rim, with no points between, comes back round.
+- It fits surfaces to a millionth of the mesh's diagonal at first, or to
+  the mesh's own scatter where that is wider. Where a fit is stopped by
+  that distance, it widens: by doubling, at most to four times, where the
+  fit's own vertices press against it, and to just past the corners in the
+  way, at most sixteen times, where a few corners on a region's rim stand
+  off its surface and cut off triangles lying on it beyond them. A round
+  whose edge with a blend was drawn a little off the round comes back
+  whole on its cylinder.
 
 Its report says where an open mesh is open, and which curved regions could
 not be rebuilt exactly and stayed faceted.
