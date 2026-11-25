@@ -3405,7 +3405,8 @@ third face. Blend into round keeps that end.
   caps' two straight sides (up the wall and out along the floor from the
   foot) taken as the caps' bounds.
 - **Not blended** (these go on to trim through, as before): an arc ending
-  on a plane beside the axis, or on a curved face or several faces, where
+  on a plane beside the axis (the part "an open arc ending beside the
+  axis" below builds it), or on a curved face or several faces, where
   the trim would cut the round obliquely; an arc whose seat on a round
   reaches one of its ends, where the end plane would cut the fitted piece;
   a bevel's open arc (the part "harder feet" below builds it).
@@ -3551,6 +3552,68 @@ With blend into round off each gets trim through's refusal or its own
 different solid, and with every behaviour off a refusal naming blend into
 round. The milled top, the drum and the conical boss's bevel get what
 trim through gives.
+
+**Blend into round, an open arc ending beside the axis (#1237).** An end
+face may be a plane parallel to the wall's axis that does not hold it: a
+boss cut off its axis, a boss standing out of a wall by more or less than
+half. No new rule: amendment "a rim arc ending obliquely on a flat" ends
+a rim arc by rolling the ball on past the end and trimming it with the end
+face's plane, kept on the arc's side. Through the axis that trim is the
+section itself; beside it the plane cuts the run-on round obliquely.
+
+- **Built**, for a round and for a bevel. Each end face is a plane
+  parallel to the axis, leaning from the plane through the axis at the
+  vertex by at most 60 degrees (`asin(d / R)`, `d` the axis' distance from
+  the plane, `R` the foot circle's radius), with the whole rim on one
+  side of it. Past such an end the tool runs on round the axis over the
+  wall's own surface until every point of its section (the foot, the
+  wall's touch, the ball's arc or the bevel's ruling, and the contact
+  circle's point) stands past the plane by a twentieth of the blend's
+  reach, at most a quarter turn. It is capped there in the plane through
+  the axis, closed as before, and cut by the half-space past the plane.
+  Where the arc runs past half a turn the plane already cuts the sections
+  near the end inside the arc; where it falls short the sections lean
+  back over the arc and the tool runs on over the floor where the boss is
+  gone. Every crossing's piece stands short of each such plane by the same
+  margin, so the plane never cuts a fitted piece. The proof is the open
+  arc's over the run-on angles too; edges of the seated faces lying in a
+  trimming plane bound the fill there and are not counted against its
+  room, and the fuse adding the trimmed tool's whole volume proves the
+  fill takes up nothing of the solid. The 60 degrees matches the end faces
+  hold edge takes.
+- **Not blended** (these go on to trim through): an end plane leaning
+  more than 60 degrees, where it meets the wall in a sliver; a plane
+  that would cut a crossing's piece; an end face that is not a plane
+  parallel to the axis; an arc whose seat on a round reaches an end, as
+  before.
+
+**Oracle** (`tests/blend_into_round.rs`, `tests/chamfer_overflow.rs`). The
+fill is the closing of the whole boss (for a bevel, the `Feet` reference
+of the part "harder feet") kept on the arc's side of the end plane: over
+the whole turn, each column clipped where the plane crosses its radial,
+each angular range split where the clip crosses the foot circle or the
+contact circle. On a boss clear of any round each reference reproduces
+the section revolved through the angle each circle of radius `rho` keeps,
+`pi + 2 asin(d / rho)`, integrated in one variable: to 1e-6 for the
+round's closing and 1e-9 for the bevel, with `d` = 1 and -1. The parts
+are those of the part "an open arc of a foot", with the plane at `y = c`.
+
+| case | fill built | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| round r 3, boss cut at `y = 13` | 41.432100023 | 41.432099532 | 4.9e-7 | 9.0e-6 | 9.7e-7 rad |
+| round r 3, boss cut at `y = 11` | 33.676608854 | 33.676608362 | 4.9e-7 | 8.9e-6 | 9.7e-7 rad |
+| round r 3, boss out of a wall at `y = 13` | 41.432100023 | 41.432099532 | 4.9e-7 | 9.0e-6 | 9.7e-7 rad |
+| bevel 3, boss cut at `y = 13` | 105.903433401 | 105.903433414 | 1.3e-8 | 1e-9 | 3.2e-7 rad |
+| bevel 3, boss cut at `y = 11` | 87.839784478 | 87.839784487 | 8.7e-9 | 1e-9 | 3.2e-7 rad |
+
+The built fills at `y = 13` and `y = 11` add up to twice the half boss's
+of the part "an open arc of a foot", 75.108708, as they must: the strips
+between `y = 11` and 12 and between 12 and 13 are mirror images, the edge
+round lying far in front of both. Each result is valid and closed, with
+one fitted piece; blend into round off gives trim through's own solid or
+its refusal by name, and every behaviour off a refusal naming blend into
+round. A boss cut at `y = 17.5`, whose end plane leans 66 degrees, gets
+what trim through gives.
 
 **Narrow passages.** A concave zone is a narrow passage where it is
 tighter than the radius, so that the ball cannot roll through touching its

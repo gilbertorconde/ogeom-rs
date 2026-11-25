@@ -454,8 +454,10 @@ pub fn fillet_edges(
 ///   cone narrowing away from the floor or widening as an undercut), whose
 ///   round reaches straight
 ///   rounds tangent to the floor, convex or concave, over arcs apart. The
-///   rim may be an open arc whose ends stand on planes through the axis,
-///   the rounds it reaches inside it: each end's plane caps the round.
+///   rim may be an open arc whose ends stand on planes parallel to the
+///   axis, leaning from the plane through it by at most 60 degrees, the
+///   rounds it reaches inside it: each end's plane caps or trims the
+///   round.
 ///   On a closed rim of a cylinder the arcs may meet where convex rounds
 ///   of one radius run on into each other round a corner a torus or a
 ///   sphere rounds: the ball rests on each in turn.
