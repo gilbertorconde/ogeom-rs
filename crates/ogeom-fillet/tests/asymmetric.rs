@@ -3747,7 +3747,11 @@ fn tangent_to_top_and_wall(m: &Model, s: &Shape) -> f64 {
         let data = m.node(&f).unwrap().data().as_face().unwrap();
         if matches!(
             m.geometry().surface(data.surface),
-            Some(ogeom_geom::SurfaceGeometry::Plane(_) | ogeom_geom::SurfaceGeometry::Cylinder(_))
+            Some(
+                ogeom_geom::SurfaceGeometry::Plane(_)
+                    | ogeom_geom::SurfaceGeometry::Cylinder(_)
+                    | ogeom_geom::SurfaceGeometry::Sphere(_)
+            )
         ) {
             continue;
         }
@@ -3962,8 +3966,9 @@ fn slab_on_drum_ended_block(m: &mut Model, out: bool) -> (Shape, Shape, Shape, S
 /// leg; with the laws 1 to 2 on the top and 0.5 to 1.5 on the slab (laid
 /// from the edge's start), each point's depth under its station's laws
 /// integrated over the plan. The same solid whichever face is named;
-/// tangent to the top and the slab. An end face that is neither a plane
-/// nor a cylinder is refused by name, and so are varying distances on a
+/// tangent to the top and the slab. An end face that is not a plane, a
+/// cylinder or a sphere (a cone) is refused by name, and so are varying
+/// distances on a
 /// D-shaped boss's straight foot, whose drum lies beyond the flat and so
 /// does not span the fill's end.
 #[test]
@@ -4070,14 +4075,16 @@ fn a_concave_edge_ending_at_a_drum_fills_up_to_the_drum() {
         assert_eq!(bits[0], bits[1], "{out}: naming the other face first");
     }
 
-    // The block's end a ball instead: refused by name, constant or varying.
+    // The block's end a cone instead: refused by name, constant or varying.
     let mut m = Model::new();
     let block = ogeom_algo::make_box(&mut m, Frame::WORLD, (30.0, 20.0, 10.0), T)
         .unwrap()
         .shape;
-    let at = Frame::new(Point::new(35.0, 0.0, 5.0), Direction::Z, Direction::X, T).unwrap();
-    let ball = ogeom_algo::make_sphere(&mut m, at, 12.0, T).unwrap().shape;
-    let base = ogeom_bool::cut(&mut m, &block, &ball, T).unwrap().shape;
+    let at = Frame::new(Point::new(35.0, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let cone = ogeom_algo::make_cone(&mut m, at, 14.0, 10.0, 12.0, T)
+        .unwrap()
+        .shape;
+    let base = ogeom_bool::cut(&mut m, &block, &cone, T).unwrap().shape;
     let slab = ogeom_algo::make_box(
         &mut m,
         Frame::new(Point::new(-5.0, 5.0, 10.0), Direction::Z, Direction::X, T).unwrap(),
@@ -4094,7 +4101,7 @@ fn a_concave_edge_ending_at_a_drum_fills_up_to_the_drum() {
     let refused = |r: ogeom_core::OgeomResult<ogeom_algo::Built>| {
         let message = r.expect_err("refused").to_string();
         assert!(
-            message.contains("neither a plane nor a cylinder"),
+            message.contains("not a plane, a cylinder or a sphere"),
             "{message}"
         );
     };
@@ -4853,4 +4860,389 @@ fn the_largest_pair_on_a_concave_ruling_stops_where_the_shoulder_reaches_a_conta
         T,
     );
     assert!(past.is_err(), "a scale past the largest is not refused");
+}
+
+/// The ball ending a block in [`slab_on_ball_ended_block`]: its centre,
+/// its radius, and whether the block is kept within it.
+#[derive(Clone, Copy)]
+struct EndBall {
+    centre: Point,
+    radius: f64,
+    inside: bool,
+}
+
+impl EndBall {
+    /// How much of the height from z = 10 to `10 + h` stands on the
+    /// block's side of the ball at `(x, y)`: within the ball where the
+    /// block is kept within it, outside it otherwise.
+    fn kept(self, x: f64, y: f64, h: f64) -> f64 {
+        let (dx, dy) = (x - self.centre.x, y - self.centre.y);
+        let s2 = self.radius.mul_add(self.radius, -dx.mul_add(dx, dy * dy));
+        let within = if s2 <= 0.0 {
+            0.0
+        } else {
+            let s = s2.sqrt();
+            let (lo, hi) = (self.centre.z - s, self.centre.z + s);
+            (hi.min(10.0 + h) - lo.max(10.0)).max(0.0)
+        };
+        if self.inside { within } else { h - within }
+    }
+
+    /// Where along x the line `(., y, z)` leaves the block's side of the
+    /// ball, from the block's square end x = 0.
+    fn reach(self, y: f64, z: f64) -> f64 {
+        let (dy, dz) = (y - self.centre.y, z - self.centre.z);
+        let s = self
+            .radius
+            .mul_add(self.radius, -dy.mul_add(dy, dz * dz))
+            .sqrt();
+        if self.inside {
+            self.centre.x + s
+        } else {
+            self.centre.x - s
+        }
+    }
+
+    /// The fill of a section standing `depth(x, u)` tall over the top at
+    /// `u` in from the crease, run along x from 0 to the ball: summed
+    /// over x at each `u` in `[0, leg]`, the kinks in x (where the ball's
+    /// circle at `y = 5 - u` passes z = 10 or the section's top, and the
+    /// `cuts` the laws put there) found first and each piece integrated
+    /// smooth.
+    fn fill(
+        self,
+        leg: [f64; 2],
+        depth: &dyn Fn(f64, f64) -> f64,
+        cuts: &dyn Fn(f64) -> Vec<f64>,
+    ) -> f64 {
+        let along = |u: f64| {
+            let y = 5.0 - u;
+            let end = self.reach(y, 10.0).max(self.reach(y, 12.0));
+            let rim = |x: f64| {
+                let (dx, dy) = (x - self.centre.x, y - self.centre.y);
+                self.radius
+                    .mul_add(self.radius, -dx.mul_add(dx, dy * dy))
+                    .max(0.0)
+                    .sqrt()
+                    + self.centre.z
+            };
+            let mut points = vec![0.0, end];
+            points.extend(cuts(u));
+            let passes: [&dyn Fn(f64) -> f64; 2] =
+                [&|x| rim(x) - 10.0, &|x| rim(x) - 10.0 - depth(x, u)];
+            for f in passes {
+                let n = 64;
+                for k in 0..n {
+                    let (mut a, mut b) = (
+                        end * f64::from(k) / f64::from(n),
+                        end * f64::from(k + 1) / f64::from(n),
+                    );
+                    if f(a).signum() == f(b).signum() {
+                        continue;
+                    }
+                    for _ in 0..80 {
+                        let mid = f64::midpoint(a, b);
+                        if f(mid).signum() == f(a).signum() {
+                            a = mid;
+                        } else {
+                            b = mid;
+                        }
+                    }
+                    points.push(f64::midpoint(a, b));
+                }
+            }
+            points.retain(|x| (0.0..=end).contains(x));
+            points.sort_by(f64::total_cmp);
+            points
+                .windows(2)
+                .map(|p| integrate_between(p[0], p[1], |x| self.kept(x, y, depth(x, u))))
+                .sum::<f64>()
+        };
+        integrate_between(0.0, leg[0], along) + integrate_between(leg[0], leg[1], along)
+    }
+}
+
+/// The 30 x 20 x 10 block of [`slab_on_drum_ended_block`] ended by a ball
+/// instead, under the same slab. Leaning in, the ball of radius 12 about
+/// (35, 0, 5) is cut out of it; leaning out, it is kept within the ball
+/// of radius 45 about (-20, 10, 5), which takes its whole far end. With
+/// the concave edge, the top face, the slab's front, the ball, and the
+/// solid's volume, its plan summed over z in closed form.
+fn slab_on_ball_ended_block(
+    m: &mut Model,
+    out: bool,
+) -> (Shape, Shape, Shape, Shape, EndBall, f64) {
+    let block = ogeom_algo::make_box(m, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let ball = if out {
+        EndBall {
+            centre: Point::new(-20.0, 10.0, 5.0),
+            radius: 45.0,
+            inside: true,
+        }
+    } else {
+        EndBall {
+            centre: Point::new(35.0, 0.0, 5.0),
+            radius: 12.0,
+            inside: false,
+        }
+    };
+    let at = Frame::new(ball.centre, Direction::Z, Direction::X, T).unwrap();
+    let sphere = ogeom_algo::make_sphere(m, at, ball.radius, T)
+        .unwrap()
+        .shape;
+    let base = if out {
+        ogeom_bool::common(m, &block, &sphere, T).unwrap().shape
+    } else {
+        ogeom_bool::cut(m, &block, &sphere, T).unwrap().shape
+    };
+    let slab = ogeom_algo::make_box(
+        m,
+        Frame::new(Point::new(-5.0, 5.0, 10.0), Direction::Z, Direction::X, T).unwrap(),
+        (45.0, 20.0, 5.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let s = ogeom_bool::fuse(m, &base, &slab, T).unwrap().shape;
+    let edge = edge_where(m, &s, |p| {
+        (p.y - 5.0).abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9
+    });
+    let top = face_at(m, &s, Point::new(10.0, 2.5, 10.0));
+    let wall = face_at(m, &s, Point::new(10.0, 5.0, 12.5));
+    // The area under a circle of radius r from its centre to t along.
+    let primitive =
+        |r: f64, t: f64| 0.5 * t * r.mul_add(r, -t * t).sqrt() + 0.5 * r * r * (t / r).asin();
+    // At height z: leaning out, the plan reaches x = -20 + sqrt(a^2 - (y -
+    // 10)^2), a^2 = 2025 - (z - 5)^2; leaning in, the ball takes off half
+    // the segment its circle of radius rho cuts past x = 30, 5 from its
+    // centre.
+    let block_volume = integrate_between(0.0, 10.0, |z| {
+        let off = z - 5.0;
+        if out {
+            let a = 45.0f64.mul_add(45.0, -off * off).sqrt();
+            2.0f64.mul_add(primitive(a, 10.0), -400.0)
+        } else {
+            let rho2 = 12.0f64.mul_add(12.0, -off * off);
+            600.0 - 0.5 * (rho2 * (5.0 / rho2.sqrt()).acos() - 5.0 * (rho2 - 25.0).sqrt())
+        }
+    });
+    (s, edge, top, wall, ball, block_volume + 4500.0)
+}
+
+/// A concave edge ending at a ball fills up to the ball, as it does up to
+/// a drum: each point of the fill's section runs along x from the block's
+/// square end to the ball, the fill kept on the block's side of it, run
+/// on past the edge's end where the ball leans in. The reference sums,
+/// over the top's leg `u` and along x, the height of the section standing
+/// on the block's side of the ball, the ball's chord at `(x, 5 - u)` read
+/// in closed form; with constant distances the run along x at each height
+/// is in closed form too, and both references agree. Built through a
+/// blend request, the same solid whichever face is named, valid, tangent
+/// to the top and the slab, with constant distances and with laws 1 to 2
+/// on the top and 0.5 to 1.5 on the slab held level past the edge's end.
+fn fills_up_to_the_ball(out: bool) {
+    use ogeom_fillet::{BlendRequest, BlendSection, RadiusLaw};
+    use ogeom_geom::Curve3d as _;
+    let rho = 0.4;
+    let w = conic(rho);
+    let profile = RoundProfile::Conic(rho);
+    let primitive =
+        |r: f64, t: f64| 0.5 * t * r.mul_add(r, -t * t).sqrt() + 0.5 * r * r * (t / r).asin();
+    let mut m = Model::new();
+    let (s, edge, top, wall, ball, solid) = slab_on_ball_ended_block(&mut m, out);
+    let base = volume(&m, &s);
+    assert!(
+        (base - solid).abs() <= 1e-8,
+        "{out}: the block {base} against {solid}"
+    );
+    let length = ball.reach(5.0, 10.0);
+    let (curve, (lo, _)) = ogeom_algo::placed_edge_curve(&m, &edge, T)
+        .unwrap()
+        .unwrap();
+    let from_start = curve.point_at(lo, T).unwrap().x > 0.5 * length;
+    let station = |x: f64| {
+        let s = (x / length).clamp(0.0, 1.0);
+        if from_start { 1.0 - s } else { s }
+    };
+    let build = |m: &mut Model, section: BlendSection| {
+        let built = BlendRequest::new()
+            .edge(edge.clone(), section)
+            .build(m, &s, T)
+            .unwrap();
+        let diagnosis = ogeom_algo::check(m, &built.shape, T).unwrap();
+        assert!(diagnosis.is_valid(), "{out}: {:?}", diagnosis.problems);
+        let tangency = tangent_to_top_and_wall(m, &built.shape);
+        assert!(
+            tangency <= 1e-7,
+            "{out}: the fill meets a face at {tangency}"
+        );
+        volume(m, &built.shape)
+    };
+
+    // Constant distances: the run along x at each height closed, its
+    // cap where the line meets the ball.
+    let (cx, cy, cz) = (ball.centre.x, ball.centre.y, ball.centre.z);
+    let closed = integrate(1.5, |u| {
+        let d = conic_depth(1.5, 1.0, w, u);
+        let dy = 5.0 - u - cy;
+        let a = ball.radius.mul_add(ball.radius, -dy * dy).sqrt();
+        let chord = primitive(a, 10.0 + d - cz) - primitive(a, 10.0 - cz);
+        if ball.inside {
+            cx.mul_add(d, chord)
+        } else {
+            cx.mul_add(d, -chord)
+        }
+    });
+    let swept = ball.fill([1.5, 1.5], &|_, u| conic_depth(1.5, 1.0, w, u), &|_| {
+        Vec::new()
+    });
+    assert!(
+        (closed - swept).abs() <= 1e-9,
+        "{out}: the references {closed} and {swept}"
+    );
+    let exact = solid + closed;
+    let mut bits = Vec::new();
+    for (face, a, b) in [(&top, 1.5, 1.0), (&wall, 1.0, 1.5)] {
+        let v = build(
+            &mut m,
+            BlendSection::RoundDistances {
+                face: face.clone(),
+                on_face: a,
+                on_other: b,
+                profile,
+            },
+        );
+        eprintln!(
+            "MEAS {out} constant fill {:.12} ref {:.12} err {:.3e} refdiff {:.3e} base {:.3e}",
+            v - solid,
+            closed,
+            v - exact,
+            closed - swept,
+            base - solid
+        );
+        assert!(
+            (v - exact).abs() <= 1e-9,
+            "{out}: constant, volume {v} against {exact}"
+        );
+        bits.push(v.to_bits());
+    }
+    assert_eq!(bits[0], bits[1], "{out}: naming the other face first");
+
+    // Distances varying, each over its fraction of the edge from its
+    // start.
+    let law = |start, end| RadiusLaw::Linear { start, end };
+    let depth = |x: f64, u: f64| {
+        let s = station(x);
+        conic_depth(1.0 + s, 0.5 + s, w, u)
+    };
+    let cuts = |u: f64| {
+        let mut cuts = vec![length];
+        if (1.0..2.0).contains(&u) {
+            let x = (u - 1.0) * length;
+            cuts.push(if from_start { length - x } else { x });
+        }
+        cuts
+    };
+    let exact = solid + ball.fill([1.0, 2.0], &depth, &cuts);
+    let mut bits = Vec::new();
+    for (face, a, b) in [
+        (&top, law(1.0, 2.0), law(0.5, 1.5)),
+        (&wall, law(0.5, 1.5), law(1.0, 2.0)),
+    ] {
+        let v = build(
+            &mut m,
+            BlendSection::DistanceLaws {
+                face: face.clone(),
+                on_face: a,
+                on_other: b,
+                profile,
+            },
+        );
+        eprintln!(
+            "MEAS {out} varying fill {:.12} ref {:.12} err {:.3e}",
+            v - solid,
+            exact - solid,
+            v - exact
+        );
+        assert!(
+            (v - exact).abs() <= 1e-8,
+            "{out}: varying, volume {v} against {exact}"
+        );
+        bits.push(v.to_bits());
+    }
+    assert_eq!(bits[0], bits[1], "{out}: naming the other face first");
+}
+
+#[test]
+fn a_concave_edge_ending_at_a_ball_leaning_in_fills_up_to_the_ball() {
+    fills_up_to_the_ball(false);
+}
+
+#[test]
+fn a_concave_edge_ending_at_a_ball_leaning_out_fills_up_to_the_ball() {
+    fills_up_to_the_ball(true);
+}
+
+/// A ball cut by an upright flat and a plate's top, each off its centre,
+/// standing on the plate: the flat's foot runs into the ball, but the ball stands only on the flat's far side, so
+/// the fill beside the flat would end in the ball's continuation across
+/// the floor where no face of the solid lies. Refused by name, constant or
+/// varying, as a varying fill at a drum that does not span its end is.
+#[test]
+fn a_ball_that_does_not_span_the_fill_s_end_is_refused_by_name() {
+    use ogeom_fillet::{BlendRequest, BlendSection, RadiusLaw};
+    let mut m = Model::new();
+    let at = Frame::new(Point::new(1.0, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let ball = ogeom_algo::make_sphere(&mut m, at, 5.0, T).unwrap().shape;
+    let at = Frame::new(Point::new(-6.0, -6.0, -6.0), Direction::Z, Direction::X, T).unwrap();
+    let back = ogeom_algo::make_box(&mut m, at, (6.0, 12.0, 12.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(-6.0, -6.0, -6.0), Direction::Z, Direction::X, T).unwrap();
+    let below = ogeom_algo::make_box(&mut m, at, (12.0, 12.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let quarter = ogeom_bool::cut(&mut m, &ball, &back, T).unwrap().shape;
+    let quarter = ogeom_bool::cut(&mut m, &quarter, &below, T).unwrap().shape;
+    let at = Frame::new(
+        Point::new(-10.0, -10.0, -2.0),
+        Direction::Z,
+        Direction::X,
+        T,
+    )
+    .unwrap();
+    let plate = ogeom_algo::make_box(&mut m, at, (20.0, 20.0, 2.0), T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &plate, &quarter, T).unwrap().shape;
+    let foot = edge_where(&m, &s, |p| p.x.abs() < 1e-9 && p.z.abs() < 1e-9);
+    let floor = face_at(&m, &s, Point::new(-5.0, 0.0, 0.0));
+    let law = |start, end| RadiusLaw::Linear { start, end };
+    let profile = RoundProfile::Conic(0.4);
+    for section in [
+        BlendSection::RoundDistances {
+            face: floor.clone(),
+            on_face: 1.0,
+            on_other: 0.5,
+            profile,
+        },
+        BlendSection::DistanceLaws {
+            face: floor.clone(),
+            on_face: law(1.0, 1.5),
+            on_other: law(0.5, 1.0),
+            profile,
+        },
+    ] {
+        let message = BlendRequest::new()
+            .edge(foot.clone(), section)
+            .build(&mut m, &s, T)
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            message.contains("a sphere at an end of this edge does not span the fill's end"),
+            "{message}"
+        );
+    }
 }

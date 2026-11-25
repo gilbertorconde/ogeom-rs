@@ -1265,6 +1265,9 @@ pub(crate) enum EndFace {
     /// A cylinder: its axis, its radius, and whether the material lies
     /// inside it.
     Drum(ogeom_math::Axis, f64, bool),
+    /// A sphere: its centre, its radius, and whether the material lies
+    /// inside it.
+    Ball(Point, f64, bool),
 }
 
 impl EndFace {
@@ -1279,12 +1282,17 @@ impl EndFace {
                 let unit = radial / radial.magnitude();
                 if inside { unit } else { -unit }
             }
+            Self::Ball(centre, _, inside) => {
+                let off = p - centre;
+                let unit = off / off.magnitude();
+                if inside { unit } else { -unit }
+            }
         }
     }
 
     /// How far from `p` along the unit `dir` the material this face bounds
-    /// ends: where the line leaves the plane's or the cylinder's material
-    /// side. `None` where the line never does, or the material does not
+    /// ends: where the line leaves the plane's, the cylinder's or the
+    /// sphere's material side. `None` where the line never does, or the material does not
     /// lie ahead.
     pub(crate) fn exit(self, p: Point, dir: Vector) -> Option<f64> {
         match self {
@@ -1316,13 +1324,24 @@ impl EndFace {
                     (-b - root) / a
                 })
             }
+            Self::Ball(centre, radius, inside) => {
+                let q = p - centre;
+                let b = q.dot(dir);
+                let c = radius.mul_add(-radius, q.dot(q));
+                let disc = b.mul_add(b, -c);
+                if disc < 0.0 {
+                    return None;
+                }
+                let root = disc.sqrt();
+                Some(if inside { root - b } else { -b - root })
+            }
         }
     }
 }
 
 /// The faces of `solid` following the crease of `edge` at its end `at`,
-/// as [`following_planes`], each a plane or a cylinder. `None` where one
-/// of them is neither, or none follows.
+/// as [`following_planes`], each a plane, a cylinder or a sphere. `None`
+/// where one of them is none of these, or none follows.
 pub(crate) fn following_ends(
     model: &Model,
     solid: &Shape,
@@ -1355,6 +1374,9 @@ pub(crate) fn following_ends(
             }
             SurfaceGeometry::Cylinder(c) => {
                 EndFace::Drum(c.cylinder().axis(), c.cylinder().radius(), !reversed)
+            }
+            SurfaceGeometry::Sphere(s) => {
+                EndFace::Ball(s.sphere().centre(), s.sphere().radius(), !reversed)
             }
             _ => return Ok(None),
         };
@@ -1621,6 +1643,34 @@ pub(crate) fn trimmed_by_drum(
         ogeom_bail!(
             Construction,
             "the blend wedge trimmed by a cylinder at its end fell apart"
+        );
+    };
+    Ok(solid.clone())
+}
+
+/// `wedge` less what lies off the material side of the sphere `ball`:
+/// kept within it where the material lies inside, outside it otherwise.
+pub(crate) fn trimmed_by_ball(
+    model: &mut Model,
+    wedge: &Shape,
+    ball: EndFace,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let EndFace::Ball(centre, radius, inside) = ball else {
+        ogeom_bail!(Construction, "a wedge trimmed by a sphere needs a sphere");
+    };
+    let frame = Frame::new(centre, Direction::Z, Direction::X, tol)?;
+    let sphere = ogeom_algo::make_sphere(model, frame, radius, tol)?.shape;
+    let trimmed = if inside {
+        ogeom_bool::common(model, wedge, &sphere, tol)?.shape
+    } else {
+        ogeom_bool::cut(model, wedge, &sphere, tol)?.shape
+    };
+    let solids = explore(model, &trimmed, Filter::OfType(ShapeType::Solid))?;
+    let [solid] = solids.as_slice() else {
+        ogeom_bail!(
+            Construction,
+            "the blend wedge trimmed by a sphere at its end fell apart"
         );
     };
     Ok(solid.clone())
