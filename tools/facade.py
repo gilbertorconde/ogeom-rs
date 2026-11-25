@@ -43,6 +43,11 @@ INTERNAL: set[str] = {
     "ogeom_algo::self_crossings_kept",
     "ogeom_algo::to_mesh_with",
     "ogeom_algo::Pseudonormals",
+    # Moved to `ogeom_geom::fit`; the old paths are kept until 0.23.0.
+    "ogeom_algo::Spacing",
+    "ogeom_algo::interpolate",
+    "ogeom_algo::approximate",
+    "ogeom_algo::approximate_within",
 }
 
 LEXEME = re.compile(

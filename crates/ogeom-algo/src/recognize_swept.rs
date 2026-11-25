@@ -174,12 +174,12 @@ pub(crate) fn fit_revolution(
 /// of them where they are too few to approximate. Either way the samples
 /// are measured against the sweep afterwards.
 fn profile_curve(points: &[Point], tolerance: f64, tol: Tolerances) -> Option<Curve> {
-    if let Ok(fitted) = crate::fit::approximate_within(points, tolerance * 0.5, tol)
+    if let Ok(fitted) = ogeom_geom::fit::approximate_within(points, tolerance * 0.5, tol)
         && fitted.met
     {
         return Some(fitted.curve.into());
     }
-    crate::fit::interpolate(points, 3, crate::fit::Spacing::Centripetal, tol)
+    ogeom_geom::fit::interpolate(points, 3, ogeom_geom::fit::Spacing::Centripetal, tol)
         .ok()
         .map(Into::into)
 }
@@ -592,7 +592,7 @@ mod tests {
                 Point::new(x, 3.0 + (x * 0.4).sin(), 0.0)
             })
             .collect();
-        crate::fit::interpolate(&pts, 3, crate::fit::Spacing::Centripetal, T)
+        ogeom_geom::fit::interpolate(&pts, 3, ogeom_geom::fit::Spacing::Centripetal, T)
             .unwrap()
             .into()
     }

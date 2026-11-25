@@ -244,10 +244,11 @@ impl Planner<'_> {
                 (on[s..=e].to_vec(), uv[s..=e].to_vec(), 0)
             };
             let parameters =
-                crate::fit::spaced(&pts, crate::fit::Spacing::Centripetal, self.tol).ok()?;
+                ogeom_geom::fit::spaced(&pts, ogeom_geom::fit::Spacing::Centripetal, self.tol)
+                    .ok()?;
             let degree = if count >= 4 { 3 } else { 1 };
             let mut flat =
-                crate::fit::interpolate_at(&chart_pts, &parameters, degree, self.tol).ok()?;
+                ogeom_geom::fit::interpolate_at(&chart_pts, &parameters, degree, self.tol).ok()?;
             if pad > 0 {
                 flat = flat.split_at(parameters[pad], self.tol).ok()?.1;
                 flat = flat.split_at(parameters[pad + count - 1], self.tol).ok()?.0;
@@ -272,9 +273,9 @@ impl Planner<'_> {
                 let (u, v) = chart(&patch.shape, p, self.tol)?;
                 feet.push(Point::new(u, v, 0.0));
             }
-            let image = crate::fit::interpolate_at(&at, &dense, 3, self.tol).ok()?;
-            let foot_image = crate::fit::interpolate_at(&feet, &dense, 3, self.tol).ok()?;
-            let curve = crate::fit::interpolate_at(&lifted, &dense, 3, self.tol).ok()?;
+            let image = ogeom_geom::fit::interpolate_at(&at, &dense, 3, self.tol).ok()?;
+            let foot_image = ogeom_geom::fit::interpolate_at(&feet, &dense, 3, self.tol).ok()?;
+            let curve = ogeom_geom::fit::interpolate_at(&lifted, &dense, 3, self.tol).ok()?;
             let unweighted = |spline: &ogeom_geom::BSplineCurve| {
                 (
                     spline.knots().clone(),
@@ -398,10 +399,14 @@ impl Planner<'_> {
                 } else {
                     on.to_vec()
                 };
-                let parameters =
-                    crate::fit::spaced(&padded, crate::fit::Spacing::Centripetal, self.tol).ok()?;
+                let parameters = ogeom_geom::fit::spaced(
+                    &padded,
+                    ogeom_geom::fit::Spacing::Centripetal,
+                    self.tol,
+                )
+                .ok()?;
                 let mut spline =
-                    crate::fit::interpolate_at(&padded, &parameters, degree, self.tol).ok()?;
+                    ogeom_geom::fit::interpolate_at(&padded, &parameters, degree, self.tol).ok()?;
                 if pad > 0 {
                     spline = spline.split_at(parameters[pad], self.tol).ok()?.1;
                     spline = spline.split_at(parameters[pad + n - 1], self.tol).ok()?.0;
@@ -593,7 +598,8 @@ impl Planner<'_> {
             on.clone()
         };
         let parameters =
-            crate::fit::spaced(&padded, crate::fit::Spacing::Centripetal, self.tol).ok()?;
+            ogeom_geom::fit::spaced(&padded, ogeom_geom::fit::Spacing::Centripetal, self.tol)
+                .ok()?;
         let cut = (parameters[pad], parameters[pad + n - 1]);
         let trimmed = |spline: ogeom_geom::BSplineCurve| -> Option<ogeom_geom::BSplineCurve> {
             if pad == 0 {
@@ -603,7 +609,8 @@ impl Planner<'_> {
             Some(after.split_at(cut.1, self.tol).ok()?.0)
         };
         let curve: Curve =
-            trimmed(crate::fit::interpolate_at(&padded, &parameters, 3, self.tol).ok()?)?.into();
+            trimmed(ogeom_geom::fit::interpolate_at(&padded, &parameters, 3, self.tol).ok()?)?
+                .into();
         let range = curve.domain();
         let parameters = parameters[pad..pad + n].to_vec();
         // Between the points it was made through, how far it strays from
@@ -658,8 +665,9 @@ impl Planner<'_> {
                 uv.push(Point::new(u, v, 0.0));
             }
             let all =
-                crate::fit::spaced(&padded, crate::fit::Spacing::Centripetal, self.tol).ok()?;
-            let flat = trimmed(crate::fit::interpolate_at(&uv, &all, 3, self.tol).ok()?)?;
+                ogeom_geom::fit::spaced(&padded, ogeom_geom::fit::Spacing::Centripetal, self.tol)
+                    .ok()?;
+            let flat = trimmed(ogeom_geom::fit::interpolate_at(&uv, &all, 3, self.tol).ok()?)?;
             let control: Vec<Point2> = flat
                 .control_points()
                 .iter()
@@ -1279,7 +1287,7 @@ fn interpolated_image(
             };
             uv.push(Point::new(u, v, 0.0));
         }
-        let flat = crate::fit::interpolate_at(&uv, &parameters, 3, tol).ok()?;
+        let flat = ogeom_geom::fit::interpolate_at(&uv, &parameters, 3, tol).ok()?;
         let control: Vec<Point2> = flat
             .control_points()
             .iter()
@@ -1334,7 +1342,7 @@ pub(super) fn projected_image(
             .iter()
             .map(|&t| flat(t).map(|q| Point::new(q.x, q.y, 0.0)))
             .collect::<Option<_>>()?;
-        let fitted = crate::fit::interpolate_at(&uv, &parameters, 3, tol).ok()?;
+        let fitted = ogeom_geom::fit::interpolate_at(&uv, &parameters, 3, tol).ok()?;
         let control: Vec<Point2> = fitted
             .control_points()
             .iter()

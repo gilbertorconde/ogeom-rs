@@ -30,7 +30,6 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.faces-from-planar-wires**: Faces from closed planar wires: nesting into outer wires and holes, oriented to the plane's normal · `covered`
 - **algo.fit-outline**: An outline of lines, tangent arcs and circles fitted around a 2D silhouette, every point between a play and the play plus twice a tolerance outside it, negative play inside it, optionally about the silhouette with holes and notches narrower than a width filled · `covered`
 - **algo.fit-segments-2d**: The fewest lines and tangent or cornered arcs fitted to a 2D polyline, open or closed, every input point within a hard tolerance of its piece · `covered`
-- **algo.fitting**: Interpolating and approximating points with B-splines, curves and surfaces, and fitting scattered points over a seed surface's chart to a tolerance · `covered`
 - **algo.global-properties**: Volume, area, mass, centroid and principal moments of shapes · `covered`
 - **algo.history**: Every operation emits history: what was generated, modified, deleted · `covered`
 - **algo.medial-axis**: The medial axis of a planar region · `covered`
@@ -146,6 +145,7 @@ edge to grow to, and a gap the recovered edges do not bridge.
 
 ### ogeom-geom
 
+- **algo.fitting**: Interpolating and approximating points with B-splines, curves and surfaces, and fitting scattered points over a seed surface's chart to a tolerance · `covered`
 - **geom.adaptors**: Evaluating topology as geometry: an edge's curve and a face's surface, placed · `covered`
 - **geom.conversion**: Converting between curve and surface forms: to B-spline, to Bézier segments, degree elevation · `covered`
 - **geom.curves-2d**: Parametric plane curves, the pcurve vocabulary · `covered`
@@ -352,4 +352,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: cefa4a441b432f74 -->
+<!-- ledger-checksum: c40c6b3e4919232e -->

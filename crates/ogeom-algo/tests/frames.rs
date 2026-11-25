@@ -9,10 +9,9 @@
 
 use core::f64::consts::{PI, TAU};
 
-use ogeom_algo::{
-    CurveFrame, Spacing, interpolate, make_edge, make_polygon, rotation_minimizing_frames,
-};
+use ogeom_algo::{CurveFrame, make_edge, make_polygon, rotation_minimizing_frames};
 use ogeom_core::Tolerances;
+use ogeom_geom::fit::{Spacing, interpolate};
 use ogeom_geom::{CircleCurve, Curve, Curve3d as _, HelixCurve, LineCurve};
 use ogeom_math::{Circle, Direction, Frame, Point, Vector};
 use ogeom_topo::{Model, Shape};

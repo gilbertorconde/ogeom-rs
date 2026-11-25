@@ -1053,7 +1053,8 @@ pub(super) fn chart_trace(
         .collect();
     pts[0] = pa;
     pts[SAMPLES as usize] = pb;
-    let curve: Curve = crate::fit::interpolate(&pts, 3, crate::fit::Spacing::Uniform, tol)?.into();
+    let curve: Curve =
+        ogeom_geom::fit::interpolate(&pts, 3, ogeom_geom::fit::Spacing::Uniform, tol)?.into();
     let range = curve.domain();
     let mut deviation = tol.confusion();
     for k in 0..=(SAMPLES * 4) {

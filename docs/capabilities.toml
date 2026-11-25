@@ -877,17 +877,17 @@ tests = [
 [[capability]]
 id = "algo.fitting"
 title = "Interpolating and approximating points with B-splines, curves and surfaces, and fitting scattered points over a seed surface's chart to a tolerance"
-crate = "ogeom-algo"
+crate = "ogeom-geom"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::interpolate", "ogeom_algo::approximate",
+    "ogeom_geom::interpolate", "ogeom_geom::approximate",
     "ogeom_geom::fit_points", "ogeom_geom::fit_surface_grid",
     "ogeom_geom::fit_surface_scattered",
     "ogeom_geom::fit_surface_scattered_over", "ogeom_geom::ScatteredOptions",
     "ogeom_geom::ScatteredFit",
 ]
 tests = [
-    "crates/ogeom-geom/src/fit.rs", "crates/ogeom-algo/src/fit.rs",
+    "crates/ogeom-geom/src/fit.rs", "crates/ogeom-geom/src/fit/fixed.rs",
     "crates/ogeom-geom/tests/fit_scattered_over.rs",
 ]
 

@@ -1,4 +1,5 @@
 - **Changed: mesh conversion and fitting are moving out of `ogeom-algo`** (#1264).
-  - `docs/SCOPE.md` names the two crates that will hold them, `ogeom-fit` and `ogeom-recon`. No public path moves yet, and every `ogeom::` path stays as it is when they do.
+  - `docs/SCOPE.md` names the two crates that will hold them, `ogeom-fit` and `ogeom-recon`. Every `ogeom::` path stays as it is.
   - `ogeom_algo::{check_wire, edge_spanned_past, volume_as_flagged, VolumeKept, self_crossings_kept, to_mesh_with, Pseudonormals}` are reachable for those crates. They are `#[doc(hidden)]` and not part of the API.
+  - `Spacing`, `interpolate`, `approximate` and `approximate_within` moved down to `ogeom_geom::fit`. `ogeom::algo::` and `ogeom::algo::fit::` reach them as before, and `ogeom::geom::fit::` now does too. The `ogeom_algo::{Spacing, interpolate, approximate, approximate_within}` root paths are kept until 0.23.0, which removes them; use `ogeom_geom::fit::*`.
   - Behaviour is unchanged.

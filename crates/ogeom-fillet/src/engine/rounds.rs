@@ -2978,7 +2978,8 @@ fn crease_edges(
         if let Some(end) = solved.last_mut() {
             *end = q;
         }
-        let fitted = ogeom_algo::interpolate(&solved, 3, ogeom_algo::Spacing::default(), tol)?;
+        let fitted =
+            ogeom_geom::fit::interpolate(&solved, 3, ogeom_geom::fit::Spacing::default(), tol)?;
         let (t0, t1) = ogeom_geom::Curve3d::domain(&fitted);
         let mut held = true;
         for k in 0..(4 * count) {
