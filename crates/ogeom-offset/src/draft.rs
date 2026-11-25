@@ -736,7 +736,7 @@ fn general_draft(
         model,
         face,
         ogeom_mesh::Deflection {
-            chord: 0.05,
+            chord: millimetre(tol) * 0.05,
             angular: 0.2,
             ..ogeom_mesh::Deflection::default()
         },
@@ -780,7 +780,7 @@ fn general_draft(
             &scratch,
             &whole,
             ogeom_mesh::Deflection {
-                chord: 0.05,
+                chord: millimetre(tol) * 0.05,
                 angular: 0.2,
                 ..ogeom_mesh::Deflection::default()
             },
@@ -1413,7 +1413,7 @@ fn outward_sign(
     for eps_scale in [1e-3, 1e-2, 5e-2] {
         let eps = scale * eps_scale;
         let deflection = ogeom_mesh::Deflection {
-            chord: (eps * 0.1).max(tol.confusion() * 1e3),
+            chord: (eps * 0.1).max(1e-4 / tol.scale()),
             ..ogeom_mesh::Deflection::default()
         };
         let ahead = ogeom_algo::classify_in_solid(model, solid, p + n * eps, deflection, tol)?;

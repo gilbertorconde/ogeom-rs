@@ -761,7 +761,7 @@ fn approach(
 /// placement that scales. Too near the boundary counts as outside: the edge
 /// pairs own that candidate and answer it exactly.
 fn inside_trim(face: &Prepared, world_point: Point, tol: Tolerances) -> OgeomResult<bool> {
-    Ok(trim_side(face, None, RING_CHORD, world_point, tol)? == Trim::Inside)
+    Ok(trim_side(face, None, ring_chord(tol), world_point, tol)? == Trim::Inside)
 }
 
 /// Where a point on a face's surface stands against its trim.
@@ -777,7 +777,7 @@ pub(crate) enum Trim {
 
 /// Where `world_point`, on `face`'s surface, stands against rings drawn
 /// within `chord` of the face's edges: the face's own rings at
-/// [`RING_CHORD`] where `rings` is `None`. The band is the chord and the
+/// [`ring_chord`] where `rings` is `None`. The band is the chord and the
 /// confusion distance, in space.
 pub(crate) fn trim_side(
     face: &Prepared,
@@ -802,8 +802,11 @@ pub(crate) fn trim_side(
     })
 }
 
-/// The rings' polylining error, spatially: the trim test's uncertainty band.
-pub(crate) const RING_CHORD: f64 = 1e-3;
+/// The rings' polylining error, spatially: the trim test's uncertainty band,
+/// ten thousand confusion distances.
+pub(crate) fn ring_chord(tol: Tolerances) -> f64 {
+    tol.confusion() * 1e4
+}
 
 /// The rings' greatest turn across one segment, in radians.
 pub(crate) const RING_ANGULAR: f64 = 0.05;
@@ -851,7 +854,7 @@ fn elements(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<Vec<El
         ));
     }
     let ring_deflection = Deflection {
-        chord: RING_CHORD,
+        chord: ring_chord(tol),
         angular: RING_ANGULAR,
         ..Deflection::default()
     };

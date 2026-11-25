@@ -86,8 +86,11 @@ impl NotSeated {
     }
 }
 
-/// How close the fit holds the run to its exact stations.
-const RUN_FIT: f64 = 2e-7;
+/// How close the fit holds the run to its exact stations: twice the
+/// confusion distance.
+fn run_fit(tol: Tolerances) -> f64 {
+    tol.confusion() * 2.0
+}
 
 /// The stations a run is first read at; doubled while the fit misses.
 const FIRST_STATIONS: usize = 33;
@@ -220,7 +223,7 @@ pub(crate) fn edge_run(
             on_params.push((k, near.parameter));
             guess = Some(c);
         }
-        let target = RUN_FIT;
+        let target = run_fit(tol);
         let rows: Vec<Vec<Point>> = (0..n)
             .map(|i| arc_points(centres[i], feet[i], on_edge[i], radius, tol))
             .collect::<OgeomResult<_>>()?;

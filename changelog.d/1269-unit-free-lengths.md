@@ -1,0 +1,7 @@
+- **Fixed: more lengths follow the model's unit** (#1269).
+  - The fillet's fit targets, its rolled-run edge width, its sheet merge cap, the options it traces its own sections with, and an overflow reading were fixed millimetre values. They now follow `Tolerances`. A part in inches or metres is fitted as tightly as the same part in millimetres, and a part in micrometres no more tightly.
+  - The bound a closed-form drum section (near-parallel drums, a drum through a ball) may stray by is 1e-5 mm in every unit. In micrometres it was 1e-8 mm, tighter than the confusion distance.
+  - The distance code's trim band (`distance_between_shapes`, `PointDistance`) is 1e-3 mm in every unit. In metres it was 1 mm, and a nearest point within a millimetre of a face's edge was dropped.
+  - The general draft meshes its face at a chord of 0.05 mm in every unit, and the boolean's section dedup grid has no floor.
+  - The marched blend's and the drafted wall's fit targets are again exactly 2e-4 mm and 1e-4 mm at 1 mm per unit. The previous fix moved them by a rounding step.
+  - Nothing changes for a part in millimetres.

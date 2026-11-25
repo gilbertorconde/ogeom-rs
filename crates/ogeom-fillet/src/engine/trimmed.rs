@@ -814,7 +814,7 @@ fn consumed_bands(
             (a, b) => {
                 use ogeom_intersect::section::{SurfaceIntersection, intersect_surfaces};
                 let Ok(SurfaceIntersection::Along(curves)) =
-                    intersect_surfaces(a, b, section_options(), tol)
+                    intersect_surfaces(a, b, section_options(tol), tol)
                 else {
                     return Ok(None);
                 };
@@ -2302,9 +2302,11 @@ impl Points {
     }
 }
 
-/// The width an edge of a rolled run's fitted piece is built to: its chart's
-/// curve is fitted within it.
-const ROLLED_EDGE_WIDTH: f64 = 2e-5;
+/// The width an edge of a rolled run's fitted piece is built to, 2e-5 mm:
+/// its chart's curve is fitted within it.
+fn rolled_edge_width(tol: Tolerances) -> f64 {
+    2e-5 / tol.scale()
+}
 
 /// A ring of sheet edges, each with whether it is walked forward.
 type Ring = Vec<(usize, bool)>;
@@ -2835,7 +2837,7 @@ fn assemble_widened(
         merge: widths
             .values()
             .fold(tol.confusion(), |m, w| m.max(*w))
-            .min(MERGE_CAP),
+            .min(merge_cap(tol)),
     };
     let mut edges: Vec<SheetCurve> = Vec::new();
     let mut made: FastMap<Key, usize> = FastMap::default();
@@ -5096,7 +5098,7 @@ fn assemble_widened(
     {
         for (k, _) in rings.rings.iter().flatten() {
             let off = rolled.iter().fold(0.0_f64, |m, r| m.max(r.run.off));
-            edge_widths[*k] = edge_widths[*k].max(ROLLED_EDGE_WIDTH).max(2.0 * off);
+            edge_widths[*k] = edge_widths[*k].max(rolled_edge_width(tol)).max(2.0 * off);
         }
     }
     // A fitted edge running to an end of its curve is moved to end on its
@@ -6293,9 +6295,11 @@ fn segment_on(
     Ok(true)
 }
 
-/// The most a sheet's points merge over: a fitted contact wider than this
-/// keeps its corners apart.
-const MERGE_CAP: f64 = 1e-5;
+/// The most a sheet's points merge over, 1e-5 mm: a fitted contact wider
+/// than this keeps its corners apart.
+fn merge_cap(tol: Tolerances) -> f64 {
+    1e-5 / tol.scale()
+}
 
 /// How many points a closed ridge is sampled at to make it periodic.
 const RIDGE_SAMPLES: usize = 256;
@@ -6352,11 +6356,11 @@ fn periodic_through(
 /// How a section with no closed form is marched: traced to ten confusion
 /// distances and fitted to one. The edge is built to what that leaves, and
 /// the faces either side must meet it.
-fn section_options() -> ogeom_intersect::section::IntersectOptions {
+fn section_options(tol: Tolerances) -> ogeom_intersect::section::IntersectOptions {
     ogeom_intersect::section::IntersectOptions {
-        tolerance: 1e-7,
+        tolerance: tol.confusion(),
         marching: ogeom_intersect::march::Marching {
-            chord: 1e-6,
+            chord: tol.confusion() * 10.0,
             ..Default::default()
         },
     }
@@ -6404,7 +6408,7 @@ fn marched_between(
 ) -> OgeomResult<Option<(Met, f64)>> {
     use ogeom_intersect::section::{SurfaceIntersection, intersect_surfaces};
     let Ok(SurfaceIntersection::Along(curves)) =
-        intersect_surfaces(surface, cut, section_options(), tol)
+        intersect_surfaces(surface, cut, section_options(tol), tol)
     else {
         return Ok(None);
     };

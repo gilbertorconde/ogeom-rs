@@ -11944,7 +11944,7 @@ fn audit_fill_equivalence(
             .curve
             .point_at(f64::midpoint(lo, hi), tol)
             .unwrap_or(ogeom_math::Point::ORIGIN);
-        let grid = (tol.confusion() * 100.0).max(1e-9);
+        let grid = tol.confusion() * 100.0;
         #[allow(clippy::cast_possible_truncation)]
         let q = |x: f64| (x / grid).round() as i64;
         (section.face_a, section.face_b, [q(p.x), q(p.y), q(p.z)])

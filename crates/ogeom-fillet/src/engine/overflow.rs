@@ -1272,6 +1272,7 @@ fn stretches(
     closes: bool,
     at: impl Fn(f64) -> Point,
     up: Vector,
+    tol: Tolerances,
 ) -> Option<Vec<(Vec<f64>, Vec<usize>)>> {
     const SAMPLES: usize = 2048;
     let state = |theta: f64| -> Option<usize> {
@@ -1307,8 +1308,8 @@ fn stretches(
         // there, rather than running off the chain's end.
         if was.is_none() != now.is_none() {
             let past = if was.is_none() { 1e-9 } else { -1e-9 };
-            let crosses =
-                nearest(chain, at(theta + past), up).is_some_and(|(_, (_, _, d))| d.abs() <= 1e-6);
+            let crosses = nearest(chain, at(theta + past), up)
+                .is_some_and(|(_, (_, _, d))| d.abs() <= tol.confusion() * 10.0);
             if !crosses {
                 return None;
             }
@@ -1382,7 +1383,7 @@ fn run_reach(model: &Model, foot: Foot, size: Size, tol: Tolerances) -> OgeomRes
     let mut runs: Vec<Run> = Vec::new();
     let mut corner = false;
     for (chain, round_radius, closes) in chains(&curved, floor, &asked, up, tol)? {
-        let Some(found) = stretches(&chain, closes, at, up) else {
+        let Some(found) = stretches(&chain, closes, at, up, tol) else {
             return Ok(None);
         };
         for (seats, pieces) in found {

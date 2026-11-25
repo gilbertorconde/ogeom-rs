@@ -41,8 +41,10 @@ use super::trimmed::{EndCap, Section, Strip, faces_of, open_tool_over, outward};
 use super::{Id, id};
 
 /// How close the fit holds the round, its contact and its spine to their
-/// exact stations.
-const FIT: f64 = 1e-8;
+/// exact stations: a tenth of the confusion distance.
+fn fit(tol: Tolerances) -> f64 {
+    tol.confusion() * 0.1
+}
 
 /// The stations the run is first fitted at; doubled while the fit misses.
 const FIRST: usize = 33;
@@ -1196,8 +1198,8 @@ fn vertex_tool(
                 feet.push(run.feet(c).0);
                 rows.push(arc);
             }
-            let surface = ogeom_geom::fit::fit_surface_grid_chordal(&rows, 3, FIT, tol)?;
-            let contact = ogeom_geom::fit::fit_points(&feet, 3, FIT, tol)?;
+            let surface = ogeom_geom::fit::fit_surface_grid_chordal(&rows, 3, fit(tol), tol)?;
+            let contact = ogeom_geom::fit::fit_points(&feet, 3, fit(tol), tol)?;
             if surface.met && contact.met {
                 break (surface.curve, contact.curve);
             }
@@ -1351,7 +1353,7 @@ fn vertex_tool(
                 collapsed
             }
         };
-        let fit_gap = ogeom_core::Tolerance::new(FIT.max(eps) * 10.0)?;
+        let fit_gap = ogeom_core::Tolerance::new(fit(tol).max(eps) * 10.0)?;
         for e in [&e_contact, &a0, &a1].into_iter().chain(support.as_ref()) {
             model.widen(e, fit_gap)?;
         }
@@ -2158,9 +2160,9 @@ fn tool_of(
                 feet.push(run.feet(c).0);
                 rows.push(arc);
             }
-            let surface = ogeom_geom::fit::fit_surface_grid_chordal(&rows, 3, FIT, tol)?;
-            let spine = ogeom_geom::fit::fit_points(&centres, 3, FIT, tol)?;
-            let contact = ogeom_geom::fit::fit_points(&feet, 3, FIT, tol)?;
+            let surface = ogeom_geom::fit::fit_surface_grid_chordal(&rows, 3, fit(tol), tol)?;
+            let spine = ogeom_geom::fit::fit_points(&centres, 3, fit(tol), tol)?;
+            let contact = ogeom_geom::fit::fit_points(&feet, 3, fit(tol), tol)?;
             if surface.met && spine.met && contact.met {
                 break (
                     SurfaceGeometry::BSpline(surface.curve),

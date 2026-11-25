@@ -939,16 +939,19 @@ fn near_parallel_drums(
     lines_through_stations(lo, hi, meet, rb * (1.0 / cos.abs() - 1.0), tol)
 }
 
-/// How far a near-parallel pair's sections may stray from the true
-/// crossing: what a fitted section typically carries.
-const NEAR_PARALLEL_STRAY: f64 = 1e-5;
+/// How far a section solved in cross-sections and fitted (a near-parallel
+/// drum pair, a drum through a ball) may stray from the true crossing,
+/// 1e-5 mm: what a fitted section typically carries.
+fn fitted_stray(tol: Tolerances) -> f64 {
+    1e-5 / tol.scale()
+}
 
 /// The two curves a near-parallel pair meets in over the height `lo..hi`,
 /// from where `meet` puts the crossing at each height: the line through the
-/// ends where every station lies within a micron of it, else a cubic
-/// through the stations at their heights, checked midway between them.
-/// Either is kept within [`NEAR_PARALLEL_STRAY`], the departure stated as
-/// its tolerance. `None` where a station has no clean crossing or the
+/// ends where every station lies within ten confusion distances of it,
+/// else a cubic through the stations at their heights, checked midway
+/// between them. Either is kept within [`fitted_stray`], the departure
+/// stated as its tolerance. `None` where a station has no clean crossing or the
 /// curve strays.
 fn lines_through_stations(
     lo: f64,
@@ -958,7 +961,6 @@ fn lines_through_stations(
     tol: Tolerances,
 ) -> Option<Vec<SectionCurve>> {
     const STATIONS: u32 = 32;
-    const STRAIGHT: f64 = 1e-6;
     let at = |k: f64| (hi - lo).mul_add(k / f64::from(STATIONS), lo);
     let heights: Vec<f64> = (0..=STATIONS).map(|k| at(f64::from(k))).collect();
     let met: Vec<[Point; 2]> = heights.iter().map(|&z| meet(z)).collect::<Option<_>>()?;
@@ -982,7 +984,7 @@ fn lines_through_stations(
             .chain(&between)
             .map(|pair| off_line(pair[side]))
             .fold(0.0_f64, f64::max);
-        let (curve, stray): (Curve, f64) = if stray <= STRAIGHT {
+        let (curve, stray): (Curve, f64) = if stray <= tol.confusion() * 10.0 {
             (
                 ogeom_geom::LineCurve::segment(from, to, tol).ok()?.into(),
                 stray,
@@ -1000,7 +1002,7 @@ fn lines_through_stations(
             (curve, worst)
         };
         let tolerance = stray + stated + tol.confusion();
-        if tolerance > NEAR_PARALLEL_STRAY {
+        if tolerance > fitted_stray(tol) {
             return None;
         }
         out.push(SectionCurve {
@@ -1033,7 +1035,6 @@ fn ball_through_drum(
     tol: Tolerances,
 ) -> Option<Vec<SectionCurve>> {
     const SAMPLES: u32 = 256;
-    const STRAY: f64 = 1e-5;
     let (ball, drum, ball_first) = match (a, b) {
         (SurfaceGeometry::Sphere(s), SurfaceGeometry::Cylinder(c)) => (s, c, true),
         (SurfaceGeometry::Cylinder(c), SurfaceGeometry::Sphere(s)) => (s, c, false),
@@ -1134,7 +1135,7 @@ fn ball_through_drum(
                 .max(truth.distance(through_ball));
         }
         let tolerance = stray.max(tol.confusion());
-        if tolerance > STRAY {
+        if tolerance > fitted_stray(tol) {
             return None;
         }
         let (on_a, on_b) = if ball_first {
@@ -3656,6 +3657,79 @@ mod tests {
                 "over the shared height: {p:?} {q:?}"
             );
             on_both(section, &drill, &bore);
+        }
+    }
+
+    /// The near-parallel drums above, built in micrometres, millimetres,
+    /// inches and metres: each time two curves over the whole shared height,
+    /// stated to the same tolerance in millimetres. The bound they are held
+    /// to follows the unit.
+    #[test]
+    fn drums_all_but_parallel_meet_alike_in_every_unit() {
+        let meet = |mm_per_unit: f64| -> Vec<(f64, f64)> {
+            let tol = Tolerances::with_scale(mm_per_unit).unwrap();
+            let u = |mm: f64| mm / mm_per_unit;
+            let drill_frame = Frame::new(Point::ORIGIN, Direction::Z, Direction::X, tol).unwrap();
+            let drill: SurfaceGeometry = CylinderSurface::new(
+                Cylinder::new(drill_frame, u(1.0), tol).unwrap(),
+                (u(-4.0), u(4.0)),
+            )
+            .unwrap()
+            .into();
+            let frame = Frame::new(
+                Point::new(u(1.5), 0.0, 0.0),
+                Direction::new(Vector::new(5e-5, 0.0, 1.0), tol).unwrap(),
+                Direction::X,
+                tol,
+            )
+            .unwrap();
+            let bore: SurfaceGeometry = CylinderSurface::new(
+                Cylinder::new(frame, u(1.0), tol).unwrap(),
+                (u(-3.0), u(3.0)),
+            )
+            .unwrap()
+            .into();
+            let options = IntersectOptions {
+                tolerance: tol.confusion(),
+                marching: crate::march::Marching {
+                    chord: tol.confusion() * 10.0,
+                    ..Default::default()
+                },
+            };
+            let met = intersect_surfaces(&drill, &bore, options, tol).unwrap();
+            let SurfaceIntersection::Along(sections) = met else {
+                panic!("{mm_per_unit} mm per unit: the drums cross: {met:?}");
+            };
+            sections
+                .iter()
+                .map(|section| {
+                    let (lo, hi) = section.curve.domain();
+                    let (p, q) = (
+                        section.curve.point_at(lo, tol).unwrap(),
+                        section.curve.point_at(hi, tol).unwrap(),
+                    );
+                    (
+                        section.tolerance * mm_per_unit,
+                        (p.z - q.z).abs() * mm_per_unit,
+                    )
+                })
+                .collect()
+        };
+        let at_mm = meet(1.0);
+        assert_eq!(at_mm.len(), 2);
+        for mm_per_unit in [1e-3, 25.4, 1e3] {
+            let here = meet(mm_per_unit);
+            assert_eq!(here.len(), 2, "{mm_per_unit} mm per unit: {here:?}");
+            for (&(stated, height), &(stated_mm, _)) in here.iter().zip(&at_mm) {
+                assert!(
+                    height > 5.9,
+                    "{mm_per_unit} mm per unit: a section over {height} mm of the 6"
+                );
+                assert!(
+                    (stated - stated_mm).abs() <= stated_mm * 1e-3,
+                    "{mm_per_unit} mm per unit: stated {stated:e} mm, against {stated_mm:e}"
+                );
+            }
         }
     }
 

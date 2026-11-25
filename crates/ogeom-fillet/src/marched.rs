@@ -3195,10 +3195,10 @@ fn note_rails(
     Ok(())
 }
 
-/// Two tenths of a micron at unit scale: what the march's own stations
+/// Two tenths of a micron in every unit: what the march's own stations
 /// hold to, and what a marched band's edges are widened to say.
 pub(crate) fn band_fit_target(tol: Tolerances) -> f64 {
-    tol.confusion() * 2e3
+    2e-4 / tol.scale()
 }
 
 /// Each station's exact normals along its arc, none at a pinched end.
