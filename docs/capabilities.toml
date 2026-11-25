@@ -1947,9 +1947,12 @@ widening as an undercut), whose \
 round's contact circle crosses straight edges of the floor along which \
 cylindrical rounds, convex or concave, meet the floor tangentially, over \
 arcs that stand apart; or, for a round, an open arc of that circle whose \
-ends stand on planes through the axis (a boss cut through its axis, or a \
-half boss against a wall), the rounds it reaches inside the arc, each \
-end's plane capping the fill flush on the section there. Where the \
+ends stand on planes parallel to the axis (a cut boss, or a boss against \
+a wall), the rounds it reaches inside the arc: an end's plane through the \
+axis caps the fill flush on the section there, and past an end's plane \
+beside the axis, leaning from the plane through the axis at the vertex \
+by at most 60 degrees, the fill runs on until its section stands wholly \
+past the plane, which trims it. Where the \
 contact circle of a closed rim on a cylinder crosses a stretch of the \
 floor's outline along which convex rounds of one radius meet one \
 another G1 (lines on cylinders, arcs on tori about axes square to the \
@@ -1967,8 +1970,10 @@ cylinder. A bevel is blended from a cylindrical wall into convex or \
 concave rounds over arcs apart, on a closed rim or an open arc. \
 Crossings whose arcs meet at a creased corner (two \
 rounds meeting in an edge), at concave rounds or on a cone, a round not tangent to the \
-floor, a curved floor, a bevel up a cone or where its arcs meet, and an open arc ending off \
-the axis or on a round's seat are not blended into the round: they go \
+floor, a curved floor, a bevel up a cone or where its arcs meet, and an open arc ending \
+on a plane leaning more than 60 degrees from the plane through the axis, \
+on a plane that would cut a piece over a round, or on a round's seat are \
+not blended into the round: they go \
 on to trim through. Hold edge is built \
 for a round of a straight edge, or a chain of edges along one line, \
 between two planes meeting convexly (ending on end faces within 60 \
@@ -2083,7 +2088,11 @@ tests = [
     "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_of_a_cut_boss_blends_into_the_edge_round",
     "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_against_a_wall_blends_into_the_edge_round",
     "crates/ogeom-fillet/tests/blend_into_round.rs::open_arcs_fill_as_the_closing_within_their_wedge",
-    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_off_the_axis_is_not_blended",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_beside_the_axis_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_short_of_half_a_turn_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_against_a_wall_beside_the_axis_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::open_arcs_ending_beside_the_axis_fill_as_the_trimmed_closing",
+    "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_on_a_steeply_leaning_plane_is_not_blended",
     "crates/ogeom-fillet/tests/blend_into_round.rs::an_open_arc_ending_on_its_round_s_seat_is_not_blended",
     "crates/ogeom-fillet/tests/blend_into_round.rs::an_undercut_boss_s_foot_round_blends_into_the_edge_round",
     "crates/ogeom-fillet/tests/blend_into_round.rs::an_undercut_boss_s_foot_round_fills_as_the_closing",
@@ -2249,7 +2258,7 @@ id = "fillet.chamfer-overflow"
 title = "Overflow handling for chamfers: a bevel reaching geometry other than its own two faces"
 crate = "ogeom-fillet"
 verdict = "partial"
-restriction = """chamfer_edges_overflow takes the fillet's Overflow option set, limited to what applies to a flat bevel, tried in order, both on by default (chamfer_edges, chamfer_edges_with and chamfer_edges_cornered are the default): blend into round, then trim through. Hold edge and hold edge at the end are ignored for chamfers: a bevel has no ball to rest on an edge. Blend into round is built for a boss's foot: the closed rim between a planar floor and a cylindrical wall standing square on it, or an open arc of it whose ends stand on planes through the wall's axis, every edge of the rim asking the same legs (any spelling), whose leg on the floor crosses straight edges of the floor along which cylindrical rounds, convex or concave, meet the floor tangentially, over arcs apart, and stays on each round. The bevel is the cone between its legs over the floor and, past each tangent line, the straight ruling from the leg on the wall to the leg on the round (where the wall's offset meets it), fitted through its exact sections within a confusion, the pieces meeting G1 along the shared rulings; an open arc's ends are capped flush in their planes, which hold the end rulings; the fill is one tool fused into the solid, built only where nothing else of the solid stands within the box it can take up. Any other bevel reaching a round goes on to trim through. Trim through is the engine's own construction (the bevel keeps its plane or cone and the faces it reaches are trimmed or extended, amendment M5b). With trim through off, a result with a blend changing a face it is not seated on (its edge's faces and those at its ends, whichever other edge of the request is seated there), or carrying a face on past its side over nothing, is refused by name, and so is a foot blend into round would take while it is off. A foot bevel whose leg on the floor touches the round's tangent line, or crosses it at under a hundredth of a radian, leaves the floor and the round wedges too sharp at the crossings for the booleans: where neither behaviour builds it, it is refused by that name; the sizes either side build. chamfer_edges_overflow_checked names the specs a refusal leaves out, under either corner, read as the round's checked call reads its edges."""
+restriction = """chamfer_edges_overflow takes the fillet's Overflow option set, limited to what applies to a flat bevel, tried in order, both on by default (chamfer_edges, chamfer_edges_with and chamfer_edges_cornered are the default): blend into round, then trim through. Hold edge and hold edge at the end are ignored for chamfers: a bevel has no ball to rest on an edge. Blend into round is built for a boss's foot: the closed rim between a planar floor and a cylindrical wall standing square on it, or an open arc of it whose ends stand on planes parallel to the wall's axis (through it, or beside it leaning from the plane through it at the vertex by at most 60 degrees), every edge of the rim asking the same legs (any spelling), whose leg on the floor crosses straight edges of the floor along which cylindrical rounds, convex or concave, meet the floor tangentially, over arcs apart, and stays on each round. The bevel is the cone between its legs over the floor and, past each tangent line, the straight ruling from the leg on the wall to the leg on the round (where the wall's offset meets it), fitted through its exact sections within a confusion, the pieces meeting G1 along the shared rulings; an open arc's ends on planes through the axis are capped flush in their planes, which hold the end rulings, and past an end on a plane beside the axis the bevel runs on until its section stands wholly past the plane, which trims it; the fill is one tool fused into the solid, built only where nothing else of the solid stands within the box it can take up. Any other bevel reaching a round goes on to trim through. Trim through is the engine's own construction (the bevel keeps its plane or cone and the faces it reaches are trimmed or extended, amendment M5b). With trim through off, a result with a blend changing a face it is not seated on (its edge's faces and those at its ends, whichever other edge of the request is seated there), or carrying a face on past its side over nothing, is refused by name, and so is a foot blend into round would take while it is off. A foot bevel whose leg on the floor touches the round's tangent line, or crosses it at under a hundredth of a radian, leaves the floor and the round wedges too sharp at the crossings for the booleans: where neither behaviour builds it, it is refused by that name; the sizes either side build. chamfer_edges_overflow_checked names the specs a refusal leaves out, under either corner, read as the round's checked call reads its edges."""
 symbols = [
     "ogeom_fillet::chamfer_edges_overflow",
     "ogeom_fillet::chamfer_edges_overflow_checked",
@@ -2266,6 +2275,8 @@ tests = [
     "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_foot_bevel_blends_into_two_rounds",
     "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_foot_bevel_blends_into_a_concave_round",
     "crates/ogeom-fillet/tests/chamfer_overflow.rs::an_open_arc_s_bevel_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs::an_open_arc_s_bevel_ending_beside_the_axis_blends_into_the_edge_round",
+    "crates/ogeom-fillet/tests/chamfer_overflow.rs::an_open_arc_s_bevel_ending_beside_the_axis_fills_as_defined",
     "crates/ogeom-fillet/tests/chamfer_overflow.rs::a_conical_boss_s_foot_bevel_is_not_blended",
     "crates/ogeom-fillet/tests/checked_overflow.rs::a_foot_bevel_refused_by_its_options_is_named",
     "crates/ogeom-fillet/tests/checked_overflow.rs::a_notch_refused_with_trim_through_off_is_named",

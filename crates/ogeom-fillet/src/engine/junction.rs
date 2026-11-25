@@ -1551,7 +1551,7 @@ fn turned_split(
 
 /// The half-space past the plane through `on` with unit `normal`, as a
 /// cube of side `2 size` standing on the plane with `on` at its middle.
-fn half_space(
+pub(super) fn half_space(
     model: &mut Model,
     (on, normal): (Point, Vector),
     size: f64,

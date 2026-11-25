@@ -18,10 +18,12 @@
 //! tool, fused into the solid.
 //!
 //! A round's rim may also be an open arc of the foot circle whose two ends
-//! stand on planes through the wall's axis, the rounds it reaches inside
-//! the arc: each end's plane cuts the fill on the section there, which
-//! lies in it, so the tool is capped flush in that plane (amendment "a rim
-//! arc ending obliquely on a flat").
+//! stand on planes parallel to the wall's axis, the rounds it reaches
+//! inside the arc (amendment "a rim arc ending obliquely on a flat"). An
+//! end's plane through the axis cuts the fill on the section there, which
+//! lies in it, so the tool is capped flush in that plane; past an end's
+//! plane beside the axis the tool runs on round the axis until its section
+//! stands wholly past the plane, which then trims it.
 //!
 //! On a cylinder's closed rim the arcs may meet: where convex rounds of
 //! one radius run on into each other round a corner of the floor (a torus
@@ -41,15 +43,15 @@
 //! tangent line, and meet G1 there since the existing round leaves the
 //! floor tangentially.
 
-use core::f64::consts::{PI, TAU};
+use core::f64::consts::{FRAC_PI_2, FRAC_PI_3, PI, TAU};
 
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{
-    CircleCurve, ConeSurface, Curve, Curve3d as _, LineCurve, Surface as _, SurfaceGeometry,
-    TorusSurface,
+    CircleCurve, ConeSurface, Curve, Curve3d as _, LineCurve, PlaneSurface, Surface as _,
+    SurfaceGeometry, TorusSurface,
 };
-use ogeom_math::{Aabb, Circle, Cone, Direction, Frame, Point, Torus, Vector};
+use ogeom_math::{Aabb, Circle, Cone, Direction, Frame, Plane, Point, Torus, Vector};
 use ogeom_topo::{Model, Shape};
 
 use super::curved::{Curved, SheetCurve, SheetRings, read};
@@ -68,6 +70,15 @@ const APART: f64 = 1e-2;
 /// The wall's steepest lean from square to the floor, as the change of its
 /// radius per unit of height.
 const LEAN: f64 = 1.0;
+/// The steepest an open arc's end face may lean from the plane through the
+/// wall's axis at its vertex: past it the face meets the wall in a sliver.
+const END_LEAN: f64 = FRAC_PI_3;
+/// How far past an end face's plane beside the axis the tool's section
+/// runs on to, and how far short of it a crossing's piece stands, as a
+/// share of the blend's reach on the floor.
+const TRIM_CLEAR: f64 = 0.05;
+/// Steps over a quarter turn in which the tool runs on past an end.
+const RUN_ON_STEPS: u32 = 900;
 /// The angle under which a bevel's leg on the floor grazes a tangent line
 /// it touches or crosses: the floor and the round are left wedges that
 /// sharp at the crossings, which the booleans do not resolve reliably.
@@ -123,16 +134,28 @@ struct Crossing {
     concave: bool,
 }
 
-/// An open arc of the foot: where it starts about the axis, how far it
-/// turns, and the planes through the axis its two ends stand on.
+/// The plane of an end face standing beside the wall's axis, by a point of
+/// it and its unit normal away from the arc: the fill is trimmed to the
+/// plane's side the arc lies on.
+type Trim = (Point, Vector);
+
+/// An open arc of the foot: where the tool starts about the axis, how far
+/// it turns, and the planes its two ends stand on. At an end on a plane
+/// through the axis the tool ends with the rim; past an end on a plane
+/// beside the axis it runs on until its section stands wholly past that
+/// plane, which trims it.
 #[derive(Debug, Clone, Copy)]
 struct Open {
-    /// The start's angle about the axis.
+    /// The tool's start's angle about the axis.
     from: f64,
     /// Counter-clockwise about the floor's normal, under a whole turn.
     sweep: f64,
-    /// The end faces at `from` and at `from + sweep`.
+    /// The rim's own start and sweep, within the tool's.
+    rim: (f64, f64),
+    /// The end faces at the rim's start and at its end.
     faces: [usize; 2],
+    /// At each end on a plane beside the axis, that plane.
+    trims: [Option<Trim>; 2],
 }
 
 /// One piece of the floor's outline, seen from above, along which a round
@@ -818,6 +841,10 @@ fn read_reach(
     run_reach(model, foot, size, tol)
 }
 
+/// An open arc's start, its sweep, its end faces, and the trims at its
+/// ends ([`open_ends`]).
+type OpenEnds = (Vector, f64, [usize; 2], [Option<Trim>; 2]);
+
 /// A boss's foot rim read off the solid, before the rounds its blend
 /// reaches.
 #[derive(Debug, Clone)]
@@ -831,7 +858,7 @@ struct Foot {
     foot_radius: f64,
     slope: f64,
     /// An open arc's start, sweep and end faces.
-    arc_ends: Option<(Vector, f64, [usize; 2])>,
+    arc_ends: Option<OpenEnds>,
     /// The contact circle's radius on the floor.
     reach_radius: f64,
 }
@@ -951,10 +978,15 @@ fn crossing_reach(
         c.angle = c.across.dot(ey).atan2(c.across.dot(ex));
     }
     crossings.sort_by(|a, b| a.angle.total_cmp(&b.angle));
-    let open = arc_ends.map(|(start, sweep, faces)| Open {
-        from: start.dot(ey).atan2(start.dot(ex)),
-        sweep,
-        faces,
+    let open = arc_ends.map(|(start, sweep, faces, trims)| {
+        let from = start.dot(ey).atan2(start.dot(ex));
+        Open {
+            from,
+            sweep,
+            rim: (from, sweep),
+            faces,
+            trims,
+        }
     });
     if let Some(o) = open {
         // Each crossing's arc stands inside the open arc, clear of its ends,
@@ -980,7 +1012,7 @@ fn crossing_reach(
             return Ok(None);
         }
     }
-    let reach = Reach {
+    let mut reach = Reach {
         curved,
         edges: asked,
         wall,
@@ -997,6 +1029,9 @@ fn crossing_reach(
         size,
         radius,
     };
+    if !run_on(&mut reach, tol) {
+        return Ok(None);
+    }
     // The crossings' arcs stand apart, so a torus lies between each two.
     let n = reach.crossings.len();
     if n > 1 {
@@ -1489,11 +1524,13 @@ fn run_reach(model: &Model, foot: Foot, size: Size, tol: Tolerances) -> OgeomRes
 
 /// The open arc of a foot rim between the vertices `vertices`, standing at
 /// `ends` from the foot circle's centre: its start, its sweep
-/// counter-clockwise about the floor's normal, and the end faces at its
-/// start and at its end. Each end's one face besides the floor and the
-/// wall must be a plane holding the wall's axis; `None` otherwise, or where
-/// the rim's `samples`, turning `turned` in all, do not run one way round
-/// from one end to the other.
+/// counter-clockwise about the floor's normal, the end faces at its start
+/// and at its end, and the trim at each end on a plane beside the axis.
+/// Each end's one face besides the floor and the wall must be a plane
+/// parallel to the wall's axis, holding it or leaning from the plane
+/// through it at the vertex by at most [`END_LEAN`], with the whole rim on
+/// one side of it; `None` otherwise, or where the rim's `samples`, turning
+/// `turned` in all, do not run one way round from one end to the other.
 fn open_ends(
     curved: &Curved,
     (floor, wall): (usize, usize),
@@ -1502,9 +1539,11 @@ fn open_ends(
     (samples, turned): (&[Vector], f64),
     (axis, up): (ogeom_math::Axis, Vector),
     tol: Tolerances,
-) -> Option<(Vector, f64, [usize; 2])> {
+) -> Option<OpenEnds> {
     let eps = tol.confusion() * 10.0;
-    let end_face = |v: Id| -> Option<usize> {
+    let foot_radius = ends.0.magnitude();
+    let base = curved.points[&vertices.0] - ends.0;
+    let end_face = |v: Id| -> Option<(usize, Option<Trim>)> {
         let touching: Vec<usize> = (0..curved.faces.len())
             .filter(|f| *f != floor && *f != wall)
             .filter(|f| {
@@ -1524,11 +1563,36 @@ fn open_ends(
         };
         let plane = plane.plane();
         let n = plane.normal().vector();
-        let holds = (axis.location - plane.origin()).dot(n).abs() <= eps
-            && n.dot(axis.direction.vector()).abs() <= tol.angular();
-        holds.then_some(f)
+        if n.dot(axis.direction.vector()).abs() > tol.angular() {
+            return None;
+        }
+        let off = (axis.location - plane.origin()).dot(n);
+        if off.abs() <= eps {
+            return Some((f, None));
+        }
+        if off.abs() > foot_radius * END_LEAN.sin() {
+            return None;
+        }
+        // Away from the arc: every sample of the rim on the other side.
+        let side = |q: &Vector| (base + *q - plane.origin()).dot(n);
+        let (lo, hi) = samples
+            .iter()
+            .map(side)
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
+                (a.min(x), b.max(x))
+            });
+        let away = if hi <= eps {
+            n
+        } else if lo >= -eps {
+            -n
+        } else {
+            return None;
+        };
+        Some((f, Some((plane.origin(), away))))
     };
-    let faces = [end_face(vertices.0)?, end_face(vertices.1)?];
+    let (start, end) = (end_face(vertices.0)?, end_face(vertices.1)?);
+    let faces = [start.0, end.0];
+    let trims = [start.1, end.1];
     let ccw = |from: Vector, to: Vector| up.dot(from.cross(to)).atan2(from.dot(to)).rem_euclid(TAU);
     let runs = |start: Vector, end: Vector| {
         (ccw(start, end) - turned).abs() <= 1e-6
@@ -1538,12 +1602,91 @@ fn open_ends(
             })
     };
     if runs(ends.0, ends.1) {
-        Some((ends.0, turned, faces))
+        Some((ends.0, turned, faces, trims))
     } else if runs(ends.1, ends.0) {
-        Some((ends.1, turned, [faces[1], faces[0]]))
+        Some((ends.1, turned, [faces[1], faces[0]], [trims[1], trims[0]]))
     } else {
         None
     }
+}
+
+/// Runs the tool of an open arc on past each end standing on a plane
+/// beside the axis, until its section there (the foot, the wall's touch,
+/// the ball's arc or the bevel's ruling, and the contact circle's point)
+/// stands wholly past the plane by [`TRIM_CLEAR`] of the blend's reach,
+/// so the plane cuts the tool across its wall, its floor and its blend
+/// and leaves none of its cap. `false` where a crossing's piece does not
+/// stand wholly on the arc's side of every such plane by the same margin
+/// (the plane would cut the fitted piece), or the tool would run on past
+/// a quarter turn at an end or close round the axis.
+fn run_on(reach: &mut Reach, tol: Tolerances) -> bool {
+    let Some(o) = reach.open else {
+        return true;
+    };
+    if o.trims.iter().all(Option::is_none) {
+        return true;
+    }
+    let margin = reach.radius * TRIM_CLEAR;
+    let points = |reach: &Reach, theta: f64| -> Option<Vec<Point>> {
+        let mut p = reach.section(theta, 17, tol)?;
+        p.extend([
+            reach.foot(theta),
+            reach.wall_touch(theta),
+            reach.on_line(theta),
+        ]);
+        Some(p)
+    };
+    let past = |(on, away): Trim, p: Point| (p - on).dot(away);
+    for c in &reach.crossings {
+        let (a, b) = reach.span(c);
+        for i in 0..=PROOF {
+            #[expect(clippy::cast_precision_loss, reason = "a hundred stations")]
+            let theta = (b - a).mul_add(i as f64 / PROOF as f64, a);
+            let Some(p) = points(reach, theta) else {
+                return false;
+            };
+            for trim in o.trims.iter().flatten() {
+                if p.iter().any(|q| past(*trim, *q) > -margin) {
+                    return false;
+                }
+            }
+        }
+    }
+    let (mut from, mut to) = (o.rim.0, o.rim.0 + o.rim.1);
+    for (k, trim) in o.trims.iter().enumerate() {
+        let Some(trim) = trim else {
+            continue;
+        };
+        let (end, dir) = if k == 0 { (from, -1.0) } else { (to, 1.0) };
+        let mut found = None;
+        for i in 1..=RUN_ON_STEPS {
+            let alpha = FRAC_PI_2 * f64::from(i) / f64::from(RUN_ON_STEPS);
+            let Some(p) = points(reach, end + dir * alpha) else {
+                return false;
+            };
+            if p.iter().all(|q| past(*trim, *q) >= margin) {
+                found = Some(alpha);
+                break;
+            }
+        }
+        let Some(alpha) = found else {
+            return false;
+        };
+        if k == 0 {
+            from -= alpha;
+        } else {
+            to += alpha;
+        }
+    }
+    if to - from > TAU - APART {
+        return false;
+    }
+    reach.open = Some(Open {
+        from,
+        sweep: to - from,
+        ..o
+    });
+    true
 }
 
 /// Whether nothing of the solid but the wall, the floor and the rounds
@@ -1613,7 +1756,7 @@ fn clear(model: &Model, reach: &Reach, tol: Tolerances) -> OgeomResult<bool> {
     let meets = |bounds: &Aabb| room.iter().any(|r| r.intersects(bounds));
     let c = &reach.curved;
     let ends: Vec<(usize, f64)> = reach.open.map_or_else(Vec::new, |o| {
-        vec![(o.faces[0], o.from), (o.faces[1], o.from + o.sweep)]
+        vec![(o.faces[0], o.rim.0), (o.faces[1], o.rim.0 + o.rim.1)]
     });
     let mut seated: Vec<usize> = [reach.wall, reach.floor]
         .into_iter()
@@ -1655,6 +1798,23 @@ fn clear(model: &Model, reach: &Reach, tol: Tolerances) -> OgeomResult<bool> {
             }
         }
         false
+    };
+    // An edge in an end face's plane beside the axis lies on the plane
+    // that trims the fill, so it bounds the fill there and stands in none of
+    // it; that the fill takes up nothing of the solid the fuse proves.
+    let trims: Vec<Trim> = reach
+        .open
+        .map_or_else(Vec::new, |o| o.trims.iter().flatten().copied().collect());
+    let in_trim = |e: &Id| -> bool {
+        let edge = &c.edges[e];
+        let (lo, hi) = edge.range;
+        let Ok(mid) = edge.curve.point_at(0.5 * (lo + hi), tol) else {
+            return false;
+        };
+        let on = [c.points[&edge.ends.0], c.points[&edge.ends.1], mid];
+        trims
+            .iter()
+            .any(|(at, away)| on.iter().all(|p| (*p - *at).dot(*away).abs() <= eps * 10.0))
     };
     let lines: Vec<Id> = reach.crossings.iter().map(|x| x.line).collect();
     // A run's outline and the edges between its rounds bound the fill.
@@ -1702,7 +1862,7 @@ fn clear(model: &Model, reach: &Reach, tol: Tolerances) -> OgeomResult<bool> {
                 continue;
             }
             // A seam of the wall is the wall's own.
-            if faces_of(c, *e) == [reach.wall] || on_cap_side(e) {
+            if faces_of(c, *e) == [reach.wall] || on_cap_side(e) || in_trim(e) {
                 continue;
             }
             if meets(&ogeom_algo::shape_bounds(model, &c.edges[e].shape, tol)?) {
@@ -2252,9 +2412,10 @@ fn tool(
             return Ok(None);
         }
     }
-    // An open arc's caps, in its end faces' planes: the corner between the
-    // wall and the floor less the ball's section there, facing away from
-    // the arc.
+    // An open arc's caps: the corner between the wall and the floor less
+    // the ball's section there, facing away from the arc; in the end face's
+    // plane where it holds the axis, else in the plane through the axis
+    // where the tool stops running on past the end.
     if let Some(o) = reach.open {
         for (k, (seat, theta, side)) in [
             (ring[0], angles[0], -1.0),
@@ -2264,21 +2425,60 @@ fn tool(
         .enumerate()
         {
             let (f, w, p) = (points[seat.foot], points[seat.wall], points[seat.line]);
+            let out = up.cross(reach.radial(theta)) * side;
+            let surface = if o.trims[k].is_some() {
+                let frame =
+                    Frame::new(f, Direction::new(out, tol)?, Direction::new(up, tol)?, tol)?;
+                PlaneSurface::new(Plane::new(frame)).into()
+            } else {
+                curved.faces[o.faces[k]].surface.clone()
+            };
             faces.push(ToolFace {
-                surface: curved.faces[o.faces[k]].surface.clone(),
+                surface,
                 curves: vec![seat.up, seat.section, seat.ray],
                 at: f + (w - f) * 0.15 + (p - f) * 0.15,
-                out: up.cross(reach.radial(theta)) * side,
+                out,
             });
         }
     }
-    let Some((solid, made)) = closed(model, &points, &curves, &faces, tol)? else {
+    let Some((mut solid, made)) = closed(model, &points, &curves, &faces, tol)? else {
         return Ok(None);
     };
-    Ok(Some((
-        solid,
-        blends.iter().map(|i| made[*i].clone()).collect(),
-    )))
+    let mut made: Vec<Shape> = blends.iter().map(|i| made[*i].clone()).collect();
+    // Each end face's plane beside the axis trims what runs on past it.
+    if let Some(o) = reach.open {
+        let size = 2.0f64.mul_add(big + r, reach.size.rise().max(r));
+        let ends = [o.rim.0, o.rim.0 + o.rim.1];
+        for (k, (trim, end)) in o.trims.iter().zip(ends).enumerate() {
+            let Some((on, away)) = trim else {
+                continue;
+            };
+            // Both ends on one plane (a cut boss's flat): one cut takes both.
+            if k == 1
+                && o.trims[0].is_some_and(|(first, was)| {
+                    was.dot(*away) >= 1.0 - tol.angular()
+                        && (*on - first).dot(*away).abs() <= tol.confusion() * 10.0
+                })
+            {
+                continue;
+            }
+            // The rim's end vertex lies on the plane: the cube stands on it
+            // there, reaching the whole tool.
+            let past = super::junction::half_space(model, (reach.foot(end), *away), size, tol)?;
+            let Ok(cut) = ogeom_bool::cut(model, &solid, &past, tol) else {
+                return Ok(None);
+            };
+            made = made
+                .iter()
+                .flat_map(|f| cut.history.trace(f).to_vec())
+                .collect();
+            solid = cut.shape;
+        }
+    }
+    if made.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((solid, made)))
 }
 
 /// The tool's faces over the run `run`, between the seats `first` and

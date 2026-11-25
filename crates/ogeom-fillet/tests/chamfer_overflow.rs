@@ -13,7 +13,8 @@ use core::f64::consts::{PI, TAU};
 
 use ogeom_core::Tolerances;
 use ogeom_fillet::{
-    Chamfer, ChamferCorner, Overflow, chamfer_edges, chamfer_edges_overflow, fillet_edges,
+    BlendRequest, Chamfer, ChamferCorner, Overflow, chamfer_edges, chamfer_edges_overflow,
+    fillet_edges,
 };
 use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{Direction, Frame, Point, Vector};
@@ -853,6 +854,76 @@ impl Feet {
     }
 }
 
+impl Feet {
+    /// The bevel's fill over the whole turn kept on the side `y <= c`: at
+    /// each angle the columns from the wall out to the leg on the floor,
+    /// clipped where the plane crosses the radial. Each angular range is
+    /// split where the seat changes and where the plane crosses the foot
+    /// circle or the leg's.
+    fn volume_below(&self, n: usize, c: f64) -> f64 {
+        let g = gauss(n);
+        let reach = self.foot + self.out;
+        let d = c - self.axis.1;
+        let mut cuts: Vec<f64> = Vec::new();
+        for r in &self.rounds {
+            let gap = -r.past(self.axis.0, self.axis.1);
+            if gap < reach {
+                let mid = r.n.1.atan2(r.n.0);
+                let half = (gap / reach).acos();
+                cuts.extend([mid - half, mid + half]);
+            }
+        }
+        for v in [self.foot, reach] {
+            if (d / v).abs() < 1.0 {
+                let a = (d / v).asin();
+                cuts.extend([a, PI - a]);
+            }
+        }
+        let mut cuts: Vec<f64> = cuts.iter().map(|a| a.rem_euclid(TAU)).collect();
+        cuts.sort_by(f64::total_cmp);
+        let mut sum = 0.0;
+        for i in 0..cuts.len() {
+            let (a0, a1) = (cuts[i], cuts.get(i + 1).copied().unwrap_or(cuts[0] + TAU));
+            let ha = 0.5 * (a1 - a0);
+            for (ga, wa) in &g {
+                let t = a0 + ha * (ga + 1.0);
+                // Kept where `rho sin t <= d`.
+                let sn = t.sin();
+                let (lo, hi) = if sn > 0.0 {
+                    (self.foot, (d / sn).min(reach))
+                } else if sn < 0.0 {
+                    ((d / sn).max(self.foot), reach)
+                } else if d >= 0.0 {
+                    (self.foot, reach)
+                } else {
+                    continue;
+                };
+                if hi <= lo {
+                    continue;
+                }
+                let mut radii = vec![lo];
+                for r in &self.rounds {
+                    let towards = r.n.0.mul_add(t.cos(), r.n.1 * sn);
+                    let cross = -r.past(self.axis.0, self.axis.1) / towards;
+                    if towards > 0.0 && cross > lo && cross < hi {
+                        radii.push(cross);
+                    }
+                }
+                radii.sort_by(f64::total_cmp);
+                radii.push(hi);
+                for v in radii.windows(2) {
+                    let hr = 0.5 * (v[1] - v[0]);
+                    for (gr, wr) in &g {
+                        let rho = v[0] + hr * (gr + 1.0);
+                        sum += wa * wr * self.column(rho, t) * rho * hr * ha;
+                    }
+                }
+            }
+        }
+        sum
+    }
+}
+
 /// The largest angle between the normals either side of every edge
 /// bounding a fitted face, sampled and projected as in
 /// [`worst_transition`]; with how many fitted faces there are.
@@ -902,6 +973,8 @@ struct Part {
     foot: Vec<Shape>,
     reference: Feet,
     wedge: Option<(f64, f64)>,
+    /// Where an open arc ends on the plane `y = c` beside the axis: `c`.
+    below: Option<f64>,
     rounds: usize,
 }
 
@@ -958,6 +1031,7 @@ fn two_rounds() -> Part {
             rounds: vec![EDGE, side],
         },
         wedge: None,
+        below: None,
         rounds: 2,
     }
 }
@@ -1002,6 +1076,7 @@ fn concave_round() -> Part {
             }],
         },
         wedge: None,
+        below: None,
         rounds: 1,
     }
 }
@@ -1012,6 +1087,17 @@ fn concave_round() -> Part {
 /// through the axis. The leg on the floor reaches 2 past `y = 5` over the
 /// middle of the arc.
 fn cut_boss() -> Part {
+    Part {
+        wedge: Some((PI, TAU)),
+        below: None,
+        ..cut_boss_at(12.0)
+    }
+}
+
+/// The boss of [`cut_boss`] cut at `y = c` instead, beside its axis for
+/// any `c` but 12: the bevel runs on past each end of the arc and the
+/// flat's plane trims it.
+fn cut_boss_at(c: f64) -> Part {
     let mut m = Model::new();
     let block = ogeom_algo::make_box(&mut m, at(0.0, 0.0, 0.0), BLOCK, T)
         .unwrap()
@@ -1025,7 +1111,7 @@ fn cut_boss() -> Part {
     let boss = ogeom_algo::make_cylinder(&mut m, at(20.0, 12.0, BLOCK.2), BOSS, BOSS_HIGH, T)
         .unwrap()
         .shape;
-    let away = ogeom_algo::make_box(&mut m, at(0.0, 12.0, BLOCK.2), (40.0, 18.0, 20.0), T)
+    let away = ogeom_algo::make_box(&mut m, at(0.0, c, BLOCK.2), (40.0, 30.0 - c, 20.0), T)
         .unwrap()
         .shape;
     let boss = ogeom_bool::cut(&mut m, &boss, &away, T).unwrap().shape;
@@ -1043,7 +1129,8 @@ fn cut_boss() -> Part {
             rise: 3.0,
             rounds: vec![EDGE],
         },
-        wedge: Some((PI, TAU)),
+        wedge: None,
+        below: Some(c),
         rounds: 1,
     }
 }
@@ -1055,7 +1142,10 @@ fn cut_boss() -> Part {
 /// round.
 fn bevel_blends(mut part: Part) {
     let (m, s, foot) = (&mut part.m, &part.s, &part.foot);
-    let built = chamfer_edges(m, s, foot, 3.0, T).unwrap();
+    let built = BlendRequest::new()
+        .chamfer(foot.iter().cloned(), 3.0)
+        .build(m, s, T)
+        .unwrap();
     let found = ogeom_algo::check(m, &built.shape, T).unwrap();
     assert!(found.is_valid(), "{:?}", found.problems);
     for shell in explore_unique(m, &built.shape, ShapeType::Shell).unwrap() {
@@ -1093,11 +1183,15 @@ fn bevel_blends(mut part: Part) {
 fn bevel_fills_as_defined(mut part: Part) {
     let (m, s, foot) = (&mut part.m, &part.s, &part.foot);
     let before = volume(m, s);
-    let built = chamfer_edges(m, s, foot, 3.0, T).unwrap();
-    let (coarse, fine) = (
-        part.reference.volume(32, part.wedge),
-        part.reference.volume(64, part.wedge),
-    );
+    let built = BlendRequest::new()
+        .chamfer(foot.iter().cloned(), 3.0)
+        .build(m, s, T)
+        .unwrap();
+    let reference = |n: usize| match part.below {
+        Some(c) => part.reference.volume_below(n, c),
+        None => part.reference.volume(n, part.wedge),
+    };
+    let (coarse, fine) = (reference(32), reference(64));
     let bound = (fine - coarse).abs().max(1e-9);
     let got = volume(m, &built.shape) - before;
     println!(
@@ -1130,6 +1224,35 @@ fn the_bevel_reference_reproduces_pappus() {
             (got - share * pappus).abs() < 1e-9,
             "the reference {got} against Pappus {}",
             share * pappus
+        );
+    }
+}
+
+/// [`Feet::volume_below`] on a boss clear of any round against the
+/// bevel's triangle revolved through the angle each of its circles keeps,
+/// `pi + 2 asin(d / rho)` at `rho` from the axis and `d` from the plane,
+/// integrated over the triangle in one variable.
+#[test]
+fn the_trimmed_bevel_reference_reproduces_the_revolved_triangle() {
+    let clear = Feet {
+        axis: (20.0, 40.0),
+        foot: BOSS,
+        top: BLOCK.2,
+        out: 3.0,
+        rise: 3.0,
+        rounds: Vec::new(),
+    };
+    for d in [1.0, -1.0] {
+        let mut revolved = 0.0;
+        for (gs, ws) in gauss(64) {
+            let rho = 1.5f64.mul_add(gs + 1.0, BOSS);
+            let depth = BOSS + 3.0 - rho;
+            revolved += ws * depth * rho * 2.0f64.mul_add((d / rho).asin(), PI) * 1.5;
+        }
+        let got = clear.volume_below(32, 40.0 + d);
+        assert!(
+            (got - revolved).abs() < 1e-9,
+            "the reference {got} against the revolved triangle {revolved}"
         );
     }
 }
@@ -1171,6 +1294,23 @@ fn an_open_arc_s_bevel_blends_into_the_edge_round() {
 #[ignore = "heavy: about 10 s"]
 fn an_open_arc_s_bevel_fills_as_defined() {
     bevel_fills_as_defined(cut_boss());
+}
+
+/// A boss cut beside its axis, at `y = 13` (the arc past half a turn) and
+/// at `y = 11` (short of it): the bevel runs on past each end and the
+/// flat's plane trims it.
+#[test]
+fn an_open_arc_s_bevel_ending_beside_the_axis_blends_into_the_edge_round() {
+    for c in [13.0, 11.0] {
+        bevel_blends(cut_boss_at(c));
+    }
+}
+
+#[test]
+fn an_open_arc_s_bevel_ending_beside_the_axis_fills_as_defined() {
+    for c in [13.0, 11.0] {
+        bevel_fills_as_defined(cut_boss_at(c));
+    }
 }
 
 /// A conical boss r 6 narrowing to 4 over 15 at `(20, 12)`, its foot

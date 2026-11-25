@@ -8,10 +8,10 @@
 )]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
-use core::f64::consts::{FRAC_PI_2, PI, TAU};
+use core::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 
 use ogeom_core::Tolerances;
-use ogeom_fillet::{Overflow, fillet_edges, fillet_edges_overflow};
+use ogeom_fillet::{BlendRequest, Overflow, fillet_edges, fillet_edges_overflow};
 use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry};
 use ogeom_math::{Direction, Frame, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, ancestors_of, explore_unique};
@@ -586,6 +586,95 @@ impl Closing {
     }
 }
 
+/// A plane square to the floor that trims the fill, seen from above: a
+/// point of it and its unit normal away from the side the fill keeps.
+#[derive(Clone, Copy)]
+struct Trim {
+    p: (f64, f64),
+    n: (f64, f64),
+}
+
+impl Closing {
+    /// The closing of a cylinder's whole foot, kept on the near side of
+    /// `trim`: at each angle `t` about the axis the columns run from the
+    /// wall to the fill's end on the floor, clipped where `rho` times the
+    /// radial's share along the normal passes the axis' distance behind the
+    /// plane. Each angular range is split where the clip crosses the foot
+    /// circle or the contact circle, and where the seat changes.
+    fn volume_trimmed(&self, n: usize, trim: Trim) -> f64 {
+        assert!(
+            self.slope == 0.0 && self.corner.is_none(),
+            "a cylinder's foot"
+        );
+        let g = gauss(n);
+        let reach = self.offset_radius(FOOT);
+        let d = (trim.p.0 - self.axis.0).mul_add(trim.n.0, (trim.p.1 - self.axis.1) * trim.n.1);
+        let tn = trim.n.1.atan2(trim.n.0);
+        let mut cuts = Vec::new();
+        for r in &self.rounds {
+            let gap = -r.past(self.axis.0, self.axis.1);
+            if gap < reach {
+                let mid = r.n.1.atan2(r.n.0);
+                let half = (gap / reach).acos();
+                cuts.extend([mid - half, mid + half]);
+            }
+        }
+        for v in [self.foot, reach] {
+            if (d / v).abs() < 1.0 {
+                let h = (d / v).acos();
+                cuts.extend([tn - h, tn + h]);
+            }
+        }
+        let mut c: Vec<f64> = cuts.iter().map(|a| a.rem_euclid(TAU)).collect();
+        c.sort_by(f64::total_cmp);
+        if c.is_empty() {
+            c.push(0.0);
+        }
+        let mut sum = 0.0;
+        for i in 0..c.len() {
+            let (a0, a1) = (c[i], c.get(i + 1).copied().unwrap_or(c[0] + TAU));
+            let ha = 0.5 * (a1 - a0);
+            for (ga, wa) in &g {
+                let t = a0 + ha * (ga + 1.0);
+                let out = self.edge(t, self.foot, reach + FOOT);
+                let un = (t - tn).cos();
+                // Kept where `rho un <= d`.
+                let (lo, hi) = if un > 0.0 {
+                    (self.foot, (d / un).min(out))
+                } else if un < 0.0 {
+                    ((d / un).max(self.foot), out)
+                } else if d >= 0.0 {
+                    (self.foot, out)
+                } else {
+                    continue;
+                };
+                if hi <= lo {
+                    continue;
+                }
+                let mut ring = 0.0;
+                if lo == self.foot {
+                    // From the wall, as `rho = out - (out - foot) cos s`.
+                    let span = out - self.foot;
+                    let top = (1.0 - (hi - self.foot) / span).clamp(-1.0, 1.0).acos();
+                    for (gs, ws) in &g {
+                        let s = top * 0.5 * (gs + 1.0);
+                        let rho = span.mul_add(-s.cos(), out);
+                        ring += ws * self.column(rho, t) * rho * span * s.sin() * top * 0.5;
+                    }
+                } else {
+                    let h = 0.5 * (hi - lo);
+                    for (gs, ws) in &g {
+                        let rho = lo + h * (gs + 1.0);
+                        ring += ws * self.column(rho, t) * rho * h;
+                    }
+                }
+                sum += wa * ring * ha;
+            }
+        }
+        sum
+    }
+}
+
 trait SubSq {
     fn sub_sq(self, s: f64) -> f64;
 }
@@ -991,9 +1080,14 @@ fn cut_boss_on(mut m: Model, rounded: &Shape, away: &Shape) -> (Model, Shape, Ve
 /// half out of it, so its foot is a half circle ending on the wall's
 /// plane, which holds the axis.
 fn boss_on_a_wall() -> (Model, Shape, Vec<Shape>) {
+    boss_on_a_wall_at(12.0)
+}
+
+/// The boss of [`boss_on_a_wall`] with the wall's face at `y = c`.
+fn boss_on_a_wall_at(c: f64) -> (Model, Shape, Vec<Shape>) {
     let mut m = Model::new();
     let rounded = rounded_block(&mut m, false);
-    let wall = ogeom_algo::make_box(&mut m, at(0.0, 12.0, 15.0), (40.0, 18.0, 15.0), T)
+    let wall = ogeom_algo::make_box(&mut m, at(0.0, c, 15.0), (40.0, 30.0 - c, 15.0), T)
         .unwrap()
         .shape;
     let s = ogeom_bool::fuse(&mut m, &rounded, &wall, T).unwrap().shape;
@@ -1031,7 +1125,10 @@ fn open_arc(part: (Model, Shape, Vec<Shape>)) -> Case {
 /// naming blend into round.
 fn open_arc_blends(mut case: Case) {
     let (m, s, foot) = (&mut case.m, &case.s, &case.foot);
-    let built = fillet_edges(m, s, foot, FOOT, T).unwrap();
+    let built = BlendRequest::new()
+        .round(foot.iter().cloned(), FOOT)
+        .build(m, s, T)
+        .unwrap();
     let found = ogeom_algo::check(m, &built.shape, T).unwrap();
     assert!(found.is_valid(), "{:?}", found.problems);
     for shell in explore_unique(m, &built.shape, ShapeType::Shell).unwrap() {
@@ -1136,12 +1233,107 @@ fn not_blended(mut m: Model, s: &Shape, arc: &[Shape]) {
     }
 }
 
-/// A boss cut by a plane beside its axis, `y = 13`: the arc's ends stand
-/// on a plane the round's sections do not lie in, so its end would need
-/// the plane to trim the round obliquely. Not blended.
+/// The plane `y = c` keeping the side toward the edge round.
+fn below(c: f64) -> Trim {
+    Trim {
+        p: (0.0, c),
+        n: (0.0, 1.0),
+    }
+}
+
+/// A boss cut by a plane beside its axis, `y = 13`: the arc runs past half
+/// a turn, its ends on a plane the round's sections do not lie in. The
+/// round runs on past each end and the plane trims it there.
 #[test]
-fn an_open_arc_ending_off_the_axis_is_not_blended() {
-    let (m, s, arc) = cut_boss(13.0);
+fn an_open_arc_ending_beside_the_axis_blends_into_the_edge_round() {
+    open_arc_blends(open_arc(cut_boss(13.0)));
+}
+
+/// Cut at `y = 11`, the arc short of half a turn: the round's sections at
+/// its ends lean back over the arc, so the round runs on past the ends,
+/// over the floor where the boss is cut away, before the plane trims it.
+#[test]
+fn an_open_arc_short_of_half_a_turn_blends_into_the_edge_round() {
+    open_arc_blends(open_arc(cut_boss(11.0)));
+}
+
+/// A boss standing out of a wall at `y = 13`, beside its axis: the round
+/// runs into the wall, which trims it.
+#[test]
+fn an_open_arc_against_a_wall_beside_the_axis_blends_into_the_edge_round() {
+    open_arc_blends(open_arc(boss_on_a_wall_at(13.0)));
+}
+
+/// The reference for an arc ending beside the axis is the closing of the
+/// whole boss kept on the arc's side of the end plane: the round run on
+/// past each end and trimmed by the plane. It is first checked on a boss
+/// clear of any round against the section revolved through the angle
+/// each of its circles keeps, `pi + 2 asin(d / rho)` at `rho` from the
+/// axis and `d` from the plane, integrated over the section in one
+/// variable.
+#[test]
+#[ignore = "heavy: the sampled reference takes about 40 s"]
+fn open_arcs_ending_beside_the_axis_fill_as_the_trimmed_closing() {
+    let clear = Closing {
+        axis: (20.0, 40.0),
+        foot: 6.0,
+        slope: 0.0,
+        rounds: Vec::new(),
+        corner: None,
+    };
+    for d in [1.0, -1.0] {
+        let g = gauss(64);
+        let mut revolved = 0.0;
+        for (gs, ws) in &g {
+            // From the wall, `rho = 9 - 3 cos s`: the depth below the ball's
+            // arc, `3 - 3 sin s`, over `drho = 3 sin s ds`.
+            let s = FRAC_PI_4 * (gs + 1.0);
+            let rho = 3.0f64.mul_add(-s.cos(), 9.0);
+            let depth = 3.0f64.mul_add(-s.sin(), 3.0);
+            let kept = 2.0f64.mul_add((d / rho).asin(), PI);
+            revolved += ws * depth * rho * kept * 3.0 * s.sin() * FRAC_PI_4;
+        }
+        let self_check = clear.volume_trimmed(32, below(40.0 + d));
+        assert!(
+            (self_check - revolved).abs() < 1e-6,
+            "the reference {self_check} against the revolved section {revolved}"
+        );
+    }
+    for (part, c) in [
+        (cut_boss(13.0), 13.0),
+        (cut_boss(11.0), 11.0),
+        (boss_on_a_wall_at(13.0), 13.0),
+    ] {
+        let mut case = open_arc(part);
+        let (m, s, foot) = (&mut case.m, &case.s, &case.foot);
+        let before = volume(m, s);
+        let built = BlendRequest::new()
+            .round(foot.iter().cloned(), FOOT)
+            .build(m, s, T)
+            .unwrap();
+        let (coarse, fine) = (
+            case.reference.volume_trimmed(32, below(c)),
+            case.reference.volume_trimmed(64, below(c)),
+        );
+        let bound = (fine - coarse).abs().max(1e-9);
+        let got = volume(m, &built.shape) - before;
+        println!(
+            "y = {c}: fill {got:.9}, reference {fine:.9}, error {:.2e}, bound {bound:.2e}",
+            (got - fine).abs()
+        );
+        assert!(
+            (got - fine).abs() < 1e-6 + bound,
+            "the fill {got} against the reference {fine} (within {bound})"
+        );
+    }
+}
+
+/// A boss cut at `y = 17.5`: its end plane leans 66 degrees from the plane
+/// through the axis at the vertex, past the 60 blend into round takes, and
+/// meets the wall in a sliver. Not blended.
+#[test]
+fn an_open_arc_ending_on_a_steeply_leaning_plane_is_not_blended() {
+    let (m, s, arc) = cut_boss(17.5);
     not_blended(m, &s, &arc);
 }
 

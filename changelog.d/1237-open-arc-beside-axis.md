@@ -1,0 +1,5 @@
+- **Added: blend into round for an open arc ending beside the boss's axis** (#1237).
+  - An open arc of a foot may now end on planes parallel to the axis that do not hold it: a boss cut off its axis, or standing out of a wall by more or less than half. The round or bevel runs on round the axis past each end until its section stands wholly past the plane, and the plane trims it. Planes leaning up to 60 degrees from the plane through the axis are taken.
+  - A boss r 6 cut at `y = 13` (axis at `y = 12`), foot round r 3 reaching the edge round: fill 41.432100023 against the trimmed closing's 41.432099532 (bound 9.0e-6); cut at `y = 11`, 33.676608854 against 33.676608362. Bevel 3: 105.903433401 against 105.903433414, and 87.839784478 against 87.839784487. Worst G1 9.7e-7 rad.
+  - Still trim through: an end plane leaning more than 60 degrees, one that would cut a piece over a round, and an arc whose seat on a round reaches an end.
+  - Changed: these arcs used to go on to trim through.
