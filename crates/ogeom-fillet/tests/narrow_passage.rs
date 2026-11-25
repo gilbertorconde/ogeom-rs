@@ -1304,20 +1304,195 @@ fn an_elliptic_corner_looser_than_the_radius_is_refused_by_name() {
     assert!(why.contains("builds no round of this kind"), "{why}");
 }
 
+/// The pocket `x` 10 to 30, `y` 8 to 22, with a rib standing 2 from its
+/// wall `y = 8` up to the block's top: the rib's plan `rib`, walked
+/// counter-clockwise.
+fn ribbed(m: &mut Model, rib: &[(f64, f64)]) -> Shape {
+    let s = polygon(m, &[(10.0, 8.0), (30.0, 8.0), (30.0, 22.0), (10.0, 22.0)]);
+    let pieces: Vec<Piece> = (0..rib.len())
+        .map(|i| {
+            let (a, b) = (rib[i], rib[(i + 1) % rib.len()]);
+            Piece::Line(a.0, a.1, b.0, b.1)
+        })
+        .collect();
+    let rib = outline(m, &pieces, 15.0 - FLOOR);
+    ogeom_bool::fuse(m, &s, &rib, T).unwrap().shape
+}
+
+/// The rib `x` 15 to 25, `y` 10 to 11.
+const RIB: [(f64, f64); 4] = [(15.0, 10.0), (25.0, 10.0), (25.0, 11.0), (15.0, 11.0)];
+
+/// The area of the ribbed pocket's plan farther than `d` (up to the
+/// radius) from its rim: the pocket moved in by `d`, less the rib grown by
+/// `d` (a rectangle with quarter discs at its corners) where it lies within
+/// the pocket moved in. At a row `u` past the rib's long side the grown
+/// rib reaches `sqrt(d^2 - u^2)` past its ends, and the pocket moved in
+/// lets it reach `5 - d` at the most.
+fn rib_eroded(d: f64) -> f64 {
+    if d <= 0.0 {
+        return 270.0;
+    }
+    let c = 5.0 - d;
+    let quarter = |u: f64| (u * (d * d - u * u).max(0.0).sqrt() + d * d * (u / d).asin()) / 2.0;
+    // Past `uc` the grown rib's reach `sqrt(d^2 - u^2)` falls below `c`.
+    let uc = if d > c { (d * d - c * c).sqrt() } else { 0.0 };
+    let rows = |u0: f64, u1: f64| {
+        if u1 <= u0 {
+            return 0.0;
+        }
+        let flat = (uc.min(u1) - u0).max(0.0);
+        let round = if u1 > uc.max(u0) {
+            quarter(u1) - quarter(uc.max(u0))
+        } else {
+            0.0
+        };
+        10.0f64.mul_add(u1 - u0, 2.0 * c.mul_add(flat, round))
+    };
+    // The rows beside the rib's long sides, `y` 10 to 11, then those below
+    // it down to the wall `y = 8` moved in, and those above it.
+    let beside = (11.0 - (8.0 + d).max(10.0)).max(0.0) * 2.0f64.mul_add(d.min(c), 10.0);
+    let below = rows(0.0, d.min(2.0 - d));
+    let above = rows((d - 3.0).max(0.0), d);
+    2.0f64.mul_add(-d, 20.0) * 2.0f64.mul_add(-d, 14.0) - (beside + below + above)
+}
+
+/// The ribbed pocket's fill on `n` Gauss-Legendre points a piece: the
+/// part of the plan within `s` of its rim, against the height's change
+/// `-H'(s) = (r - s) / sqrt(s (2r - s))`, split where the erosion's
+/// pieces change (the gap closing at 1, the rows below the rib gone at 2,
+/// the grown rib's ends reaching the pocket's ends at 2.5, the rows above
+/// it cut from 3), with `s = a + t^2` from each `a` where a square root
+/// starts: 0, 1 (the wall moved in meets the grown rib's rounded corners
+/// at their foot) and 2.5.
+fn rib_fill(n: usize) -> f64 {
+    let f = |s: f64| (270.0 - rib_eroded(s)) * (R - s) / (s * 2.0f64.mul_add(R, -s)).sqrt();
+    let squared = |from: f64, to: f64| {
+        plain(
+            |t| f(t.mul_add(t, from)) * 2.0 * t,
+            0.0,
+            (to - from).sqrt(),
+            n,
+        )
+    };
+    squared(0.0, 1.0)
+        + squared(1.0, 2.0)
+        + plain(f, 2.0, 2.5, n)
+        + squared(2.5, 3.0)
+        + plain(f, 3.0, R, n)
+}
+
 #[test]
-fn a_band_that_would_cross_a_thin_rib_into_air_is_refused_by_name() {
-    // A rib 1 thick stands 2 from a pocket wall: that wall's band would
-    // cross the rib and come out into the air behind it. The passage is
-    // not built, and the engine refuses the request by name.
+fn the_rib_reference_holds_its_pieces() {
+    // Below 1 the grown rib lies within the pocket moved in: its area is
+    // the rectangle grown less the corners' squares, plus their quarter
+    // discs.
+    for d in [0.3, 0.9] {
+        let grown = 2.0f64.mul_add(d, 10.0) * 2.0f64.mul_add(d, 1.0) - (4.0 - PI) * d * d;
+        let whole = 2.0f64.mul_add(-d, 20.0) * 2.0f64.mul_add(-d, 14.0) - grown;
+        assert!((rib_eroded(d) - whole).abs() < 1e-12, "{d}");
+    }
+    // From 2 to 2.5 the gap and the rows below the rib are gone: the rows
+    // beside it from the wall moved in, and the half disc's rows above.
+    for d in [2.1, 2.4] {
+        let grown = (3.0 - d) * 2.0f64.mul_add(d, 10.0) + 10.0f64.mul_add(d, PI * d * d / 2.0);
+        let whole = 2.0f64.mul_add(-d, 20.0) * 2.0f64.mul_add(-d, 14.0) - grown;
+        assert!((rib_eroded(d) - whole).abs() < 1e-12, "{d}");
+    }
+    // Every reading against a count of grid cells' centres by their
+    // distance to the rim, cells 0.01 square.
+    for d in [0.5, 1.5, 2.7, 3.5] {
+        let cell = 0.01;
+        let mut inside = 0u32;
+        for i in 0..2000 {
+            for j in 0..1400 {
+                let (x, y) = (
+                    f64::from(i).mul_add(cell, 10.0 + cell / 2.0),
+                    f64::from(j).mul_add(cell, 8.0 + cell / 2.0),
+                );
+                let wall = (x - 10.0).min(30.0 - x).min(y - 8.0).min(22.0 - y);
+                let (dx, dy) = ((15.0 - x).max(x - 25.0).max(0.0), (10.0 - y).max(y - 11.0));
+                let rib = if dy < 0.0 && dx == 0.0 {
+                    -1.0
+                } else {
+                    dx.hypot(dy.max(0.0))
+                };
+                if wall > d && rib > d {
+                    inside += 1;
+                }
+            }
+        }
+        let counted = f64::from(inside) * cell * cell;
+        assert!(
+            (rib_eroded(d) - counted).abs() < 5e-3,
+            "{d}: {} {counted}",
+            rib_eroded(d)
+        );
+    }
+}
+
+#[test]
+fn a_band_crossing_a_thin_rib_rounds_through_it() {
+    // A rib 1 thick stands 2 from the pocket's wall `y = 8`: that wall's
+    // band crosses the gap and the rib and comes out behind it, where the
+    // rib's own back band, nearer, stands taller. The fill is the union
+    // of the bands, the plan's erosion.
     let mut m = Model::new();
-    let s = polygon(
-        &mut m,
-        &[(10.0, 8.0), (30.0, 8.0), (30.0, 22.0), (10.0, 22.0)],
+    let s = ribbed(&mut m, &RIB);
+    assert_eq!(rim(&m, &s).len(), 8);
+    let oracle = reference(rib_fill);
+    // The same reading integrated over the height.
+    let (layered, bound) = eroded_fill(270.0, rib_eroded);
+    assert!(
+        (layered - oracle.0).abs() <= bound + oracle.1,
+        "{layered} {oracle:?}"
     );
-    let rib = ogeom_algo::make_box(&mut m, at(15.0, 10.0, FLOOR), (10.0, 1.0, 15.0 - FLOOR), T)
-        .unwrap()
-        .shape;
-    let s = ogeom_bool::fuse(&mut m, &s, &rib, T).unwrap().shape;
+    let added = check_case(
+        "pocket 20 by 14, rib 1 thick 2 from a wall",
+        &mut m,
+        &s,
+        Overflow::default(),
+        oracle,
+    );
+    assert!((added - oracle.0).abs() < 1e-10, "{added} {oracle:?}");
+    // The rib's ends face the pocket's ends over part of their walls.
+    let mut m = Model::new();
+    let s = ribbed(&mut m, &RIB);
+    let mut off = Overflow::default();
+    off.narrow_partial_face = false;
+    let why = refusal(&mut m, &s, off);
+    assert!(why.contains("partial face is off"), "{why}");
+}
+
+#[test]
+fn a_rib_whose_far_side_is_not_rounded_is_refused_by_name() {
+    // The rib's back edge is not asked: the band crossing the rib would
+    // come out into air nothing else fills. The passage is not built, and
+    // the engine refuses the request by name.
+    let mut m = Model::new();
+    let s = ribbed(&mut m, &RIB);
+    let edges: Vec<Shape> = rim(&m, &s)
+        .into_iter()
+        .filter(|e| {
+            let (c, (a, b)) = ogeom_algo::placed_edge_curve(&m, e, T).unwrap().unwrap();
+            let (p, q) = (c.point_at(a, T).unwrap(), c.point_at(b, T).unwrap());
+            !((p.y - 11.0).abs() < 1e-9 && (q.y - 11.0).abs() < 1e-9)
+        })
+        .collect();
+    assert_eq!(edges.len(), 7);
+    let why = refused(&mut m, &s, &edges);
+    assert!(why.contains("sets back"), "{why}");
+}
+
+#[test]
+fn a_rib_whose_far_side_leans_is_refused_by_name() {
+    // The rib's back side runs from `y = 11` to `y = 11.5`, not parallel
+    // to the wall whose band crosses the rib. The passage is not built,
+    // and the engine refuses the request by name.
+    let mut m = Model::new();
+    let s = ribbed(
+        &mut m,
+        &[(15.0, 10.0), (25.0, 10.0), (25.0, 11.0), (15.0, 11.5)],
+    );
     let edges = rim(&m, &s);
     assert_eq!(edges.len(), 8);
     let why = refused(&mut m, &s, &edges);

@@ -3718,8 +3718,9 @@ solid's air. What follows settles how it reads on more shapes.
 **What stays refused by name.** A floor that is not planar; a corner
 face that is not a cylinder (an elliptic corner, for instance, which the
 part "Narrow passages, elliptic corners" below builds); a band that would
-cross a thin wall into air beyond; walls lower than the radius. Each goes
-on to the engine, which refuses it by name.
+cross a thin wall into air beyond (the part "Narrow passages, a band
+through a thin rib" below builds one case); walls lower than the radius.
+Each goes on to the engine, which refuses it by name.
 
 **Oracle** (`tests/narrow_passage.rs`). The reference is the plan's
 erosion, computed without the construction. Over the plan `P` of the
@@ -3806,6 +3807,56 @@ semi-axes (columns taken the other way) gives the same value to 1e-12.
 - Refused by name: the elliptic pocket with whole face and partial face
   off ("whole face and partial face are off"); quarter ellipses 3.5 by 2,
   whose radius of curvature reaches 6.1 at the long walls.
+
+**Narrow passages, a band through a thin rib.** The rule of the part
+"Narrow passages" stands: the fill is the union of the bands' fills, cut
+to the solid's air. A band may now cross a thin rib (a wall standing
+nearer than the radius, with air behind it) in one case.
+
+- **The case.** The rib's far wall is a wall of the same passage (its
+  edge with the floor is asked too), parallel to the crossing band's wall
+  and facing the same way, and its own band spans that wall whole and is
+  not cut at a corner. A point that comes out behind the rib lies nearer
+  the far wall's plane than the crossing band's wall, and over the far
+  wall's band, so that band's section stands taller there: the far band
+  already holds all that comes out, and the union is unchanged by it.
+  The crossing band's prism is fused as it stands.
+- **A rib's convex corners.** The ball pivots on each of the rib's
+  vertical edges as at any convex corner. A wall of the passage standing
+  wholly behind such an edge (square to the floor, facing neither of the
+  turned spandrel's end sections away, the edge on its air side) is
+  clear of the turned fill, which no section carries through it; the
+  pocket's wall beside the rib is such a wall for the rib's far corners.
+- **Still refused by name**: a rib whose far side is not asked (what
+  comes out behind it would be air nothing fills); a far side not
+  parallel to the crossing band's wall; a far band cut at a corner; walls
+  lower than the radius. The union is still the definition there, but no
+  check here shows the prism's part behind the rib is held.
+
+**Oracle** (`tests/narrow_passage.rs`). The plan is a pocket 20 by 14
+less a rib 10 by 1 standing 2 from one long wall. Its part farther than
+`s` from the rim is the pocket moved in by `s` less the rib grown by `s`
+(a rectangle with quarter discs at its corners) where it lies within the
+pocket moved in, in closed form row by row across the rib. The fill is
+the integral over `s` of the plan within `s` of the rim against
+`-H'(s)`, split where the closed form changes pieces (at 1, 2, 2.5 and
+3), with `s = a + t^2` from each `a` where a square root starts (0, 1
+and 2.5). Gauss-Legendre on 24 and 48 points a piece; the bound is their
+difference. Self-checks: the closed form reproduces the unclipped grown
+rib below 1 and the half disc's rows from 2 to 2.5 to 1e-12, and a count
+of 0.01 grid cells by distance to the rim to 5e-3; the layered integral
+over the height of the part above agrees within its own bound.
+
+| case (r 4, floor 7 deep) | strategy | fill built | reference | error | ref. bound | test tolerance |
+|---|---|---|---|---|---|---|
+| pocket 20 by 14, rib 1 thick 2 from a wall | partial face | 268.038055924 | 268.038055924 | 1.8e-12 | 2.8e-13 | 1e-10 |
+
+- The result checks valid with a closed shell, and every round meets its
+  own wall G1 (worst 0 rad).
+- It needs partial face: the rib's ends face the pocket's ends over part
+  of their walls. With partial face off it is refused by name.
+- Refused by name: the rib's far edge not asked; a rib whose far side
+  runs from 1 to 1.5 off its near side.
 
 **Hold edge, more seats.** The public documentation surveyed above
 gives the edge seat by the ball (it touches one original face and is
