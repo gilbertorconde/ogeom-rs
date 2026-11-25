@@ -704,6 +704,46 @@ fn read_parsed(file: &File, library: &Library, tol: Tolerances) -> OgeomResult<I
     })
 }
 
+/// An IGES boolean tree's operation applied to its two operands: code 1 is
+/// the union, 2 the intersection, 3 the difference.
+#[cfg(feature = "iges-csg")]
+fn tree_boolean(
+    model: &mut Model,
+    de: i64,
+    code: i64,
+    a: &Shape,
+    b: &Shape,
+    tol: Tolerances,
+) -> OgeomResult<Shape> {
+    let result = match code {
+        1 => ogeom_bool::fuse(model, a, b, tol)?,
+        2 => ogeom_bool::common(model, a, b, tol)?,
+        3 => ogeom_bool::cut(model, a, b, tol)?,
+        code => ogeom_bail!(
+            Construction,
+            "D{de}: boolean operation code {code} names no operation"
+        ),
+    };
+    Ok(result.shape)
+}
+
+/// Without the booleans a tree cannot be evaluated, so its operations are
+/// refused; the import reports the tree as a solid that failed to build.
+#[cfg(not(feature = "iges-csg"))]
+fn tree_boolean(
+    _model: &mut Model,
+    de: i64,
+    code: i64,
+    _a: &Shape,
+    _b: &Shape,
+    _tol: Tolerances,
+) -> OgeomResult<Shape> {
+    ogeom_bail!(
+        Construction,
+        "D{de}: boolean operation {code} needs the `iges-csg` feature of ogeom-io"
+    )
+}
+
 struct Reader<'a> {
     file: &'a File,
     /// The files the deck's external references name.
@@ -3499,15 +3539,13 @@ impl<'a> Reader<'a> {
                         );
                     };
                     let result = match item {
-                        1 => ogeom_bool::fuse(&mut self.model, &a, &b, tol)?,
-                        2 => ogeom_bool::common(&mut self.model, &a, &b, tol)?,
-                        3 => ogeom_bool::cut(&mut self.model, &a, &b, tol)?,
+                        1..=3 => tree_boolean(&mut self.model, de, item, &a, &b, tol)?,
                         code => ogeom_bail!(
                             Construction,
                             "D{de}: boolean operation code {code} names no operation"
                         ),
                     };
-                    stack.push(result.shape);
+                    stack.push(result);
                 }
                 let [solid] = stack.as_slice() else {
                     ogeom_bail!(
@@ -6301,6 +6339,13 @@ mod tests {
             (13, 0.5 * pi * (16.0 - 4.0) * 3.0, 1e-6),
             (15, 20.0, 1e-9),
         ] {
+            // The boolean tree needs the booleans; without them it is
+            // refused, naming the feature, and the primitives still build.
+            if de == 5 && !cfg!(feature = "iges-csg") {
+                let refused = reader.csg_solids(de).unwrap_err().to_string();
+                assert!(refused.contains("iges-csg"), "{refused}");
+                continue;
+            }
             let solids = reader.csg_solids(de).unwrap();
             let [solid] = solids.as_slice() else {
                 panic!("D{de} is one solid");

@@ -31,6 +31,7 @@ ogeom-intersect.workspace = true
 ogeom-mesh.workspace = true
 
 [dev-dependencies]
+# Its tests read STEP only, so they leave the booleans out.
 ogeom-io.workspace = true
 approx.workspace = true
 proptest.workspace = true
