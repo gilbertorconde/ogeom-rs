@@ -373,18 +373,19 @@ pub fn fit_projected_pcurve_aimed(
         }
     }
 
-    // The tolerance carried into the chart through the trace's own
-    // metric: the honest cheap version, refined by the fit's report.
-    let scale = if space_run > tol.confusion() {
-        parameter_run / space_run
-    } else {
-        1.0
-    };
-    let target = (aim * scale).max(f64::MIN_POSITIVE);
+    // The aim is a length, and a chart's two axes need not be lengths in
+    // one measure: a cone's angle and height, a patch's knot units. Each
+    // axis's miss is read through the most model length one chart unit of
+    // it moves the surface along the trace, and the fit is held to the aim
+    // in that measure, so a miss along either axis stays within the aim in
+    // space, in whatever unit the model is stated.
+    let metric = axis_metric(surface, &trace, (space_run, parameter_run), tol);
+    let target = aim.max(f64::MIN_POSITIVE);
     let fit_and_clamp = |parameters: &[f64],
                          trace: &[ogeom_math::Point2]|
      -> OgeomResult<ogeom_geom::fit::Fitted<ogeom_geom::BSpline2d>> {
-        let fitted = ogeom_geom::fit::fit_points_2d_at(parameters, trace, 3, target, tol)?;
+        let fitted =
+            ogeom_geom::fit::fit_points_2d_at_weighted(parameters, trace, 3, target, metric, tol)?;
         // A least-squares fit wiggles past its samples at the ends, and a
         // surface with a *tight* stated window (an imported patch, not a
         // reader-built analytic with its enormous extents) refuses
@@ -662,6 +663,39 @@ pub fn fit_projected_pcurve_aimed(
         worst_off,
         slop,
     )))
+}
+
+/// How much model length one chart unit of each axis moves `surface` at
+/// most, read at the trace's samples: the weights that read a chart miss
+/// along each axis as a length. An axis that moves nothing anywhere
+/// (a collapsed row, an evaluation refused) takes the trace's own ratio of
+/// space run to chart run, or one where the trace has no run.
+fn axis_metric(
+    surface: &SurfaceGeometry,
+    trace: &[ogeom_math::Point2],
+    (space_run, parameter_run): (f64, f64),
+    tol: Tolerances,
+) -> (f64, f64) {
+    let (mut su, mut sv) = (0.0_f64, 0.0_f64);
+    for uv in trace {
+        if let Ok((du, dv)) = surface.d1_at(uv.x, uv.y, tol) {
+            su = su.max(du.magnitude());
+            sv = sv.max(dv.magnitude());
+        }
+    }
+    let fallback = if space_run > tol.confusion() && parameter_run > 0.0 {
+        space_run / parameter_run
+    } else {
+        1.0
+    };
+    let sound = |s: f64| {
+        if s.is_finite() && s > 0.0 {
+            s
+        } else {
+            fallback
+        }
+    };
+    (sound(su), sound(sv))
 }
 
 /// The widest a fitted pcurve, lifted through `surface`, misses where the
@@ -1529,6 +1563,64 @@ mod tests {
                 );
                 assert!((sampled - shift).abs() <= 1e-12, "{sampled:e}");
             }
+        }
+    }
+
+    /// A pcurve on a drum is held to its aim along both axes, in every
+    /// unit.
+    ///
+    /// The drum's chart is an angle and a height, so one chart unit of
+    /// angle moves the drum by its radius, 10 mm, and one of height by a
+    /// model unit. The curve climbs 8 mm and sways a tenth of a radian
+    /// round. One chart target for both axes, scaled by the trace's run,
+    /// depends on how the unit weighs the height against the angle: that
+    /// fit missed by 1.7e-5 mm in millimetres and 6.6e-5 mm in inches and
+    /// metres. Each axis read in length, the miss is under twice the aim
+    /// and the same in every unit.
+    #[test]
+    fn a_fit_on_a_drum_keeps_its_aim_along_both_axes_in_every_unit() {
+        use ogeom_geom::BSplineCurve;
+        use ogeom_math::{KnotVector, Point};
+        let aim_mm = 1e-5;
+        let miss_mm = |mm_per_unit: f64| {
+            let tol = Tolerances::with_scale(mm_per_unit).unwrap();
+            let u = |mm: f64| mm / mm_per_unit;
+            let on =
+                |angle: f64, z: f64| Point::new(u(10.0) * angle.cos(), u(10.0) * angle.sin(), u(z));
+            let control: Vec<Point> = (0..=8)
+                .map(|i| {
+                    let s = f64::from(i) / 8.0;
+                    on(0.1 * (core::f64::consts::TAU * s).sin(), 8.0 * s - 4.0)
+                })
+                .collect();
+            let mut knots = vec![0.0; 4];
+            knots.extend((1..6).map(|i| f64::from(i) / 6.0));
+            knots.extend([1.0; 4]);
+            let curve: Curve = BSplineCurve::new(KnotVector::new(knots, 3).unwrap(), control, tol)
+                .unwrap()
+                .into();
+            let drum: SurfaceGeometry = CylinderSurface::new(
+                Cylinder::new(Frame::WORLD, u(10.0), tol).unwrap(),
+                (u(-5.0), u(5.0)),
+            )
+            .unwrap()
+            .into();
+            let fitted =
+                fit_projected_pcurve_aimed(&curve, (0.0, 1.0), &drum, u(1.0), u(aim_mm), tol)
+                    .unwrap();
+            let CappedFit::Fitted((_, error, ..)) = fitted else {
+                panic!("{mm_per_unit} mm per unit: the curve is on the drum");
+            };
+            error * mm_per_unit
+        };
+        let at_mm = miss_mm(1.0);
+        assert!(at_mm <= 2.0 * aim_mm, "in millimetres: {at_mm:e} mm");
+        for mm_per_unit in [1e-3, 25.4, 1e3] {
+            let miss = miss_mm(mm_per_unit);
+            assert!(
+                (miss - at_mm).abs() <= at_mm * 1e-3,
+                "{mm_per_unit} mm per unit: {miss:e} mm, against {at_mm:e} mm"
+            );
         }
     }
 }

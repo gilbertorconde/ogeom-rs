@@ -649,7 +649,41 @@ pub fn fit_points_2d_at(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<BSpline2d>> {
-    fit_points_2d_at_inner(parameters, points, degree, tolerance, false, tol)
+    fit_points_2d_at_inner(parameters, points, degree, tolerance, false, None, tol)
+}
+
+/// As [`fit_points_2d_at`], each residual read with its coordinates
+/// weighted by `weights`: the miss `(du, dv)` reads as the length of
+/// `(weights.0 * du, weights.1 * dv)`, and `tolerance` and the error
+/// reported are in that measure. A chart whose two axes measure
+/// differently (an angle and a height, or a patch's knot units) is then
+/// held to one length along both. The least squares is solved on the
+/// points as given, so the weights choose only where knots go and when
+/// the fit stops.
+///
+/// # Errors
+///
+/// As [`fit_points_2d_at`], and both weights must be finite and positive.
+pub fn fit_points_2d_at_weighted(
+    parameters: &[f64],
+    points: &[Point2],
+    degree: usize,
+    tolerance: f64,
+    weights: (f64, f64),
+    tol: Tolerances,
+) -> OgeomResult<Fitted<BSpline2d>> {
+    if !(weights.0.is_finite() && weights.0 > 0.0 && weights.1.is_finite() && weights.1 > 0.0) {
+        ogeom_bail!(Construction, "weights of {weights:?} do not measure a miss");
+    }
+    fit_points_2d_at_inner(
+        parameters,
+        points,
+        degree,
+        tolerance,
+        false,
+        Some(weights),
+        tol,
+    )
 }
 
 /// Fit space points at *fixed* parameters: the caller's `t` values are the
@@ -1312,7 +1346,7 @@ pub fn fit_points_2d_at_closed(
     tolerance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<BSpline2d>> {
-    fit_points_2d_at_inner(parameters, points, degree, tolerance, true, tol)
+    fit_points_2d_at_inner(parameters, points, degree, tolerance, true, None, tol)
 }
 
 fn fit_points_2d_at_inner(
@@ -1321,6 +1355,7 @@ fn fit_points_2d_at_inner(
     degree: usize,
     tolerance: f64,
     closed: bool,
+    weights: Option<(f64, f64)>,
     tol: Tolerances,
 ) -> OgeomResult<Fitted<BSpline2d>> {
     if parameters.len() != points.len() {
@@ -1358,7 +1393,17 @@ fn fit_points_2d_at_inner(
                 return Err(e);
             }
         };
-        let errors = residuals::<2>(&knots, &control, &data, parameters);
+        let errors = match weights {
+            None => residuals::<2>(&knots, &control, &data, parameters),
+            Some((wu, wv)) => parameters
+                .iter()
+                .zip(&data)
+                .map(|(&u, p)| {
+                    let at = position::<2>(&knots, &control, u);
+                    (u, (wu * (at[0] - p[0])).hypot(wv * (at[1] - p[1])))
+                })
+                .collect(),
+        };
         let worst = errors.iter().fold(0.0_f64, |acc, e| acc.max(e.1));
         if best.as_ref().is_none_or(|(_, _, held)| worst < *held) {
             best = Some((knots.clone(), control.clone(), worst));

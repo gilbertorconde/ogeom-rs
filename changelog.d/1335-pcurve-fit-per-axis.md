@@ -1,0 +1,6 @@
+- **Fixed: a projected pcurve is fitted to its length target along both chart axes** (#1335).
+  - `fit_projected_pcurve_within` and `fit_projected_pcurve_aimed` turned their length target into one chart target through the trace's ratio of chart run to space run. On a chart whose axes measure differently (a cone's angle and height, a strip's knot units) a miss along the stiffer axis could be several times the target, and how many times depended on the model's unit.
+  - Each axis's miss is now read in length, through the most one chart unit of it moves the surface along the trace, and the fit is held to the target in that measure.
+  - Added `ogeom_geom::fit::fit_points_2d_at_weighted`: the fixed-parameter 2D fit with its residuals weighted per coordinate.
+  - A round of a cut cone's two rulings now states the same edge tolerances in micrometres, millimetres, inches and metres. Before, its widest edge was 2e-5 mm in millimetres, 5.2e-5 mm in micrometres and 6.7e-5 mm in inches and metres.
+  - Millimetre results change where a fit's chart was uneven: those fits are now tighter, and the edges they widen state smaller tolerances.
