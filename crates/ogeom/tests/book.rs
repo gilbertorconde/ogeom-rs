@@ -1,10 +1,6 @@
 //! The guide's code, run. Every example in `docs/book/` is included from
 //! this file by anchor, so a snippet that stops compiling (or stops being
 //! true) fails the build instead of lying in the documentation.
-#![allow(
-    deprecated,
-    reason = "exercises the edge-blend calls BlendRequest replaces"
-)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;
@@ -79,7 +75,9 @@ fn fillet_an_edge() {
 
     // Pick the top edge along y = 0 and round it at radius 2.
     let edge = edge_near(&model, &block, Point::new(20.0, 0.0, 12.0));
-    let rounded = ogeom::fillet::fillet_edge(&mut model, &block, &edge, 2.0, T)
+    let rounded = ogeom::fillet::BlendRequest::new()
+        .round([edge], 2.0)
+        .build(&mut model, &block, T)
         .unwrap()
         .shape;
 
@@ -110,7 +108,9 @@ fn edges_asked_together() {
 
     // Four bevels as one operation mitre where they meet: each corner loses
     // the overlap of two prisms, a third of the cube of the distance.
-    let bevelled = ogeom::fillet::chamfer_edges(&mut model, &block, &top, 1.0, T)
+    let bevelled = ogeom::fillet::BlendRequest::new()
+        .chamfer(top, 1.0)
+        .build(&mut model, &block, T)
         .unwrap()
         .shape;
     let volume = ogeom::algo::volume_properties(&model, &bevelled, Deflection::default(), T)
@@ -126,7 +126,9 @@ fn edges_asked_together() {
         Point::new(20.0, 20.0, 5.0),
     ]
     .map(|at| edge_near(&model, &block, at));
-    let rounded = ogeom::fillet::fillet_edges(&mut model, &block, &corner, 2.0, T)
+    let rounded = ogeom::fillet::BlendRequest::new()
+        .round(corner, 2.0)
+        .build(&mut model, &block, T)
         .unwrap()
         .shape;
     let spheres = ogeom::topo::explore_unique(&model, &rounded, ogeom::topo::ShapeType::Face)
