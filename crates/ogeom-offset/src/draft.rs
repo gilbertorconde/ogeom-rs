@@ -17,7 +17,7 @@ use ogeom_geom::{PlaneSurface, Surface as _, SurfaceGeometry};
 use ogeom_math::{Direction, Frame, Plane, Point, Transform, Vector};
 use ogeom_topo::{Model, NodeData, Shape, ShapeType, TShapeId};
 
-use crate::shape::rebuilt;
+use crate::shape::{rebuilt, support_fit_target};
 
 /// Draft the named faces of a solid about a neutral plane.
 ///
@@ -236,7 +236,11 @@ pub fn apply_draft(
         };
         // The window grows with the turn: a tilted plane reaches further
         // across the same solid than the one it replaces.
-        let grow = (u1 - u0).abs().max((v1 - v0).abs()).mul_add(0.5, 1.0) * angle.abs().tan()
+        let grow = (u1 - u0)
+            .abs()
+            .max((v1 - v0).abs())
+            .mul_add(0.5, millimetre(tol))
+            * angle.abs().tan()
             + tol.confusion();
         turned.push((
             face.node(),
@@ -256,6 +260,12 @@ pub fn apply_draft(
         },
         tol,
     )
+}
+
+/// One millimetre in model units: the margin a drafted window grows by
+/// past what its turn reaches.
+fn millimetre(tol: Tolerances) -> f64 {
+    1.0 / tol.scale()
 }
 
 /// The turned support for a drafted wall of revolution: a cone about the
@@ -335,7 +345,7 @@ fn revolved_draft(
     // The old window, re-expressed against the neutral origin and grown a
     // little; refused when the slant runs out of radius inside it.
     let shift = height;
-    let grow = (window.1 - window.0).abs().mul_add(0.1, 1.0);
+    let grow = (window.1 - window.0).abs().mul_add(0.1, millimetre(tol));
     let (w0, w1) = (window.0 - shift - grow, window.1 - shift + grow);
     let apex_height = -neutral_radius / leaned.tan();
     if apex_height > w0 && apex_height < w1 {
@@ -440,7 +450,12 @@ fn extruded_draft(
     // profile the curve itself ends, so the growth is a tangent-line
     // continuation at each end: the wall must still reach the neighbours it
     // re-meets, and the continuation exists only to be trimmed away there.
-    let grow = (u1 - u0).abs().max((v1 - v0).abs()).mul_add(0.5, 1.0) * angle.abs().tan()
+    // The profile's reach is measured in space: its parameter is no length.
+    let reach = base
+        .iter()
+        .map(|(hinge, _)| hinge.distance(base[0].0))
+        .fold(0.0, f64::max);
+    let grow = reach.max((v1 - v0).abs()).mul_add(0.5, millimetre(tol)) * angle.abs().tan()
         + tol.confusion();
     let (s_lo, s_hi) = (s_lo - grow, s_hi + grow);
     // Quadratic continuation, so the fitted wall keeps its end curvature
@@ -557,7 +572,7 @@ fn extruded_draft(
             s
         })
         .collect();
-    let fit_target = (tol.confusion() * 1e3).max(1e-4);
+    let fit_target = support_fit_target(tol);
     let fitted = ogeom_geom::fit::fit_surface_sampled(
         |s, x| {
             let x = x * span;
@@ -1081,7 +1096,7 @@ fn general_draft(
         s_lo = s_lo.min(s - h_hi);
         s_hi = s_hi.max(s - h_lo);
     }
-    let grow = extent.mul_add(0.5, 1.0) * angle.abs().tan() + tol.confusion();
+    let grow = extent.mul_add(0.5, millimetre(tol)) * angle.abs().tan() + tol.confusion();
     let (s_lo, s_hi) = (s_lo - grow, s_hi + grow);
     // How many stations continue an open hinge before its first.
     let mut lead = 0;
@@ -1263,7 +1278,7 @@ fn general_draft(
     // Both rows on one knot vector, refined where either strays between
     // the samples: a surface fit through the two rows, which is linear
     // across them.
-    let fit_target = (tol.confusion() * 1e3).max(1e-4);
+    let fit_target = support_fit_target(tol);
     let rows = ogeom_geom::fit::fit_surface_sampled(
         |at, side| {
             let (h, r) = ruled_at(at)?;
@@ -1398,7 +1413,7 @@ fn outward_sign(
     for eps_scale in [1e-3, 1e-2, 5e-2] {
         let eps = scale * eps_scale;
         let deflection = ogeom_mesh::Deflection {
-            chord: (eps * 0.1).max(1e-4),
+            chord: (eps * 0.1).max(tol.confusion() * 1e3),
             ..ogeom_mesh::Deflection::default()
         };
         let ahead = ogeom_algo::classify_in_solid(model, solid, p + n * eps, deflection, tol)?;
