@@ -535,7 +535,7 @@ fn what_is_not_built_is_refused_by_name() {
 }
 
 #[test]
-fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a_bevel_of_the_other_convexity()
+fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_a_mixed_pair_beside_a_concave_sharp_edge()
  {
     let profile = RoundProfile::Conic(0.4);
     let asked = |face: &Shape| Blend::RoundDistances {
@@ -586,24 +586,44 @@ fn blend_edges_takes_an_asymmetric_round_beside_others_and_refuses_one_meeting_a
     let v = volume(&m, &both.shape);
     assert!((v - exact).abs() <= 1e-8, "volume {v} against {exact}");
 
-    // Meeting a bevel of the other convexity at a vertex whose third edge
-    // is left sharp: the L's re-entrant edge and the plate's front edge.
-    // A round there closes on the signed patch; a bevel is refused.
+    // A convex and a concave band at a vertex whose third edge, left
+    // sharp, is concave: a block standing on the L's floor against its
+    // wall, the round of its top's front edge and the fill of its top
+    // against the wall, its upright against the wall left sharp. Refused
+    // by name, asymmetric on either band.
     let mut m = Model::new();
-    let (s, edge, floor, _) = l_bracket(&mut m);
-    let plate = edge_where(&m, &s, |p| {
-        p.y.abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9 && p.x >= 8.0 - 1e-9
-    });
-    let message = ogeom_fillet::blend_edges(
+    let (s, ..) = l_bracket(&mut m);
+    let step = ogeom_algo::make_box(
         &mut m,
-        &s,
-        &[(plate, bevel(&floor, 1.0, 1.0)), (edge, asked(&floor))],
-        ChamferCorner::Point,
+        Frame::new(Point::new(8.0, 0.0, 8.0), Direction::Z, Direction::X, T).unwrap(),
+        (6.0, 6.0, 4.0),
         T,
     )
-    .expect_err("refused")
-    .to_string();
-    assert!(message.contains("both cut or both fill"), "{message}");
+    .unwrap()
+    .shape;
+    let s = ogeom_bool::fuse(&mut m, &s, &step, T).unwrap().shape;
+    let front = edge_where(&m, &s, |p| {
+        (p.y - 6.0).abs() < 1e-9 && (p.z - 12.0).abs() < 1e-9
+    });
+    let back = edge_where(&m, &s, |p| {
+        (p.x - 8.0).abs() < 1e-9 && (p.z - 12.0).abs() < 1e-9
+    });
+    let step_top = face_at(&m, &s, Point::new(11.0, 3.0, 12.0));
+    for request in [
+        [
+            (front.clone(), asked(&step_top)),
+            (back.clone(), Blend::Round(1.0)),
+        ],
+        [
+            (front.clone(), Blend::Round(1.0)),
+            (back.clone(), asked(&step_top)),
+        ],
+    ] {
+        let message = ogeom_fillet::blend_edges(&mut m, &s, &request, ChamferCorner::Point, T)
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains("both cut or both fill"), "{message}");
+    }
 }
 
 #[test]
@@ -3157,6 +3177,194 @@ fn bands_where_the_third_edge_is_left_sharp_meet_by_intersection() {
     assert!((v - exact).abs() <= 1e-5, "volume {v} against {exact}");
 }
 
+/// The half of a drum of radius 5 and height 4 past x = 0, its seam
+/// behind the axis so its top rim is one arc: the half drum, the top's arc
+/// and straight edges, the top, the flat and the drum's face.
+fn d_shape(m: &mut Model) -> (Shape, Shape, Shape, [Shape; 3]) {
+    let back = Frame::new(
+        Point::new(0.0, 0.0, 0.0),
+        Direction::Z,
+        Direction::new(-X, T).unwrap(),
+        T,
+    )
+    .unwrap();
+    let drum = ogeom_algo::make_cylinder(m, back, 5.0, 4.0, T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(-6.0, -6.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let half = ogeom_algo::make_box(m, at, (6.0, 12.0, 6.0), T)
+        .unwrap()
+        .shape;
+    let d = ogeom_bool::cut(m, &drum, &half, T).unwrap().shape;
+    let mid = |m: &Model, p: Point| {
+        use ogeom_geom::Curve3d as _;
+        explore_unique(m, &d, ShapeType::Edge)
+            .unwrap()
+            .into_iter()
+            .find(|e| {
+                ogeom_algo::placed_edge_curve(m, e, T)
+                    .unwrap()
+                    .is_some_and(|(c, (lo, hi))| {
+                        c.point_at(f64::midpoint(lo, hi), T).unwrap().distance(p) < 1e-6
+                    })
+            })
+            .expect("the edge")
+    };
+    let arc = mid(m, Point::new(5.0, 0.0, 4.0));
+    let straight = mid(m, Point::new(0.0, 0.0, 4.0));
+    let top = face_at(m, &d, Point::new(2.0, 0.0, 4.0));
+    let flat = face_at(m, &d, Point::new(0.0, 0.0, 2.0));
+    let wall = face_at(m, &d, Point::new(5.0, 0.0, 2.0));
+    (d, arc, straight, [top, flat, wall])
+}
+
+/// A curved edge at a vertex left sharp: on the D-shaped half drum, an
+/// asymmetric round of the top's arc and a round or asymmetric round of
+/// its straight edge, the uprights at the arc's ends left sharp. The arc's
+/// band is its conic revolved over the arc's half turn, ending in the flat
+/// through the axis; the straight band runs to the drum, square to it
+/// there. Both hang from the top, so the solid loses at each point of the
+/// top the deeper of the two bands' depths there: the straight band's at
+/// its distance from the flat, the arc's at its distance in from the rim.
+/// That is integrated over the half disc, split where either band's
+/// contact or their crossing runs. The same with a circular round on the
+/// arc, its band the torus. The same solid in either order and naming the
+/// other faces. A bevel on the straight edge, its prism ending at the
+/// drum, is refused by name.
+#[test]
+fn an_asymmetric_round_of_a_rim_s_arc_beside_an_edge_left_sharp_meets_the_other_band_by_intersection()
+ {
+    let w = conic(0.4);
+    let asym = |face: &Shape, a: f64, b: f64| Blend::RoundDistances {
+        face: face.clone(),
+        on_face: a,
+        on_other: b,
+        profile: RoundProfile::Conic(0.4),
+    };
+    let (cap, rim_wall) = (1.0, 0.6);
+    let arc_depth = |rho: f64| conic_depth(cap, rim_wall, w, 5.0 - rho);
+    let taken_by = |straight: &dyn Fn(f64) -> f64,
+                    reach: f64,
+                    arc_depth: &dyn Fn(f64) -> f64,
+                    cap: f64| {
+        // Over y >= 0 at each x, the arc's depth grows toward the rim.
+        let across = |x: f64| {
+            let top = x.mul_add(-x, 25.0).max(0.0).sqrt();
+            let h = straight(x);
+            let mut cuts = vec![0.0, top];
+            let inner = 5.0 - cap;
+            if x < inner {
+                cuts.push(inner.mul_add(inner, -x * x).sqrt());
+            }
+            let gap = |y: f64| arc_depth(x.hypot(y).min(5.0)) - h;
+            if h > 0.0 && gap(0.0) < 0.0 && gap(top) > 0.0 {
+                let (mut lo, mut hi) = (0.0, top);
+                for _ in 0..80 {
+                    let mid = f64::midpoint(lo, hi);
+                    if gap(mid) > 0.0 {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                cuts.push(f64::midpoint(lo, hi));
+            }
+            cuts.sort_by(f64::total_cmp);
+            cuts.windows(2)
+                .map(|p| integrate_between(p[0], p[1], |y| h.max(arc_depth(x.hypot(y).min(5.0)))))
+                .sum::<f64>()
+        };
+        let mut xs = [0.0, reach.min(5.0), 5.0 - cap, 5.0];
+        xs.sort_by(f64::total_cmp);
+        2.0 * xs
+            .windows(2)
+            .map(|p| integrate_between(p[0], p[1], across))
+            .sum::<f64>()
+    };
+    let taken =
+        |straight: &dyn Fn(f64) -> f64, reach: f64| taken_by(straight, reach, &arc_depth, cap);
+    let solid = 50.0 * core::f64::consts::PI;
+    let circle = FRAC_1_SQRT_2;
+
+    // A round of radius 0.8 on the straight edge.
+    let mut m = Model::new();
+    let (d, arc, straight, [top, flat, wall]) = d_shape(&mut m);
+    let exact = solid - taken(&|x| conic_depth(0.8, 0.8, circle, x), 0.8);
+    let v = either_order(
+        &mut m,
+        &d,
+        &[
+            (arc.clone(), asym(&top, cap, rim_wall)),
+            (straight.clone(), Blend::Round(0.8)),
+        ],
+    );
+    assert!(
+        (v - exact).abs() <= 1e-7,
+        "round: volume {v} against {exact}"
+    );
+    let again = ogeom_fillet::blend_edges(
+        &mut m,
+        &d,
+        &[
+            (arc.clone(), asym(&wall, rim_wall, cap)),
+            (straight.clone(), Blend::Round(0.8)),
+        ],
+        ChamferCorner::Point,
+        T,
+    )
+    .unwrap();
+    assert_eq!(
+        volume(&m, &again.shape).to_bits(),
+        v.to_bits(),
+        "naming the wall"
+    );
+
+    // An asymmetric round of 0.9 along the top and 0.5 down the flat.
+    let exact = solid - taken(&|x| conic_depth(0.9, 0.5, w, x), 0.9);
+    let v = either_order(
+        &mut m,
+        &d,
+        &[
+            (arc.clone(), asym(&top, cap, rim_wall)),
+            (straight.clone(), asym(&flat, 0.5, 0.9)),
+        ],
+    );
+    assert!(
+        (v - exact).abs() <= 1e-7,
+        "asymmetric: volume {v} against {exact}"
+    );
+
+    let refused = |m: &mut Model, request: &[(Shape, Blend)], words: &str| {
+        let message = ogeom_fillet::blend_edges(m, &d, request, ChamferCorner::Point, T)
+            .expect_err("refused")
+            .to_string();
+        assert!(message.contains(words), "{message}");
+    };
+    // A circular round of 0.8 on the arc, its band the torus.
+    let round_arc = |rho: f64| conic_depth(0.8, 0.8, circle, 5.0 - rho);
+    let exact = solid - taken_by(&|x| conic_depth(0.9, 0.5, w, x), 0.9, &round_arc, 0.8);
+    let v = either_order(
+        &mut m,
+        &d,
+        &[
+            (arc.clone(), Blend::Round(0.8)),
+            (straight.clone(), asym(&top, 0.9, 0.5)),
+        ],
+    );
+    assert!(
+        (v - exact).abs() <= 1e-7,
+        "round arc: volume {v} against {exact}"
+    );
+    refused(
+        &mut m,
+        &[
+            (arc, asym(&top, cap, rim_wall)),
+            (straight, bevel(&flat, 0.5, 0.9)),
+        ],
+        "its prism stops square there",
+    );
+}
+
 /// A 20 x 20 x 10 block with the quarter above z = 5 past x = 10 and
 /// y = 10 taken out: the pocket's inside corner at (10, 10, 5), its three
 /// concave edges along x, y and z, the floor and the walls x = 10 and
@@ -3527,14 +3735,15 @@ fn slab_on_leaning_block(m: &mut Model, lean: f64) -> (Shape, Shape, Shape, Shap
 }
 
 /// The worst angle between a band and the top (z = 10) or the slab's
-/// front (y = 5) along the curves it meets them in.
+/// front (y = 5) along the curves it meets them in. Faces on planes and
+/// cylinders are the solid's own.
 fn tangent_to_top_and_wall(m: &Model, s: &Shape) -> f64 {
     let mut worst = 0.0_f64;
     for f in explore_unique(m, s, ShapeType::Face).unwrap() {
         let data = m.node(&f).unwrap().data().as_face().unwrap();
         if matches!(
             m.geometry().surface(data.surface),
-            Some(ogeom_geom::SurfaceGeometry::Plane(_))
+            Some(ogeom_geom::SurfaceGeometry::Plane(_) | ogeom_geom::SurfaceGeometry::Cylinder(_))
         ) {
             continue;
         }
@@ -3653,6 +3862,287 @@ fn a_concave_edge_ending_at_a_face_not_square_fills_up_to_its_plane() {
         }
         assert_eq!(bits[0], bits[1], "{lean}: naming the other face first");
     }
+}
+
+/// Gauss-Legendre over `[lo, hi]` in 100 pieces, the variable laid as
+/// a smoothstep so square-root ends at either side integrate smooth.
+fn integrate_between(lo: f64, hi: f64, f: impl Fn(f64) -> f64) -> f64 {
+    let nodes = [
+        (-0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+        (-0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.339_981_043_584_856_3, 0.652_145_154_862_546_1),
+        (0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
+    ];
+    if hi <= lo {
+        return 0.0;
+    }
+    let mut sum = 0.0;
+    for k in 0..100 {
+        let (a, b) = (f64::from(k) / 100.0, f64::from(k + 1) / 100.0);
+        for (x, wt) in nodes {
+            let s = (b - a).mul_add(x, a + b) * 0.5;
+            let t = s * s * 2.0f64.mul_add(-s, 3.0);
+            let jacobian = 6.0 * s * (1.0 - s);
+            sum += wt * (b - a) * 0.5 * f((hi - lo).mul_add(t, lo)) * (hi - lo) * jacobian;
+        }
+    }
+    sum
+}
+
+/// How far along x a block's top reaches at a given y.
+type Reach = fn(f64) -> f64;
+
+/// A 30 x 20 x 10 block whose end is a drum standing on the z axis, under
+/// the 45 x 20 x 5 slab from (-5, 5, 10): the concave edge along
+/// (x, 5, 10) from x = 0 to the drum. Leaning out, the block is cut to
+/// within the drum of radius 20 about (5, 0); leaning in, the drum of
+/// radius 12 about (35, 0) is cut out of it. With the edge, the top face,
+/// the slab's front, how far along x the top reaches at `y` (the drum's
+/// line there), and the solid's volume in closed form.
+fn slab_on_drum_ended_block(m: &mut Model, out: bool) -> (Shape, Shape, Shape, Shape, Reach, f64) {
+    let block = ogeom_algo::make_box(m, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let (centre, radius) = if out { (5.0, 20.0) } else { (35.0, 12.0) };
+    let at = Frame::new(Point::new(centre, 0.0, -1.0), Direction::Z, Direction::X, T).unwrap();
+    let drum = ogeom_algo::make_cylinder(m, at, radius, 12.0, T)
+        .unwrap()
+        .shape;
+    let base = if out {
+        ogeom_bool::common(m, &block, &drum, T).unwrap().shape
+    } else {
+        ogeom_bool::cut(m, &block, &drum, T).unwrap().shape
+    };
+    let slab = ogeom_algo::make_box(
+        m,
+        Frame::new(Point::new(-5.0, 5.0, 10.0), Direction::Z, Direction::X, T).unwrap(),
+        (45.0, 20.0, 5.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let s = ogeom_bool::fuse(m, &base, &slab, T).unwrap().shape;
+    let edge = edge_where(m, &s, |p| {
+        (p.y - 5.0).abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9
+    });
+    let top = face_at(m, &s, Point::new(10.0, 2.5, 10.0));
+    let wall = face_at(m, &s, Point::new(10.0, 5.0, 12.5));
+    // The block's plan: within the drum, the area under x = 5 + sqrt(400 -
+    // y^2) over 0 <= y <= 20 less the sliver where its left side passes
+    // x = 0; outside the drum, the rectangle less the segment the drum
+    // cuts off past x = 23.
+    let primitive =
+        |r: f64, t: f64| 0.5 * t * r.mul_add(r, -t * t).sqrt() + 0.5 * r * r * (t / r).asin();
+    let plan = if out {
+        let start = 375.0f64.sqrt();
+        100.0 + primitive(20.0, 20.0)
+            - (5.0 * (20.0 - start) - (primitive(20.0, 20.0) - primitive(20.0, start)))
+    } else {
+        600.0 - (primitive(12.0, -5.0) - primitive(12.0, -12.0))
+    };
+    let reach: Reach = if out {
+        |y| 5.0 + y.mul_add(-y, 400.0).sqrt()
+    } else {
+        |y| 35.0 - y.mul_add(-y, 144.0).sqrt()
+    };
+    (s, edge, top, wall, reach, 10.0f64.mul_add(plan, 4500.0))
+}
+
+/// A concave edge ending at a drum: the fill ends in the drum, as it ends
+/// in a plane not square to it. On the slab on a block whose end is a
+/// drum (leaning out or in), each point of the fill's section `u` into
+/// the top from the crease runs along x from the block's square end to
+/// the drum's line at y = 5 - u, run on past the edge's end where the
+/// drum leans out, the laws held level there. With constant distances
+/// that is the depth at `u` times that length, integrated over the top's
+/// leg; with the laws 1 to 2 on the top and 0.5 to 1.5 on the slab (laid
+/// from the edge's start), each point's depth under its station's laws
+/// integrated over the plan. The same solid whichever face is named;
+/// tangent to the top and the slab. An end face that is neither a plane
+/// nor a cylinder is refused by name, and so are varying distances on a
+/// D-shaped boss's straight foot, whose drum lies beyond the flat and so
+/// does not span the fill's end.
+#[test]
+fn a_concave_edge_ending_at_a_drum_fills_up_to_the_drum() {
+    use ogeom_fillet::RadiusLaw;
+    use ogeom_geom::Curve3d as _;
+    let rho = 0.4;
+    let w = conic(rho);
+    let profile = RoundProfile::Conic(rho);
+    for out in [true, false] {
+        let mut m = Model::new();
+        let (s, edge, top, wall, reach, solid) = slab_on_drum_ended_block(&mut m, out);
+        let base = volume(&m, &s);
+        assert!(
+            (base - solid).abs() <= 1e-8,
+            "{out}: the block {base} against {solid}"
+        );
+        let length = reach(5.0);
+        let (curve, (lo, _)) = ogeom_algo::placed_edge_curve(&m, &edge, T)
+            .unwrap()
+            .unwrap();
+        let from_start = curve.point_at(lo, T).unwrap().x > 0.5 * length;
+        let station = |x: f64| {
+            let s = (x / length).clamp(0.0, 1.0);
+            if from_start { 1.0 - s } else { s }
+        };
+
+        // Constant distances.
+        let exact = solid + integrate(1.5, |u| conic_depth(1.5, 1.0, w, u) * reach(5.0 - u));
+        let mut bits = Vec::new();
+        for (face, a, b) in [(&top, 1.5, 1.0), (&wall, 1.0, 1.5)] {
+            let built =
+                ogeom_fillet::fillet_edge_distances(&mut m, &s, &edge, face, a, b, profile, T)
+                    .unwrap();
+            let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{out}: {:?}", diagnosis.problems);
+            let v = volume(&m, &built.shape);
+            assert!(
+                (v - exact).abs() <= 1e-8,
+                "{out}: constant, volume {v} against {exact}"
+            );
+            let tangency = tangent_to_top_and_wall(&m, &built.shape);
+            assert!(
+                tangency <= 1e-7,
+                "{out}: the fill meets a face at {tangency}"
+            );
+            bits.push(v.to_bits());
+        }
+        assert_eq!(bits[0], bits[1], "{out}: naming the other face first");
+
+        // Distances varying, each over its fraction of the edge from its
+        // start.
+        let on_top = RadiusLaw::Linear {
+            start: 1.0,
+            end: 2.0,
+        };
+        let on_wall = RadiusLaw::Linear {
+            start: 0.5,
+            end: 1.5,
+        };
+        let depth = |x: f64, u: f64| {
+            let s = station(x);
+            conic_depth(1.0 + s, 0.5 + s, w, u)
+        };
+        // Along x at depth u: the laws' ends, where the top's leg reaches
+        // u, and the drum.
+        let along = |u: f64| {
+            let end = reach(5.0 - u);
+            let mut cuts = vec![0.0, end];
+            if end > length {
+                cuts.push(length);
+            }
+            if (1.0..2.0).contains(&u) {
+                let x = (u - 1.0) * length;
+                cuts.push(if from_start { length - x } else { x });
+            }
+            cuts.retain(|x| (0.0..=end).contains(x));
+            cuts.sort_by(f64::total_cmp);
+            cuts.windows(2)
+                .map(|p| integrate_between(p[0], p[1], |x| depth(x, u)))
+                .sum::<f64>()
+        };
+        let exact = solid + integrate_between(0.0, 1.0, along) + integrate_between(1.0, 2.0, along);
+        let mut bits = Vec::new();
+        for (face, a, b) in [(&top, &on_top, &on_wall), (&wall, &on_wall, &on_top)] {
+            let built = ogeom_fillet::fillet_edge_distances_variable(
+                &mut m, &s, &edge, face, a, b, profile, T,
+            )
+            .unwrap();
+            let diagnosis = ogeom_algo::check(&m, &built.shape, T).unwrap();
+            assert!(diagnosis.is_valid(), "{out}: {:?}", diagnosis.problems);
+            let v = volume(&m, &built.shape);
+            assert!(
+                (v - exact).abs() <= 1e-7,
+                "{out}: varying, volume {v} against {exact}"
+            );
+            let tangency = tangent_to_top_and_wall(&m, &built.shape);
+            assert!(
+                tangency <= 1e-7,
+                "{out}: the fill meets a face at {tangency}"
+            );
+            bits.push(v.to_bits());
+        }
+        assert_eq!(bits[0], bits[1], "{out}: naming the other face first");
+    }
+
+    // The block's end a ball instead: refused by name, constant or varying.
+    let mut m = Model::new();
+    let block = ogeom_algo::make_box(&mut m, Frame::WORLD, (30.0, 20.0, 10.0), T)
+        .unwrap()
+        .shape;
+    let at = Frame::new(Point::new(35.0, 0.0, 5.0), Direction::Z, Direction::X, T).unwrap();
+    let ball = ogeom_algo::make_sphere(&mut m, at, 12.0, T).unwrap().shape;
+    let base = ogeom_bool::cut(&mut m, &block, &ball, T).unwrap().shape;
+    let slab = ogeom_algo::make_box(
+        &mut m,
+        Frame::new(Point::new(-5.0, 5.0, 10.0), Direction::Z, Direction::X, T).unwrap(),
+        (45.0, 20.0, 5.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let s = ogeom_bool::fuse(&mut m, &base, &slab, T).unwrap().shape;
+    let edge = edge_where(&m, &s, |p| {
+        (p.y - 5.0).abs() < 1e-9 && (p.z - 10.0).abs() < 1e-9
+    });
+    let top = face_at(&m, &s, Point::new(10.0, 2.5, 10.0));
+    let refused = |r: ogeom_core::OgeomResult<ogeom_algo::Built>| {
+        let message = r.expect_err("refused").to_string();
+        assert!(
+            message.contains("neither a plane nor a cylinder"),
+            "{message}"
+        );
+    };
+    refused(ogeom_fillet::fillet_edge_distances(
+        &mut m, &s, &edge, &top, 1.5, 1.0, profile, T,
+    ));
+    let law = |start, end| RadiusLaw::Linear { start, end };
+    refused(ogeom_fillet::fillet_edge_distances_variable(
+        &mut m,
+        &s,
+        &edge,
+        &top,
+        &law(1.0, 2.0),
+        &law(0.5, 1.5),
+        profile,
+        T,
+    ));
+
+    let (mut m, boss, ..) = half_drum();
+    let plate = ogeom_algo::make_box(
+        &mut m,
+        Frame::new(
+            Point::new(-10.0, -10.0, -2.0),
+            Direction::Z,
+            Direction::X,
+            T,
+        )
+        .unwrap(),
+        (20.0, 20.0, 2.0),
+        T,
+    )
+    .unwrap()
+    .shape;
+    let s = ogeom_bool::fuse(&mut m, &plate, &boss, T).unwrap().shape;
+    let foot = edge_where(&m, &s, |p| p.x.abs() < 1e-9 && p.z.abs() < 1e-9);
+    let floor = face_at(&m, &s, Point::new(-5.0, 0.0, 0.0));
+    let message = ogeom_fillet::fillet_edge_distances_variable(
+        &mut m,
+        &s,
+        &foot,
+        &floor,
+        &law(1.0, 1.5),
+        &law(0.5, 1.0),
+        profile,
+        T,
+    )
+    .expect_err("refused")
+    .to_string();
+    assert!(
+        message.contains("does not span the fill's end"),
+        "{message}"
+    );
 }
 
 /// The largest angle a face of `shape` on a fitted surface meets a
@@ -3910,6 +4400,78 @@ fn a_bevel_and_an_asymmetric_fill_beside_an_edge_left_sharp_meet_by_intersection
         &[(ex, fill), (ey, bevel(&floor, c_floor, d_wall))],
     );
     assert!((v - exact).abs() <= 1e-5, "volume {v} against {exact}");
+}
+
+/// A bevel and an asymmetric round of the other sense at a vertex whose
+/// third edge is left sharp: bevels first (ADR 0001, section 13,
+/// question 3), the round then on what the bevel left, where its edge ends
+/// in the bevel's plane. On the L-bracket, a bevel of the floor's front
+/// edge `p` along the floor and `q` down the front, then a fill of the
+/// crease: each point of the fill's section `h` above the floor stands
+/// behind the bevel's plane only from `p + p h / q` along the crease, so
+/// the fill adds `(20 - p) A - (p / q) M`, `M` the section's first moment
+/// about the floor. A bevel filling the crease `p` along the floor and `q`
+/// up the wall, then a round of the floor's front edge: the band, cut by
+/// the bevel's plane carried down into the floor, takes each point `t`
+/// below the floor from `p + p t / q` past the wall, `(12 - p) A - (p / q)
+/// M`. The same solid in either order and naming the other faces.
+#[test]
+fn an_asymmetric_round_and_a_bevel_of_the_other_sense_beside_an_edge_left_sharp_take_the_bevel_first()
+ {
+    let w = conic(0.4);
+    let asym = |face: &Shape, a: f64, b: f64| Blend::RoundDistances {
+        face: face.clone(),
+        on_face: a,
+        on_other: b,
+        profile: RoundProfile::Conic(0.4),
+    };
+    let (a, b) = (1.5, 1.0);
+    let (p, q) = (1.2, 0.8);
+    let area = corner_area(a, b, FRAC_PI_2, w);
+    let moment = integrate(a, |u| 0.5 * conic_depth(a, b, w, u).powi(2));
+    let mut m = Model::new();
+    let (s, crease, floor, wall) = l_bracket(&mut m);
+    let front_edge = edge_where(&m, &s, |p| {
+        p.y.abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9 && p.x >= 8.0 - 1e-9
+    });
+    let front = face_at(&m, &s, Point::new(14.0, 0.0, 4.0));
+    let cases = [
+        (
+            [
+                (front_edge.clone(), bevel(&floor, p, q)),
+                (crease.clone(), asym(&floor, a, b)),
+            ],
+            [
+                (front_edge.clone(), bevel(&front, q, p)),
+                (crease.clone(), asym(&wall, b, a)),
+            ],
+            5120.0 - 12.0 * 0.5 * p * q + (20.0 - p) * area - p / q * moment,
+        ),
+        (
+            [
+                (crease.clone(), bevel(&floor, p, q)),
+                (front_edge.clone(), asym(&floor, a, b)),
+            ],
+            [
+                (crease.clone(), bevel(&wall, q, p)),
+                (front_edge.clone(), asym(&front, b, a)),
+            ],
+            5120.0 + 20.0 * 0.5 * p * q - ((12.0 - p) * area - p / q * moment),
+        ),
+    ];
+    for (k, (request, other, exact)) in cases.into_iter().enumerate() {
+        let v = either_order(&mut m, &s, &request);
+        assert!(
+            (v - exact).abs() <= 1e-7,
+            "case {k}: volume {v} against {exact}"
+        );
+        let again = ogeom_fillet::blend_edges(&mut m, &s, &other, ChamferCorner::Point, T).unwrap();
+        assert_eq!(
+            volume(&m, &again.shape).to_bits(),
+            v.to_bits(),
+            "case {k}: naming the other faces"
+        );
+    }
 }
 
 /// A 20 x 12 x 4 block, its upright at (20, 0) rounded at 3: the top's

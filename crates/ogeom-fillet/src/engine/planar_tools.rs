@@ -4,8 +4,7 @@ use crate::RoundProfile;
 use crate::law::Profile;
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
-use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry};
-use ogeom_math::Vector;
+use ogeom_geom::{Curve3d as _, Surface as _};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 use super::curved::{SheetEdge, SheetFace, build_faces};
@@ -111,7 +110,7 @@ pub(crate) fn linear_round(
 }
 
 /// A straight round whose two distances vary, with its contacts checked
-/// on the original faces; a concave one ending in the planes at its ends.
+/// on the original faces; a concave one ending in the faces at its ends.
 #[allow(clippy::too_many_arguments, reason = "one edge's two distance laws")]
 pub(crate) fn varying_distances(
     model: &mut Model,
@@ -123,12 +122,6 @@ pub(crate) fn varying_distances(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     let (seat, named) = crate::asym::straight_seat(model, solid, edge, face, tol)?;
-    // Past an end not square to it the band runs on, its laws held level,
-    // as the constant band does: a convex one until the faces there cut
-    // it, a concave one trimmed by their planes.
-    if !seat.convex {
-        planar_ends(model, solid, edge, &seat, tol)?;
-    }
     let laws = if named == 0 {
         laws.clone()
     } else {
@@ -257,62 +250,6 @@ pub(super) fn sweep(
             Sense::Fuse
         },
         faces,
-    })
-}
-
-/// Refuses by name where an end of the straight seat's edge meets a face
-/// of `solid`, other than the edge's own two, that is not a plane: a fill
-/// ends in the planes at its ends.
-fn planar_ends(
-    model: &Model,
-    solid: &Shape,
-    edge: &Shape,
-    seat: &crate::support::Seat,
-    tol: Tolerances,
-) -> OgeomResult<()> {
-    let Some((a, b)) = ogeom_algo::edge_vertices(model, edge)? else {
-        return Ok(());
-    };
-    for face in explore_unique(model, solid, ShapeType::Face)? {
-        if seat.faces.iter().any(|f| f.is_same(&face)) {
-            continue;
-        }
-        let vertices = explore_unique(model, &face, ShapeType::Vertex)?;
-        let meets = vertices.iter().any(|v| {
-            crate::support::same_occurrence(model, v, &a, tol)
-                || crate::support::same_occurrence(model, v, &b, tol)
-        });
-        if !meets {
-            continue;
-        }
-        if face_normal(model, &face, tol)?.is_none() {
-            ogeom_bail!(
-                Construction,
-                "an asymmetric round whose distances vary on a concave edge ends in the \
-                 planes at its edge's ends, and an end of this edge meets a face that is \
-                 not a plane; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
-            );
-        }
-    }
-    Ok(())
-}
-
-/// A planar face's unit normal, placed; `None` for a face on any other
-/// surface.
-fn face_normal(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<Option<Vector>> {
-    use ogeom_geom::Transformable as _;
-    let Some(data) = model.node(face).and_then(|n| n.data().as_face()) else {
-        return Ok(None);
-    };
-    let Some(surface) = model.geometry().surface(data.surface) else {
-        return Ok(None);
-    };
-    let placed = surface
-        .clone()
-        .transformed(&face.transform(model.datums())?, tol)?;
-    Ok(match placed {
-        SurfaceGeometry::Plane(p) => Some(p.plane().normal().vector()),
-        _ => None,
     })
 }
 

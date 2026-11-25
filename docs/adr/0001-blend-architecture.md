@@ -2966,6 +2966,86 @@ Rules:
   `r (1 / cos(b s / r) - 1) = a s`, to 1e-4 relative. The answer builds
   valid, and 1.01 times it is refused.
 
+### Amendment: asymmetric rounds' last leftovers (#1237)
+
+The amendment before this left asymmetric-round cases refused by name.
+No new survey: each rule below follows from rules this record holds.
+
+- **A convex ruling near a quarter turn.** Settled by the section
+  crossing the drum (the amendment before this): the geometry gives out at
+  1.69143 on the half drum with legs 0.1 and 1, before the boolean does,
+  and `largest_fillet_distances` reads that limit. Nothing is left here.
+- **A concave edge ending at a cylinder.** The fill ends in the face at
+  its end, as it ends in a plane. Where the face is a cylinder spanning
+  the fill's end, the fill runs on with its laws held level until it
+  clears the cylinder, and is trimmed by it, kept on the material's side
+  (inside the cylinder where the face's material lies within it, outside
+  where it lies without). The constant fill and the varying one end
+  alike.
+  - The cylinder spans the end when each point of the fill's end section,
+    run along the crease to the cylinder and carried along its axis to
+    the vertex's height, lies on the face itself. A D-shaped boss's
+    straight foot ends at its drum, which lies beyond the flat: the
+    cylinder through the fill is not the face there. A constant fill stops
+    square at such an end, as before; a varying one is refused by name.
+  - A fill ending at a face that is neither a plane nor a cylinder is
+    refused by name, constant or varying: a square cap stands past a face
+    leaning in and leaves a notch beside one leaning out.
+  - The constant fill used to stop square at a cylinder: a notch where the
+    drum leans out (8.148 added on the test's slab, 8.176 due), and folded
+    faces where it leans in.
+- **A round on a rim's arc beside an edge left sharp.** Two bands of one
+  sense meet by intersection, each run to its end faces. A round on an
+  open arc of a rim, circular or asymmetric, takes its section revolved
+  over the arc, capped in the planes through the axis at the arc's ends.
+  That cap is the band run to its end face only where each face following
+  the rim at the vertex is such a plane, so that is required, or the
+  request is refused by name. A circular round there is the asymmetric
+  round of equal distances with the elliptical section: the torus.
+  - Beside it, a straight edge's band runs to the cylinder at its end, to
+    which it is square there; the cylinder curves away from the band, so
+    the square cap leaves no material the band should take.
+  - Any other curved edge at such a vertex stays refused by name.
+- **A bevel and an asymmetric round of opposite sense beside an edge left
+  sharp.** Section 13, question 3: bevels first, then rounds on what the
+  bevels left. The bevel is cut, and the asymmetric round's edge, now
+  ending at the bevel's face, ends there as a straight band ends at any
+  plane: a fill trimmed by the plane, a cut ending in it (the band's end
+  is the plane's section through it, carried into the material below the
+  bevel). Circular rounds beside a bevel already met it so.
+- **A convex and a concave band beside a concave sharp edge.** Stays
+  refused by name, as it is for circular rounds: the patch at the sharp
+  edge's point would be a cone turning outward across the convex edge.
+- **Setback corners that do not stand either side of the vertex.** At a
+  vertex of three planes with one concave edge and two convex ones, the
+  face opposite the concave edge is reflex there and the other two are
+  not; a face with an edge of each kind cannot be, or a fourth edge would
+  meet the vertex. A band's setback corner on the sharp edge's line falls
+  behind the vertex on a reflex face and ahead of it on the other, so the
+  convex band's corner and the concave band's always stand either side.
+  The test stays in the signed patch as a guard; no request of three
+  planes reaches it.
+
+**Oracles** (`tests/asymmetric.rs`):
+
+- the slab on a block ending in a drum, leaning out (within radius 20)
+  and in (a radius 12 cut out): each point of the fill's section times its
+  run along x to the drum's line, constant; under the laws, each point's
+  depth under its station's laws integrated over the plan. Measured within
+  3e-11 constant and 2.3e-9 varying; asserted to 1e-8 and 1e-7. Tangent
+  to top and slab within 1e-7, the same solid whichever face is named;
+- the D-shaped half drum, the top's arc and straight edge rounded, the
+  uprights sharp: both bands hang from the top, so the solid loses the
+  deeper of their depths at each point of the half disc, integrated.
+  Asymmetric arc with a round or an asymmetric straight band (measured
+  within 2.1e-9), and a circular arc with an asymmetric one; asserted to
+  1e-7;
+- the L-bracket with a bevel and an asymmetric round of opposite sense:
+  the bevel's prism, and the round's section integrated against the
+  bevel's plane, `(20 - p) A - (p / q) M` for the fill and `(12 - p) A -
+  (p / q) M` for the cut, `M` the section's first moment about the floor;
+  asserted to 1e-7, the same solid naming the other faces.
+
 ### Amendment: overflow handling
 
 A round often runs into geometry that is not one of its own two faces: an
