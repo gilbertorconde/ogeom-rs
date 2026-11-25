@@ -217,7 +217,7 @@ fn one_pass(
         } else {
             side_b.0.reversed()
         };
-        model.widen(&side_b.0, Tolerance::new(apart + tol.confusion())?)?;
+        model.widen(&side_b.0, Tolerance::new_in(apart + tol.confusion(), tol)?)?;
         reshape.replace(&side_a.0, stand_in);
         reshape.remove(&face);
         strips += 1;
@@ -244,7 +244,7 @@ fn one_pass(
         let here = to.transform(model.datums())?.apply(data.point);
         model.widen(
             &to,
-            Tolerance::new((from.0.distance(here) + from.1).max(tol.confusion()))?,
+            Tolerance::new_in((from.0.distance(here) + from.1).max(tol.confusion()), tol)?,
         )?;
         reshape.replace(&vertex, to);
     }

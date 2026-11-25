@@ -428,7 +428,7 @@ fn box_like_named(
 ) -> OgeomResult<Built> {
     let vertices: Vec<Shape> = corner_points
         .iter()
-        .map(|p| model.add_vertex(ogeom_topo::VertexData::new(*p)))
+        .map(|p| model.add_vertex(ogeom_topo::VertexData::new_in(*p, tol)))
         .collect();
 
     // One edge per pair, shared by the two faces that meet along it. Building
@@ -677,7 +677,7 @@ fn faceted_faces(
 ) -> OgeomResult<Vec<Shape>> {
     let vertices: Vec<Shape> = points
         .iter()
-        .map(|p| model.add_vertex(ogeom_topo::VertexData::new(*p)))
+        .map(|p| model.add_vertex(ogeom_topo::VertexData::new_in(*p, tol)))
         .collect();
     let mut edge_of: ogeom_core::FastMap<(usize, usize), Shape> = ogeom_core::FastMap::default();
     let mut faces = Vec::with_capacity(faces_rings.len());
@@ -847,8 +847,8 @@ pub fn make_cylinder(
     // One vertex on each rim, where the seam meets it. A full circle has to be
     // bounded somewhere or it cannot join a wire, and putting the bound on the
     // seam is what lets the lateral face close.
-    let low = model.add_vertex(VertexData::new(rim_point(bottom_circle)));
-    let high = model.add_vertex(VertexData::new(rim_point(top_circle)));
+    let low = model.add_vertex(VertexData::new_in(rim_point(bottom_circle), tol));
+    let high = model.add_vertex(VertexData::new_in(rim_point(top_circle), tol));
 
     let bottom_edge = full_circle_edge(model, bottom_circle, &low, tol)?;
     let top_edge = full_circle_edge(model, top_circle, &high, tol)?;
@@ -901,8 +901,14 @@ pub fn make_sphere(
     model.begin_operation();
 
     let centre = frame.origin();
-    let south = model.add_vertex(VertexData::new(centre - frame.z().vector() * radius));
-    let north = model.add_vertex(VertexData::new(centre + frame.z().vector() * radius));
+    let south = model.add_vertex(VertexData::new_in(
+        centre - frame.z().vector() * radius,
+        tol,
+    ));
+    let north = model.add_vertex(VertexData::new_in(
+        centre + frame.z().vector() * radius,
+        tol,
+    ));
 
     // The seam is the meridian at longitude zero, pole to pole through the
     // frame's `x`. Its plane is spanned by `x` and `z`, so the circle's normal
@@ -993,8 +999,7 @@ fn full_circle_edge(
 /// its pcurve is the whole story, and the `degenerate` flag says so rather than
 /// leaving a caller to notice the missing representation.
 fn degenerate_edge(model: &mut Model, at: &Shape, tol: Tolerances) -> OgeomResult<Shape> {
-    let _ = tol;
-    let mut data = EdgeData::new();
+    let mut data = EdgeData::new_in(tol);
     data.degenerate = true;
     model.add_edge(data, &[at.clone(), at.clone()])
 }
@@ -1250,11 +1255,14 @@ pub fn make_cone(
         ogeom_bail!(Construction, "the wide end of a cone must have a radius");
     };
 
-    let near_vertex = model.add_vertex(VertexData::new(match near_circle {
-        Some(c) => rim_point(c),
-        None => surface_frame.origin(),
-    }));
-    let far_vertex = model.add_vertex(VertexData::new(rim_point(far)));
+    let near_vertex = model.add_vertex(VertexData::new_in(
+        match near_circle {
+            Some(c) => rim_point(c),
+            None => surface_frame.origin(),
+        },
+        tol,
+    ));
+    let far_vertex = model.add_vertex(VertexData::new_in(rim_point(far), tol));
 
     // A zero radius is an apex: a rim of no length, which still bounds the face
     // in parameter space and still has to be there.
@@ -1344,7 +1352,7 @@ pub fn make_torus(
     // cylinder's single seam is the easy case; this is the one that decides
     // whether seam handling is general or a special case for one primitive.
     let start = frame.to_world(Point::new(major + minor, 0.0, 0.0));
-    let corner = model.add_vertex(VertexData::new(start));
+    let corner = model.add_vertex(VertexData::new_in(start, tol));
 
     // The outer equator, along which the tube parameter is zero.
     let equator = Circle::new(frame, major + minor, tol)?;
@@ -1394,11 +1402,10 @@ pub fn torus_face_seamed_at(
     let frame = right_handed_about_z(frame, tol)?;
     let (sin, cos) = v0.sin_cos();
     let reach = minor.mul_add(cos, major);
-    let corner = model.add_vertex(VertexData::new(frame.to_world(Point::new(
-        reach,
-        0.0,
-        minor * sin,
-    ))));
+    let corner = model.add_vertex(VertexData::new_in(
+        frame.to_world(Point::new(reach, 0.0, minor * sin)),
+        tol,
+    ));
     // The parallel at `v0`: a circle about the axis, its parameter the
     // torus's angle round it.
     let parallel_frame = Frame::new(

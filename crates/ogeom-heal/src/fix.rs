@@ -269,7 +269,10 @@ pub(crate) fn attach_trims(
                 // Its vertices widen with it: what bounds the edge is never
                 // tighter than the edge.
                 if off > tol.confusion() {
-                    model.widen(&edge, ogeom_core::Tolerance::new(off + tol.confusion())?)?;
+                    model.widen(
+                        &edge,
+                        ogeom_core::Tolerance::new_in(off + tol.confusion(), tol)?,
+                    )?;
                 }
                 ogeom_algo::attach_pcurve(
                     model,

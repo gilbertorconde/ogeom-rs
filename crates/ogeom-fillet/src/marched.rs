@@ -2745,7 +2745,7 @@ pub(crate) fn build_held_band_by(
     // The corners stand a fit error from the exact touch points the
     // connectors end at; the vertices own that slop.
     for v in [&vc00, &vc01, &vc10, &vc11] {
-        model.widen(v, ogeom_core::Tolerance::new(fit_target)?)?;
+        model.widen(v, ogeom_core::Tolerance::new_in(fit_target, tol)?)?;
     }
 
     // The band's borders, straight off the control net.
@@ -2772,7 +2772,7 @@ pub(crate) fn build_held_band_by(
     // A pinched end's arc is the collapsed row: a degenerate edge, which
     // carries its chart image and no curve.
     let collapsed = |model: &mut Model, at: &Shape| -> OgeomResult<Shape> {
-        let mut data = ogeom_topo::EdgeData::new();
+        let mut data = ogeom_topo::EdgeData::new_in(tol);
         data.degenerate = true;
         model.add_edge(data, &[at.clone(), at.clone()])
     };
@@ -3216,7 +3216,8 @@ fn widen_edge(model: &mut Model, edge: &Shape, by: f64) -> OgeomResult<()> {
     if !by.is_finite() {
         return Ok(());
     }
-    model.widen(edge, ogeom_core::Tolerance::new(by.max(0.0))?)
+    let tol = model.tolerances();
+    model.widen(edge, ogeom_core::Tolerance::new_in(by.max(0.0), tol)?)
 }
 
 /// The open band through each station's exact ball arc, fitted along the
@@ -3854,7 +3855,7 @@ fn section_connector(
         // ends only as finely as its parameter steps; the ends own that.
         for (end, found) in [(from.0, pa.distance), (to.0, pb.distance)] {
             if found > tol.confusion() * 0.5 {
-                model.widen(end, ogeom_core::Tolerance::new(found * 2.0)?)?;
+                model.widen(end, ogeom_core::Tolerance::new_in(found * 2.0, tol)?)?;
             }
         }
         let (pa, pb) = (pa.parameter, pb.parameter);
@@ -3909,7 +3910,7 @@ fn section_connector(
         let chord = crate::support::segment_between(model, from, to, tol)?;
         model.widen(
             &chord,
-            ogeom_core::Tolerance::new(off.max(tol.confusion()))?,
+            ogeom_core::Tolerance::new_in(off.max(tol.confusion()), tol)?,
         )?;
         return Ok(chord);
     }
@@ -4115,7 +4116,10 @@ fn host_leg(
                 tol,
             )?;
             if gap > tol.confusion() {
-                model.widen(&apex, ogeom_core::Tolerance::new(gap + tol.confusion())?)?;
+                model.widen(
+                    &apex,
+                    ogeom_core::Tolerance::new_in(gap + tol.confusion(), tol)?,
+                )?;
             }
             pcurve
         }
@@ -4460,7 +4464,7 @@ fn pole_leg(
     };
     let Some(split) = split else {
         let pole = ogeom_algo::make_vertex(model, host.point_at(start.x, row, tol)?).shape;
-        let mut data = ogeom_topo::EdgeData::new();
+        let mut data = ogeom_topo::EdgeData::new_in(tol);
         data.degenerate = true;
         let pole_edge = model.add_edge(data, &[pole.clone(), pole])?;
         let pole_pcurve: PlanarCurve = ogeom_geom::Line2d::over(
@@ -4532,7 +4536,7 @@ fn pole_leg(
         .map_or(0.0, ogeom_core::Tolerance::get)
         .max(miss);
     if hold > tol.confusion() {
-        model.widen(&cut, ogeom_core::Tolerance::new(hold)?)?;
+        model.widen(&cut, ogeom_core::Tolerance::new_in(hold, tol)?)?;
     }
 
     // The rail's image runs from the column a period round: the second
@@ -4589,7 +4593,7 @@ fn pole_leg(
     ogeom_algo::state_pcurve_gaps_of(model, std::slice::from_ref(&seam), tol)?;
 
     // The pole, its image the pole's row from the column a period round.
-    let mut data = ogeom_topo::EdgeData::new();
+    let mut data = ogeom_topo::EdgeData::new_in(tol);
     data.degenerate = true;
     let pole_edge = model.add_edge(data, &[pole.clone(), pole])?;
     let pole_pcurve: PlanarCurve = ogeom_geom::Line2d::over(

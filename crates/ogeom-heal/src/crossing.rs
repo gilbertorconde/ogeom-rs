@@ -343,7 +343,7 @@ fn trim(
     ]
     .into_iter()
     .fold(0.0, f64::max);
-    let moved = model.add_vertex(VertexData::with_tolerance(at, reach)?);
+    let moved = model.add_vertex(VertexData::with_tolerance_in(at, reach, tol)?);
     let stored = |s: &Shape| {
         if s.orientation() == Orientation::Reversed {
             s.reversed()
@@ -400,7 +400,7 @@ fn split(
     ]
     .into_iter()
     .fold(0.0, f64::max);
-    let middle = model.add_vertex(VertexData::with_tolerance(at, reach)?);
+    let middle = model.add_vertex(VertexData::with_tolerance_in(at, reach, tol)?);
     let pieces_first = [
         rebound(model, &cut_first[0], &made_first, &middle)?,
         rebound(model, &cut_first[1], &made_first, &middle)?,

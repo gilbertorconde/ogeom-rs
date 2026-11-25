@@ -2635,6 +2635,7 @@ impl<'a> Cursor<'a> {
         total: usize,
         tol: Tolerances,
     ) -> OgeomResult<Shape> {
+        let model_tol = model.tolerances();
         let kind = self.word()?;
         let data = match kind {
             "Ve" => {
@@ -2667,7 +2668,7 @@ impl<'a> Cursor<'a> {
                 }
                 Record::Vertex(VertexData {
                     point: at,
-                    tolerance: Tolerance::new(tolerance.max(tol.confusion()))?,
+                    tolerance: Tolerance::new_in(tolerance.max(tol.confusion()), model_tol)?,
                 })
             }
             "Ed" => {
@@ -2675,8 +2676,8 @@ impl<'a> Cursor<'a> {
                 let _same_parameter = self.flag()?;
                 let _same_range = self.flag()?;
                 let degenerate = self.flag()?;
-                let mut data = EdgeData::new();
-                data.tolerance = Tolerance::new(tolerance.max(tol.confusion()))?;
+                let mut data = EdgeData::new_in(model_tol);
+                data.tolerance = Tolerance::new_in(tolerance.max(tol.confusion()), model_tol)?;
                 data.degenerate = degenerate;
                 let mut charts = Vec::new();
                 loop {
@@ -2780,7 +2781,7 @@ impl<'a> Cursor<'a> {
                     Box::new(FaceData {
                         surface: on,
                         location: Location::identity(),
-                        tolerance: Tolerance::new(tolerance.max(tol.confusion()))?,
+                        tolerance: Tolerance::new_in(tolerance.max(tol.confusion()), model_tol)?,
                         natural_restriction: false,
                         triangulation: None,
                     }),

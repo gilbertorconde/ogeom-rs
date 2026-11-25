@@ -1386,7 +1386,7 @@ pub fn reduce_tolerances(model: &mut Model, shape: &Shape, tol: Tolerances) -> O
     let mut shrunk = 0;
     for (edge, measured) in edges.iter().zip(measured) {
         let Some(worst) = measured else { continue };
-        let target = ogeom_core::Tolerance::new(worst + tol.confusion())?;
+        let target = ogeom_core::Tolerance::new_in(worst + tol.confusion(), tol)?;
         if let Some(node) = model.node_mut(edge)
             && let NodeData::Edge(data) = node.data_mut()
             && target.get() < data.tolerance.get()

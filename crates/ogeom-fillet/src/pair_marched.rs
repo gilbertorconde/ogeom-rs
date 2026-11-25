@@ -1406,7 +1406,7 @@ fn contact_cut(
     crate::sheet_curved::same_parameter(model, &edge);
     model.widen(
         &edge,
-        Tolerance::new(target.max(gap.max(error) + tol.confusion()))?,
+        Tolerance::new_in(target.max(gap.max(error) + tol.confusion()), tol)?,
     )?;
     let split = ogeom_heal::split_face(
         model,
@@ -2120,7 +2120,7 @@ pub(crate) fn fillet_faces(
             fit_target,
         });
     }
-    let widened = Tolerance::new(fit_target)?;
+    let widened = Tolerance::new_in(fit_target, tol)?;
     let mut history = History::new();
 
     if !trim {
@@ -2316,7 +2316,7 @@ fn closed_round(
     let band: SurfaceGeometry = marched.band.clone().into();
     let (u_dom, v_dom) = band.domain();
     let band_id = model.geometry_mut().add_surface(band.clone());
-    let widened = Tolerance::new(fit_target)?;
+    let widened = Tolerance::new_in(fit_target, tol)?;
     let mut rails = Vec::with_capacity(2);
     for f in 0..2 {
         let rail = make_edge(model, marched.border(f, tol)?, v_dom, tol)?.shape;
@@ -2642,7 +2642,10 @@ fn closed_up(
         let p = crate::sheet_curved::vertex_point(model, gone)?;
         let reach =
             p.distance(crate::sheet_curved::vertex_point(model, kept)?) + tolerance_of(model, gone);
-        model.widen(kept, Tolerance::new(reach.max(tolerance_of(model, kept)))?)?;
+        model.widen(
+            kept,
+            Tolerance::new_in(reach.max(tolerance_of(model, kept)), tol)?,
+        )?;
     }
     let rebuilt =
         crate::sheet_curved::rebuilt_face(model, piece, surface_id, tolerance, &swap, tol)?;

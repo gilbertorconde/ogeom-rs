@@ -701,7 +701,7 @@ fn cap(
         return Ok(None);
     };
     let apex = make_vertex(model, pole).shape;
-    let mut data = EdgeData::new();
+    let mut data = EdgeData::new_in(tol);
     data.degenerate = true;
     let degenerate = model.add_edge(data, &[apex.clone(), apex])?;
     Ok(Some(make_band_of_rings(
@@ -744,7 +744,7 @@ fn pole_gap(
         let Some((_, vertex)) = ogeom_algo::edge_vertices(model, occurrence)? else {
             return Ok(None);
         };
-        let mut data = EdgeData::new();
+        let mut data = EdgeData::new_in(tol);
         data.degenerate = true;
         let degenerate = model.add_edge(data, &[vertex.clone(), vertex])?;
         // The pole's pcurve joins the stored pieces where they stand.
@@ -1058,7 +1058,7 @@ fn meridian_poles(
             return Ok(None);
         };
         let gap = next.x - end.x;
-        let mut data = EdgeData::new();
+        let mut data = EdgeData::new_in(tol);
         data.degenerate = true;
         let degenerate = model.add_edge(data, &[vertex.clone(), vertex])?;
         let pcurve: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(

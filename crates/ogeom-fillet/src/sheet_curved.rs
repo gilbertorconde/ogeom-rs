@@ -933,7 +933,7 @@ pub(crate) fn piece_of(
     let tolerance = model
         .node(old)
         .and_then(|n| n.data().as_edge())
-        .map_or(Tolerance::MIN, |d| d.tolerance);
+        .map_or(Tolerance::least(tol), |d| d.tolerance);
     let edge = make_edge_between(model, curve, range, from, to, tol)?.shape;
     match image {
         Image::One(c) => {
@@ -986,7 +986,7 @@ fn attach_image(
             )?;
             let worst = worst_off.max(gap);
             if worst > tol.confusion() {
-                let widened = Tolerance::new(worst + tol.confusion())?;
+                let widened = Tolerance::new_in(worst + tol.confusion(), tol)?;
                 model.widen(edge, widened)?;
                 if let Some((a, b)) = edge_vertices(model, edge)? {
                     model.widen(&a, widened)?;
@@ -1058,7 +1058,7 @@ pub(crate) fn rebuilt_face(
             rebuilt.push(wire.clone());
         }
     }
-    let mut data = FaceData::new(surface_id, Location::identity());
+    let mut data = FaceData::new_in(surface_id, Location::identity(), tol);
     data.tolerance = tolerance;
     Ok(model.add_face(data, &rebuilt)?.oriented(face.orientation()))
 }
@@ -1549,7 +1549,7 @@ pub(crate) fn round_sheet_edge(
             make_vertex(model, seat.end_contact(f, 1, stations)).shape
         };
         if let Seat::Marched(marched) = &seat {
-            let widened = Tolerance::new(marched.fit_target)?;
+            let widened = Tolerance::new_in(marched.fit_target, tol)?;
             model.widen(&a, widened)?;
             model.widen(&b, widened)?;
         }
@@ -1586,7 +1586,7 @@ pub(crate) fn round_sheet_edge(
         )?
         .shape;
         if let Seat::Marched(marched) = &seat {
-            model.widen(&rail, Tolerance::new(marched.fit_target)?)?;
+            model.widen(&rail, Tolerance::new_in(marched.fit_target, tol)?)?;
         }
         let (edge_image, image_range) =
             occurrence_image(model, &side.loops[side.wire][side.at], side.surface_id)?;
@@ -1916,7 +1916,7 @@ pub(crate) fn marched_round(
     let band: SurfaceGeometry = marched.band.clone().into();
     let (u_dom, v_dom) = band.domain();
     let band_id = model.geometry_mut().add_surface(band.clone());
-    let widened = Tolerance::new(marched.fit_target)?;
+    let widened = Tolerance::new_in(marched.fit_target, tol)?;
     let mut arcs = Vec::with_capacity(2);
     for (k, (start, end)) in corners[0].iter().zip(&corners[1]).enumerate() {
         let row = marched.row(k, tol)?;

@@ -1512,7 +1512,7 @@ fn sector_faces(
         .map(|r| if r.fan.is_some() { None } else { real.next() })
         .collect();
     let n = of.len();
-    let widened = Tolerance::new(gap + tol.confusion())?;
+    let widened = Tolerance::new_in(gap + tol.confusion(), tol)?;
     let line = |from: Point2, to: Point2, (a, b): (f64, f64)| -> OgeomResult<BSpline2d> {
         BSpline2d::new(KnotVector::new(vec![a, a, b, b], 1)?, vec![from, to], tol)
     };
@@ -1573,7 +1573,7 @@ fn sector_faces(
     let mut faces = Vec::with_capacity(n);
     for (k, side) in of.iter().enumerate() {
         let degenerate = |model: &mut Model, at: &Shape| -> OgeomResult<Shape> {
-            let mut data = EdgeData::new();
+            let mut data = EdgeData::new_in(tol);
             data.degenerate = true;
             model.add_edge(data, &[at.clone(), at.clone()])
         };
@@ -1622,7 +1622,7 @@ fn sector_faces(
         )?;
         model.widen(&side.edge, widened)?;
         let pole = {
-            let mut data = EdgeData::new();
+            let mut data = EdgeData::new_in(tol);
             data.degenerate = true;
             model.add_edge(data, &[centre.clone(), centre.clone()])?
         };
@@ -2081,7 +2081,7 @@ fn split_faces(
     gap: f64,
     tol: Tolerances,
 ) -> OgeomResult<Vec<Shape>> {
-    let widened = Tolerance::new(gap + tol.confusion())?;
+    let widened = Tolerance::new_in(gap + tol.confusion(), tol)?;
     let line = |from: Point2, to: Point2, (a, b): (f64, f64)| -> OgeomResult<BSpline2d> {
         BSpline2d::new(KnotVector::new(vec![a, a, b, b], 1)?, vec![from, to], tol)
     };
@@ -2199,7 +2199,7 @@ fn face_on(
     } else {
         &[(o, x), (x, xy), (y, o)]
     };
-    let widened = Tolerance::new(gap + tol.confusion())?;
+    let widened = Tolerance::new_in(gap + tol.confusion(), tol)?;
     let mut walked = Vec::with_capacity(4);
     // How many edges the walk holds after each side.
     let mut after = Vec::with_capacity(sides.len());
@@ -2232,7 +2232,7 @@ fn face_on(
         ogeom_bail!(Construction, "a vertex patch's side has no vertices");
     };
     let collapsed = {
-        let mut data = EdgeData::new();
+        let mut data = EdgeData::new_in(tol);
         data.degenerate = true;
         model.add_edge(data, &[pole.clone(), pole])?
     };

@@ -911,7 +911,7 @@ fn vertex_on(
 ) -> OgeomResult<Shape> {
     Ok(model.add_vertex(VertexData {
         point: curve.point_at(t, tol)?,
-        tolerance: Tolerance::new(tolerance.max(tol.confusion()))?,
+        tolerance: Tolerance::new_in(tolerance.max(tol.confusion()), tol)?,
     }))
 }
 

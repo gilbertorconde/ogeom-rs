@@ -204,7 +204,7 @@ pub fn canonical_simplify(
         if worst > tol.confusion() {
             model.widen(
                 &rebuilt,
-                ogeom_core::Tolerance::new(worst + tol.confusion())?,
+                ogeom_core::Tolerance::new_in(worst + tol.confusion(), tol)?,
             )?;
         }
         let edges = ogeom_topo::explore_unique(model, &rebuilt, ShapeType::Edge)?;
@@ -401,7 +401,10 @@ fn simplified_edge(
     let n = pts.len();
     let stated = |model: &mut Model, built: &Shape, worst: f64| -> OgeomResult<()> {
         if worst > tol.confusion() {
-            model.widen(built, ogeom_core::Tolerance::new(worst + tol.confusion())?)?;
+            model.widen(
+                built,
+                ogeom_core::Tolerance::new_in(worst + tol.confusion(), tol)?,
+            )?;
         }
         Ok(())
     };

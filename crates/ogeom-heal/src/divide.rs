@@ -489,7 +489,7 @@ pub(crate) fn bounded_natural(
         });
         vertices.push(match found {
             Some(j) => vertices[j].clone(),
-            None => model.add_vertex(VertexData::new(p)),
+            None => model.add_vertex(VertexData::new_in(p, tol)),
         });
     }
     let chart_line = |line: IsoLine, a: f64, b: f64, t: (f64, f64)| -> OgeomResult<PlanarCurve> {
@@ -531,7 +531,7 @@ pub(crate) fn bounded_natural(
             && corner(line.point(hi).x, line.point(hi).y)?.distance(corner(mid.x, mid.y)?)
                 <= tol.confusion();
         let edge = if pinched {
-            let mut edge_data = EdgeData::new();
+            let mut edge_data = EdgeData::new_in(tol);
             edge_data.degenerate = true;
             let trim = chart_line(line, lo, hi, (lo, hi))?;
             let id = model.geometry_mut().add_pcurve(trim);
@@ -557,7 +557,7 @@ pub(crate) fn bounded_natural(
                 ((t_hi, t_lo), false)
             };
             let curve_id = model.geometry_mut().add_curve(curve);
-            let mut edge_data = EdgeData::on_curve(curve_id, Location::identity(), range);
+            let mut edge_data = EdgeData::on_curve_in(curve_id, Location::identity(), range, tol);
             // The edge runs with its curve; the side walks from `a` to `b`.
             let (start_v, end_v) = {
                 let low_end = if a <= b { &from } else { &to };
@@ -1167,7 +1167,7 @@ fn cut_face(
             ((t1, t0), (&b, &a), (line.point(w1), line.point(w0)))
         };
         let curve_id = model.geometry_mut().add_curve(curve.clone());
-        let mut edge_data = EdgeData::on_curve(curve_id, Location::identity(), range);
+        let mut edge_data = EdgeData::on_curve_in(curve_id, Location::identity(), range, tol);
         let trim = BSpline2d::new(
             KnotVector::new(vec![range.0, range.0, range.1, range.1], 1)?,
             vec![p0, p1],
@@ -1192,7 +1192,10 @@ fn cut_face(
             .into_iter()
             .fold(0.0_f64, f64::max);
         let edge = model.add_edge(edge_data, &[start.clone(), end.clone()])?;
-        model.widen(&edge, ogeom_core::Tolerance::new(reach + tol.confusion())?)?;
+        model.widen(
+            &edge,
+            ogeom_core::Tolerance::new_in(reach + tol.confusion(), tol)?,
+        )?;
         let polyline: Vec<Point2> = (0..=16)
             .map(|k| {
                 let w = w0 + (w1 - w0) * f64::from(k) / 16.0;
@@ -1498,7 +1501,7 @@ pub(crate) fn split_edge(
         let vertex = match &curve {
             Some((c, range)) => {
                 let p = c.point_at(range.0 + (range.1 - range.0) * s, tol)?;
-                model.add_vertex(VertexData::with_tolerance(p, data.tolerance.get())?)
+                model.add_vertex(VertexData::with_tolerance_in(p, data.tolerance.get(), tol)?)
             }
             // A degenerate edge is one point, however it is cut.
             _ => start.clone(),

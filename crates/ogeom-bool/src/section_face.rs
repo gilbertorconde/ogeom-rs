@@ -172,7 +172,7 @@ pub(crate) fn vertex(
         // the edge ending here is refused as missing its vertex.
         let gap = p.distance(at) * 1.01;
         if gap > tol.confusion()
-            && let Ok(reach) = ogeom_core::Tolerance::new(gap)
+            && let Ok(reach) = ogeom_core::Tolerance::new_in(gap, tol)
         {
             model.widen(v, reach)?;
         }

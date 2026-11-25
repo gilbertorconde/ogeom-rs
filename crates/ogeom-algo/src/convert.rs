@@ -483,7 +483,7 @@ impl Rebuild<'_> {
                         .and_then(|n| n.data().as_vertex())
                         .map_or(0.0, |v| v.tolerance.get());
                     let new_vertex = new_vertices.at(model, vertex.node(), at, reach, tol);
-                    let mut degenerate = ogeom_topo::EdgeData::new();
+                    let mut degenerate = ogeom_topo::EdgeData::new_in(tol);
                     degenerate.degenerate = true;
                     let new_edge = model.add_edge(degenerate, &[new_vertex.clone(), new_vertex])?;
                     record(history, &edge, &new_edge);

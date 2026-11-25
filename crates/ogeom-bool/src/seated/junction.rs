@@ -538,7 +538,7 @@ fn build(
     stated: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Shape, Shape)>> {
-    let tolerance = Tolerance::new(stated.max(tol.confusion()))?;
+    let tolerance = Tolerance::new_in(stated.max(tol.confusion()), tol)?;
     // At a junction end the wedge's corner, `T` contact and `S` contact
     // move to the seats' corner, the crossing of the two bands' contacts on
     // `T`, and the `S` contact, each made anew.

@@ -2597,7 +2597,7 @@ impl<'a> Reader<'a> {
                 let projection = ogeom_algo::project_on_surface(&surface, at, 32, self.tol)?;
                 let ((ua, ub), _) = surface.domain();
                 let row = projection.parameters.1;
-                let mut data = ogeom_topo::EdgeData::new();
+                let mut data = ogeom_topo::EdgeData::new_in(self.model.tolerances());
                 data.degenerate = true;
                 let edge = self
                     .model
@@ -2810,8 +2810,11 @@ impl<'a> Reader<'a> {
                 self.tol,
             )?
         {
-            let vertex = self.model.add_vertex(ogeom_topo::VertexData::new(pole));
-            let mut data = ogeom_topo::EdgeData::new();
+            let tol = self.model.tolerances();
+            let vertex = self
+                .model
+                .add_vertex(ogeom_topo::VertexData::new_in(pole, tol));
+            let mut data = ogeom_topo::EdgeData::new_in(tol);
             data.degenerate = true;
             let collapsed = self.model.add_edge(data, &[vertex.clone(), vertex])?;
             match ogeom_algo::make_revolution_band(

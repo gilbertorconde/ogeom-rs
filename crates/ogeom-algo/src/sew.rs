@@ -579,7 +579,7 @@ fn sew_faces(
                     let need = need + tol.confusion();
                     // Its vertices with it: none is held tighter than an
                     // edge it bounds.
-                    model.widen(&survivor, ogeom_core::Tolerance::new(need)?)?;
+                    model.widen(&survivor, ogeom_core::Tolerance::new_in(need, tol)?)?;
                 }
                 merged.insert(catalogue[j].0, (catalogue[i].0, flipped));
                 joined += 1;
@@ -699,7 +699,7 @@ fn sew_faces(
         if let Some(off) = off {
             model.widen(
                 &survivor,
-                ogeom_core::Tolerance::new(off + ogeom_core::Tolerance::MIN.get())?,
+                ogeom_core::Tolerance::new_in(off + tol.least_tolerance(), tol)?,
             )?;
         }
     }
@@ -1418,9 +1418,7 @@ fn parts_from_own(
         ogeom_bail!(Dangling, "an edge is not in this model");
     };
     let stated = off.map_or(data.tolerance.get(), |o| {
-        data.tolerance
-            .get()
-            .max(o + ogeom_core::Tolerance::MIN.get())
+        data.tolerance.get().max(o + tol.least_tolerance())
     });
     let reach = crate::check::CHART_GAP_SLACK * stated.max(tol.approximation());
     for repr in carried {

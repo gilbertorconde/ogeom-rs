@@ -1312,9 +1312,10 @@ impl Model {
         Shape::of(self.insert_node(TShape::leaf(ShapeType::Vertex, NodeData::Vertex(data))))
     }
 
-    /// Add a vertex at `point` with the minimum tolerance.
+    /// Add a vertex at `point` with the least tolerance of this model's
+    /// unit.
     pub fn add_point(&mut self, point: Point) -> Shape {
-        self.add_vertex(VertexData::new(point))
+        self.add_vertex(VertexData::new_in(point, self.tolerances))
     }
 
     /// Add an edge bounded by the given vertices.
@@ -1392,7 +1393,7 @@ impl Model {
         // face. Walk the wires' edges and widen them where they are not; no
         // edge is tighter than the least tolerance.
         let face_tolerance = data.tolerance;
-        let walk = if face_tolerance.get() > Tolerance::MIN.get() {
+        let walk = if face_tolerance.get() > self.tolerances.least_tolerance() {
             wires
         } else {
             &[]

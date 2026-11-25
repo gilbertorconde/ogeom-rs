@@ -1059,7 +1059,7 @@ fn cut_edge(
             _ => {}
         }
     }
-    let vertex = model.add_vertex(ogeom_topo::VertexData::new(at));
+    let vertex = model.add_vertex(ogeom_topo::VertexData::new_in(at, tol));
     let head =
         crate::make_edge_between(model, geometry.clone(), (range.0, t), &start, &vertex, tol)?
             .shape;
@@ -1485,7 +1485,8 @@ fn restated(
                 return Ok(None);
             };
             let low = chart_of(&chart, v.point).1;
-            let north = model.add_vertex(ogeom_topo::VertexData::new(centre + axis * radius));
+            let north =
+                model.add_vertex(ogeom_topo::VertexData::new_in(centre + axis * radius, tol));
             let seam = seam_between(
                 model,
                 surface,
@@ -1518,8 +1519,10 @@ fn restated(
             // Counter-clockwise round the chart where the holes run the
             // other way.
             let ccw = hole_area < 0.0;
-            let south = model.add_vertex(ogeom_topo::VertexData::new(centre - axis * radius));
-            let north = model.add_vertex(ogeom_topo::VertexData::new(centre + axis * radius));
+            let south =
+                model.add_vertex(ogeom_topo::VertexData::new_in(centre - axis * radius, tol));
+            let north =
+                model.add_vertex(ogeom_topo::VertexData::new_in(centre + axis * radius, tol));
             let sides = if ccw { (TAU, 0.0) } else { (0.0, TAU) };
             let seam = seam_between(
                 model,
@@ -1567,7 +1570,7 @@ fn restated(
         return Ok(None);
     };
     let held = old.tolerance;
-    let data = ogeom_topo::FaceData::new(surface, ogeom_topo::Location::identity());
+    let data = ogeom_topo::FaceData::new_in(surface, ogeom_topo::Location::identity(), tol);
     let made = model.add_face(data, &made_wires)?;
     model.widen(&made, held)?;
     Ok(Some((made.oriented(face.orientation()), splits)))
@@ -1582,7 +1585,7 @@ fn pole_at(
     v: f64,
     tol: Tolerances,
 ) -> OgeomResult<Shape> {
-    let mut data = ogeom_topo::EdgeData::new();
+    let mut data = ogeom_topo::EdgeData::new_in(tol);
     data.degenerate = true;
     let edge = model.add_edge(data, &[at.clone(), at.clone()])?;
     let (from, to) = (Point2::new(0.0, v), Point2::new(core::f64::consts::TAU, v));

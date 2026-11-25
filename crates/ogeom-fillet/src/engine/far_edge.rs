@@ -1343,7 +1343,7 @@ fn vertex_tool(
             }
             None => {
                 let collapsed = {
-                    let mut data = ogeom_topo::EdgeData::new();
+                    let mut data = ogeom_topo::EdgeData::new_in(tol);
                     data.degenerate = true;
                     model.add_edge(data, &[vertex_shape.clone(), vertex_shape.clone()])?
                 };
@@ -1351,7 +1351,7 @@ fn vertex_tool(
                 collapsed
             }
         };
-        let fit_gap = ogeom_core::Tolerance::new(FIT.max(eps) * 10.0)?;
+        let fit_gap = ogeom_core::Tolerance::new_in(FIT.max(eps) * 10.0, tol)?;
         for e in [&e_contact, &a0, &a1].into_iter().chain(support.as_ref()) {
             model.widen(e, fit_gap)?;
         }

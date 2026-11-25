@@ -647,13 +647,13 @@ fn edges_of(
                 .distance(placed(model, &v)?)
                 .max(leave.distance(placed(model, &v)?));
             if reach > tol.confusion() {
-                model.widen(&v, Tolerance::new(reach)?)?;
+                model.widen(&v, Tolerance::new_in(reach, tol)?)?;
             }
             vertices.push(v);
             continue;
         }
         let reach = (arrive.distance(leave) * 0.5).max(tol.confusion());
-        let data = VertexData::with_tolerance(at, reach)?;
+        let data = VertexData::with_tolerance_in(at, reach, tol)?;
         let v = model.add_vertex(data);
         corners.push((at, v.clone()));
         vertices.push(v);

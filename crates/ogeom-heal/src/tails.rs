@@ -274,7 +274,7 @@ fn notch_cut(
     let ends = vertex_point(model, middle)?;
     let stated = model.tolerance_of(far)?.map_or(0.0, |t| t.get());
     let reach = stated.max(stood.distance(ends)).max(tol.confusion());
-    let widened = model.add_vertex(VertexData::with_tolerance(stood, reach)?);
+    let widened = model.add_vertex(VertexData::with_tolerance_in(stood, reach, tol)?);
     let new_longer = rebound(model, kept, middle, &widened)?;
     if linear_properties(model, &new_longer, Deflection::default(), tol)?.mass <= reach {
         return Ok(None);

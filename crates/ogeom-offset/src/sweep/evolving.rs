@@ -949,7 +949,7 @@ fn evolving_ring(
     {
         let (start, run) = legs[0];
         let end = if scale == 0.0 {
-            model.add_vertex(VertexData::new(start + run))
+            model.add_vertex(VertexData::new_in(start + run, tol))
         } else {
             let motion = Transform::translation(run) * Transform::scaling(start, scale, tol)?;
             moved_ring(model, ring, &motion, tol)?

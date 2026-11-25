@@ -36,7 +36,8 @@ pub mod roles {
 
 /// Add a vertex at `point`.
 pub fn make_vertex(model: &mut Model, point: Point) -> Built {
-    Built::from_nothing(model.add_vertex(VertexData::new(point)))
+    let tol = model.tolerances();
+    Built::from_nothing(model.add_vertex(VertexData::new_in(point, tol)))
 }
 
 /// Build an edge on `curve`, bounded by its own endpoints.
@@ -64,17 +65,17 @@ pub fn make_edge(
     let start = curve.point_at(lo, tol)?;
     let end = curve.point_at(hi, tol)?;
 
-    let start_vertex = model.add_vertex(VertexData::new(start));
+    let start_vertex = model.add_vertex(VertexData::new_in(start, tol));
     // A closed edge names one vertex twice rather than two coincident ones:
     // two would leave the wire looking open at the join.
     let end_vertex = if start.is_equal(end, tol) {
         start_vertex.clone()
     } else {
-        model.add_vertex(VertexData::new(end))
+        model.add_vertex(VertexData::new_in(end, tol))
     };
 
     let id = model.geometry_mut().add_curve(curve);
-    let data = EdgeData::on_curve(id, Location::identity(), range);
+    let data = EdgeData::on_curve_in(id, Location::identity(), range, tol);
     let edge = model.add_edge(data, &[start_vertex.clone(), end_vertex.clone()])?;
 
     model.set_derived(
@@ -158,7 +159,7 @@ pub fn make_edge_between(
     }
 
     let id = model.geometry_mut().add_curve(curve);
-    let data = EdgeData::on_curve(id, Location::identity(), range);
+    let data = EdgeData::on_curve_in(id, Location::identity(), range, tol);
     let edge = model.add_edge(data, &[from.clone(), to.clone()])?;
     Ok(Built::from_nothing(edge))
 }
@@ -328,7 +329,7 @@ pub fn make_polygon(
 
     let mut vertices: Vec<Shape> = Vec::with_capacity(points.len());
     for point in points {
-        vertices.push(model.add_vertex(VertexData::new(*point)));
+        vertices.push(model.add_vertex(VertexData::new_in(*point, tol)));
     }
 
     let mut edges = Vec::with_capacity(points.len());
@@ -714,7 +715,7 @@ pub fn make_face_on(
         }
     }
 
-    let data = FaceData::new(surface, Location::identity());
+    let data = FaceData::new_in(surface, Location::identity(), tol);
     let face = model.add_face(data, wires)?;
 
     let mut history = History::new();
@@ -808,7 +809,8 @@ pub fn make_face_with_pcurves(
                     if worst_off > tol.confusion() {
                         // The edge owns the offset, and so must the vertices
                         // that bound it: the containment rule.
-                        let widened = ogeom_core::Tolerance::new(worst_off + tol.confusion())?;
+                        let widened =
+                            ogeom_core::Tolerance::new_in(worst_off + tol.confusion(), tol)?;
                         model.widen(edge, widened)?;
                         if let Some((a, b)) = edge_vertices(model, edge)? {
                             model.widen(&a, widened)?;
@@ -1179,7 +1181,7 @@ pub fn closed_at_poles(
         let Some((at, from, to)) = run else {
             continue;
         };
-        let mut data = EdgeData::new();
+        let mut data = EdgeData::new_in(tol);
         data.degenerate = true;
         let pole = model.add_edge(data, &[at.clone(), at])?;
         attach_pcurve(
@@ -1323,7 +1325,7 @@ pub fn belted_wire(
         {
             return Ok(None);
         }
-        (model.add_vertex(VertexData::new(points[0])), row)
+        (model.add_vertex(VertexData::new_in(points[0], tol)), row)
     };
     let first = &belts[0];
     let up = first.row < end_row;
@@ -1378,8 +1380,9 @@ pub fn belted_wire(
 /// Never fails for a well-formed surface; the signature matches [`make_face`]
 /// so the two are interchangeable at a call site.
 pub fn make_natural_face(model: &mut Model, surface: SurfaceGeometry) -> OgeomResult<Built> {
+    let tol = model.tolerances();
     let id = model.geometry_mut().add_surface(surface);
-    let face = model.add_face(FaceData::natural(id, Location::identity()), &[])?;
+    let face = model.add_face(FaceData::natural_in(id, Location::identity(), tol), &[])?;
     Ok(Built::from_nothing(face))
 }
 
@@ -1848,7 +1851,7 @@ fn fitted_where_bare(
     if gap > tol.confusion() {
         // The edge owns the miss, and so must the vertices that bound it:
         // the containment rule.
-        let widened = ogeom_core::Tolerance::new(gap + tol.confusion())?;
+        let widened = ogeom_core::Tolerance::new_in(gap + tol.confusion(), tol)?;
         model.widen(edge, widened)?;
         if let Some((a, b)) = edge_vertices(model, edge)? {
             model.widen(&a, widened)?;
@@ -2978,10 +2981,11 @@ pub fn make_band_between(
     // distance: the offset times the chart's stretch there, since an
     // off-column iso misses a start vertex by exactly that. Starts further
     // apart take the chart segment, which meets both exactly; a segment
-    // spanning less than confusion would be an edge with no length.
+    // spanning less than confusion would be an edge with no length. The
+    // stretch is read no smaller than a millimetre per chart unit.
     let stretch = {
         let (du, _) = surface.d1_at(start0.x, start0.y, tol)?;
-        du.magnitude().max(1.0)
+        du.magnitude().max(1.0 / tol.unit())
     };
     let (seam, up_is_forward, chart_from, chart_to) = if dcol.abs() * stretch <= tol.confusion() {
         let column = start0.x;
@@ -3020,7 +3024,7 @@ pub fn make_band_between(
             let placed = vertex.transform(model.datums())?.apply(data.point);
             let miss = seam_curve.point_at(at, tol)?.distance(placed);
             if miss > tol.confusion() {
-                model.widen(vertex, ogeom_core::Tolerance::new(miss * 2.0)?)?;
+                model.widen(vertex, ogeom_core::Tolerance::new_in(miss * 2.0, tol)?)?;
             }
         }
         let seam = make_edge_between(model, seam_curve, curve_range, &from, &to, tol)?.shape;
@@ -3088,14 +3092,14 @@ pub fn make_band_between(
             let placed = vertex.transform(model.datums())?.apply(data.point);
             let miss = connector.point_at(at, tol)?.distance(placed);
             if miss > tol.confusion() {
-                model.widen(vertex, ogeom_core::Tolerance::new(miss * 2.0)?)?;
+                model.widen(vertex, ogeom_core::Tolerance::new_in(miss * 2.0, tol)?)?;
             }
         }
         let seam = make_edge_between(model, connector, (0.0, length), &from, &to, tol)?.shape;
         if fit_error > tol.confusion() {
             model.widen(
                 &seam,
-                ogeom_core::Tolerance::new(fit_error + tol.confusion())?,
+                ogeom_core::Tolerance::new_in(fit_error + tol.confusion(), tol)?,
             )?;
         }
         (seam, forward, a, b)
@@ -3244,8 +3248,8 @@ pub fn make_apex_band(
             "only a cone has the single apex a one-ring cap implies"
         );
     };
-    let apex = model.add_vertex(VertexData::new(c.cone().apex()));
-    let mut data = EdgeData::new();
+    let apex = model.add_vertex(VertexData::new_in(c.cone().apex(), tol));
+    let mut data = EdgeData::new_in(tol);
     data.degenerate = true;
     let edge = model.add_edge(data, &[apex.clone(), apex])?;
     make_revolution_band(model, surface, ring, &edge, tol)
@@ -3618,6 +3622,79 @@ mod tests {
             assert!(
                 e.pcurve_for(data.surface, edge.location()).is_some(),
                 "a fitted trim was attached"
+            );
+        }
+    }
+
+    /// Two rings 2 mm apart on a drum of radius 3 mm whose starts differ
+    /// by 5e-10 rad, 1.5e-9 mm in space, well inside the confusion
+    /// distance: the seam runs down the start column as a straight iso,
+    /// in micrometres, millimetres, inches and metres alike.
+    #[test]
+    fn rings_starting_a_hair_apart_share_a_straight_seam_in_every_unit() {
+        for mm_per_unit in [1e-3, 1.0, 25.4, 1e3] {
+            let tol = ogeom_core::Tolerances::with_scale(mm_per_unit).unwrap();
+            let u = |mm: f64| mm / mm_per_unit;
+            let mut model = Model::with_tolerances(tol);
+            let surface: SurfaceGeometry = ogeom_geom::CylinderSurface::new(
+                ogeom_math::Cylinder::new(Frame::WORLD, u(3.0), tol).unwrap(),
+                (u(-1.0), u(4.0)),
+            )
+            .unwrap()
+            .into();
+            let mut ring_at = |height: f64, phase: f64| {
+                let x = ogeom_math::Direction::new(
+                    ogeom_math::Vector::new(phase.cos(), phase.sin(), 0.0),
+                    tol,
+                )
+                .unwrap();
+                let frame = Frame::new(
+                    Point::new(0.0, 0.0, height),
+                    ogeom_math::Direction::Z,
+                    x,
+                    tol,
+                )
+                .unwrap();
+                let curve: Curve =
+                    CircleCurve::new(Circle::new(frame, u(3.0), tol).unwrap()).into();
+                let domain = curve.domain();
+                let edge = make_edge(&mut model, curve, domain, tol).unwrap().shape;
+                let pcurve: ogeom_geom::PlanarCurve = ogeom_geom::Line2d::over(
+                    ogeom_math::Axis2::new(
+                        ogeom_math::Point2::new(phase, height),
+                        ogeom_math::Direction2::new(ogeom_math::Vector2::new(1.0, 0.0), tol)
+                            .unwrap(),
+                    ),
+                    0.0,
+                    core::f64::consts::TAU,
+                )
+                .unwrap()
+                .into();
+                (edge, pcurve)
+            };
+            let (lo, lo_pcurve) = ring_at(0.0, 0.0);
+            let (hi, hi_pcurve) = ring_at(u(2.0), 5e-10);
+            let band = make_band_between(
+                &mut model,
+                &surface,
+                [(&lo, lo_pcurve), (&hi, hi_pcurve)],
+                tol,
+            )
+            .unwrap();
+            let straight = explore_unique(&model, &band, ShapeType::Edge)
+                .unwrap()
+                .into_iter()
+                .any(|e| {
+                    let Some(ogeom_topo::EdgeRepr::Curve3d { curve, .. }) =
+                        model.node(&e).unwrap().data().as_edge().unwrap().curve3d()
+                    else {
+                        return false;
+                    };
+                    matches!(model.geometry().curve(*curve), Some(Curve::Line(_)))
+                });
+            assert!(
+                straight,
+                "{mm_per_unit} mm per unit: the seam is not straight"
             );
         }
     }

@@ -453,6 +453,7 @@ fn subset_parts(
     closure: &Closure,
 ) -> OgeomResult<(ModelParts, Vec<Shape>, ogeom_core::FastMap<u32, u32>)> {
     let missing = || ogeom_core::ogeom_err!(Dangling, "the closure misses a referenced handle");
+    let tol = model.tolerances();
     // Old index -> new dense index, in arena order, so the same model and
     // roots write the same bytes every time.
     let (nodes_in_order, node_map) = renumbered(&closure.nodes);
@@ -501,11 +502,13 @@ fn subset_parts(
     for id in &nodes_in_order {
         let node = model.node_by_id(*id).ok_or_else(missing)?;
         let data = match node.data() {
-            NodeData::Vertex(v) => {
-                NodeData::Vertex(VertexData::with_tolerance(v.point, v.tolerance.get())?)
-            }
+            NodeData::Vertex(v) => NodeData::Vertex(VertexData::with_tolerance_in(
+                v.point,
+                v.tolerance.get(),
+                tol,
+            )?),
             NodeData::Edge(e) => {
-                let mut edge = EdgeData::new();
+                let mut edge = EdgeData::new_in(tol);
                 edge.tolerance = e.tolerance;
                 edge.degenerate = e.degenerate;
                 for repr in &e.representations {
@@ -598,9 +601,9 @@ fn subset_parts(
                     Key::from_parts(*surface_map.get(&f.surface.index()).ok_or_else(missing)?, 0);
                 let at = relocate(&f.location)?;
                 let mut face = if f.natural_restriction {
-                    FaceData::natural(surface, at)
+                    FaceData::natural_in(surface, at, tol)
                 } else {
-                    FaceData::new(surface, at)
+                    FaceData::new_in(surface, at, tol)
                 };
                 face.tolerance = f.tolerance;
                 face.triangulation = match f.triangulation {
@@ -968,7 +971,7 @@ fn read_parts(
             "node" => {
                 let (index, _) = cursor.key()?;
                 expect_index(index, parts.nodes.len())?;
-                parts.nodes.push(cursor.node()?);
+                parts.nodes.push(cursor.node(tol)?);
             }
             "identity" => {
                 let node = cursor.shape_key()?;
@@ -3070,7 +3073,7 @@ impl<'a> Cursor<'a> {
         })
     }
 
-    fn node(&mut self) -> OgeomResult<TShape> {
+    fn node(&mut self, tol: Tolerances) -> OgeomResult<TShape> {
         let kind = match self.word()? {
             "vertex" => ShapeType::Vertex,
             "edge" => ShapeType::Edge,
@@ -3090,25 +3093,29 @@ impl<'a> Cursor<'a> {
         let mut data = match kind {
             ShapeType::Vertex => {
                 let tolerance = self.number()?;
-                NodeData::Vertex(VertexData::with_tolerance(self.point()?, tolerance)?)
+                NodeData::Vertex(VertexData::with_tolerance_in(
+                    self.point()?,
+                    tolerance,
+                    tol,
+                )?)
             }
             ShapeType::Edge => {
-                let mut edge = EdgeData::new();
-                edge.tolerance = Tolerance::new(self.number()?)?;
+                let mut edge = EdgeData::new_in(tol);
+                edge.tolerance = Tolerance::new_in(self.number()?, tol)?;
                 let agrees = self.flag()?;
                 edge.degenerate = self.flag()?;
                 pending = Some((agrees, self.count()?));
                 NodeData::Edge(Box::new(edge))
             }
             ShapeType::Face => {
-                let tolerance = Tolerance::new(self.number()?)?;
+                let tolerance = Tolerance::new_in(self.number()?, tol)?;
                 let surface = self.handle()?;
                 let at = self.location()?;
                 let natural = self.flag()?;
                 let mut face = if natural {
-                    FaceData::natural(surface, at)
+                    FaceData::natural_in(surface, at, tol)
                 } else {
-                    FaceData::new(surface, at)
+                    FaceData::new_in(surface, at, tol)
                 };
                 face.tolerance = tolerance;
                 face.triangulation = match self.word()? {

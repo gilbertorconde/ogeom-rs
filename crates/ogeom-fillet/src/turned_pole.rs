@@ -270,7 +270,7 @@ fn rectangle(
     )?;
     let mut poles = Vec::with_capacity(2);
     for (pole, row) in [(&south, rows.0), (&north, rows.1)] {
-        let mut data = ogeom_topo::EdgeData::new();
+        let mut data = ogeom_topo::EdgeData::new_in(tol);
         data.degenerate = true;
         let edge = model.add_edge(data, &[pole.clone(), pole.clone()])?;
         let image: PlanarCurve = ogeom_geom::Line2d::over(

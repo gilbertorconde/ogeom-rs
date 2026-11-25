@@ -201,7 +201,7 @@ impl SphereCorner {
         // The pole: a degenerate edge along the chart's top row, back from
         // the east meridian to the west.
         let collapsed = {
-            let mut data = EdgeData::new();
+            let mut data = EdgeData::new_in(tol);
             data.degenerate = true;
             model.add_edge(data, &[pole.clone(), pole.clone()])?
         };

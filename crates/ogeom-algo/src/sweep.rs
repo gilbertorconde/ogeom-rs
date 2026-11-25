@@ -698,7 +698,7 @@ fn rewound(
     let Some(data) = node.data().as_face() else {
         ogeom_bail!(Construction, "the profile holds no face data");
     };
-    let mut rebuilt = ogeom_topo::FaceData::new(data.surface, data.location.clone());
+    let mut rebuilt = ogeom_topo::FaceData::new_in(data.surface, data.location.clone(), tol);
     rebuilt.tolerance = data.tolerance;
     let stored = node.children().to_vec();
     let mut wires = Vec::with_capacity(stored.len());
@@ -1787,7 +1787,7 @@ fn revolved_rail(
 
     let radius = from - turn.axis.project(from);
     let built = if radius.magnitude() <= tol.confusion() {
-        let mut data = ogeom_topo::EdgeData::new();
+        let mut data = ogeom_topo::EdgeData::new_in(tol);
         data.degenerate = true;
         model.add_edge(data, &[base.clone(), raised])?
     } else {

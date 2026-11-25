@@ -1530,7 +1530,10 @@ pub(crate) fn rebuilt(
                             Some((v_at, p_at)) => {
                                 let gap = curve.point_at(range.0, tol)?.distance(p_at);
                                 if gap > tol.confusion() {
-                                    model.widen(&v_at, ogeom_core::Tolerance::new(gap * 2.0)?)?;
+                                    model.widen(
+                                        &v_at,
+                                        ogeom_core::Tolerance::new_in(gap * 2.0, tol)?,
+                                    )?;
                                 }
                                 make_edge_between(model, curve.clone(), range, &v_at, &v_at, tol)?
                                     .shape
@@ -1559,13 +1562,13 @@ pub(crate) fn rebuilt(
                             );
                         if gap > tol.confusion() {
                             for v in [&v_from, &v_to] {
-                                model.widen(v, ogeom_core::Tolerance::new(gap * 2.0)?)?;
+                                model.widen(v, ogeom_core::Tolerance::new_in(gap * 2.0, tol)?)?;
                             }
                         }
                         make_edge_between(model, curve.clone(), range, &v_from, &v_to, tol)?.shape
                     };
                     if worst > tol.confusion() {
-                        model.widen(&built, ogeom_core::Tolerance::new(worst)?)?;
+                        model.widen(&built, ogeom_core::Tolerance::new_in(worst, tol)?)?;
                     }
                     history.modify(&edge, built.clone());
                     new_edges.insert(edge.node(), built);
@@ -1652,7 +1655,10 @@ pub(crate) fn rebuilt(
                             };
                             let miss = t.distance.max(slop);
                             if miss > tol.confusion() {
-                                model.widen(&v_at, ogeom_core::Tolerance::new(miss * 2.0)?)?;
+                                model.widen(
+                                    &v_at,
+                                    ogeom_core::Tolerance::new_in(miss * 2.0, tol)?,
+                                )?;
                             }
                             let window = seamed.domain();
                             make_edge_between(model, seamed, window, &v_at, &v_at, tol)?.shape
@@ -1676,7 +1682,7 @@ pub(crate) fn rebuilt(
                     // re-solved ends; the vertices own that slop.
                     if slop > tol.confusion() {
                         for v in [&v_from, &v_to] {
-                            model.widen(v, ogeom_core::Tolerance::new(slop * 2.0)?)?;
+                            model.widen(v, ogeom_core::Tolerance::new_in(slop * 2.0, tol)?)?;
                         }
                     }
                     let ta = ogeom_algo::project_on_curve(&moved, p_from, 64, tol)?.parameter;
@@ -1739,7 +1745,7 @@ pub(crate) fn rebuilt(
                     make_edge_between(model, moved, (ta, tb), &v_from, &v_to, tol)?.shape
                 };
                 if slop > tol.confusion() {
-                    model.widen(&built, ogeom_core::Tolerance::new(slop)?)?;
+                    model.widen(&built, ogeom_core::Tolerance::new_in(slop, tol)?)?;
                 }
                 built
             }
@@ -1831,7 +1837,10 @@ pub(crate) fn rebuilt(
             );
         }
         if prep.fit_deviation > tol.confusion() {
-            model.widen(&built, ogeom_core::Tolerance::new(prep.fit_deviation)?)?;
+            model.widen(
+                &built,
+                ogeom_core::Tolerance::new_in(prep.fit_deviation, tol)?,
+            )?;
         }
         history.modify(&prep.shape, built.clone());
         rebuilt_faces.push(built);
@@ -2068,7 +2077,7 @@ fn rebuilt_seam_edge(
         // The end sits on the column to the fit's breadth, and the vertex
         // owns that breadth.
         if off > tol.confusion() {
-            model.widen(v, ogeom_core::Tolerance::new(off * 2.0)?)?;
+            model.widen(v, ogeom_core::Tolerance::new_in(off * 2.0, tol)?)?;
         }
     }
     Ok(Some(if t_start <= t_end {
@@ -2246,7 +2255,8 @@ fn assembled_with_seam(
                         // The edge owns the offset, and so must the vertices
                         // that bound it: a bound no looser than what it
                         // bounds is the containment rule.
-                        let widened = ogeom_core::Tolerance::new(worst_off + tol.confusion())?;
+                        let widened =
+                            ogeom_core::Tolerance::new_in(worst_off + tol.confusion(), tol)?;
                         model.widen(&fresh, widened)?;
                         if let Some((a, b)) = edge_vertices(model, &fresh)? {
                             model.widen(&a, widened)?;
@@ -2275,7 +2285,7 @@ fn assembled_with_seam(
                     .and_then(|n| n.data().as_edge())
                     .is_some_and(|d| gap > d.tolerance.get())
             {
-                let widened = ogeom_core::Tolerance::new(gap * (1.0 + 1e-6))?;
+                let widened = ogeom_core::Tolerance::new_in(gap * (1.0 + 1e-6), tol)?;
                 model.widen(&fresh, widened)?;
                 if let Some((a, b)) = edge_vertices(model, &fresh)? {
                     model.widen(&a, widened)?;
@@ -2402,7 +2412,7 @@ fn rebuilt_lone_edge(
         let Some((vertex, _)) = new_vertices.get(&start.node()) else {
             ogeom_bail!(Construction, "an apex has no re-solved vertex");
         };
-        let mut data = EdgeData::new();
+        let mut data = EdgeData::new_in(tol);
         data.degenerate = true;
         return Ok(Some(
             model.add_edge(data, &[vertex.clone(), vertex.clone()])?,
