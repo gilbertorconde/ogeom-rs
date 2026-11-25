@@ -13,7 +13,7 @@
 
 use ogeom::algo::make_box;
 use ogeom::core::Tolerances;
-use ogeom::fillet::fillet_edges;
+use ogeom::fillet::BlendRequest;
 use ogeom::math::Frame;
 use ogeom::mesh::{Deflection, triangulate};
 use ogeom::topo::{Model, ShapeType, Triangulation, explore_unique};
@@ -28,7 +28,10 @@ fn filleted_box_mesh() -> Triangulation {
         .unwrap()
         .shape;
     let edges = explore_unique(&model, &block, ShapeType::Edge).unwrap();
-    let rolled = fillet_edges(&mut model, &block, &edges, 1.0, tol).unwrap();
+    let rolled = BlendRequest::new()
+        .round(edges, 1.0)
+        .build(&mut model, &block, tol)
+        .unwrap();
     triangulate(&model, &rolled.shape, Deflection::default(), tol).unwrap()
 }
 

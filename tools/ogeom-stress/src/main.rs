@@ -468,7 +468,9 @@ fn generated_parts() -> Vec<Part> {
     add("rounded-box", &|m| {
         let block = make_box(m, Point::ORIGIN, (20.0, 14.0, 10.0))?;
         let edges = explore_unique(m, &block, ShapeType::Edge).ok()?;
-        ogeom::fillet::fillet_edges(m, &block, &edges, 2.0, T)
+        ogeom::fillet::BlendRequest::new()
+            .round(edges.iter().cloned(), 2.0)
+            .build(m, &block, T)
             .ok()
             .map(|b| b.shape)
     });
@@ -1002,7 +1004,9 @@ fn blend_case(rng: &mut Rng) -> Verdict {
         }
     }
     let radius = rng.range(0.05, 0.4);
-    let result = ogeom::fillet::fillet_edges(&mut model, &fused, &chosen, radius, T);
+    let result = ogeom::fillet::BlendRequest::new()
+        .round(chosen.iter().cloned(), radius)
+        .build(&mut model, &fused, T);
     let (_, m) = match judged(&model, &format!("{what}: fillet r {radius}"), result) {
         Ok(r) => r,
         Err(v) => return v,
@@ -1150,11 +1154,21 @@ fn round_case(rng: &mut Rng) -> Verdict {
                 },
             ));
         }
-        ogeom::fillet::chamfer_edges_with(&mut model, &shape, &specs, T)
+        specs
+            .into_iter()
+            .fold(
+                ogeom::fillet::BlendRequest::new(),
+                |request, (edge, spec)| request.edge(edge, spec),
+            )
+            .build(&mut model, &shape, T)
     } else if bevel {
-        ogeom::fillet::chamfer_edges(&mut model, &shape, &chosen, r, T)
+        ogeom::fillet::BlendRequest::new()
+            .chamfer(chosen.iter().cloned(), r)
+            .build(&mut model, &shape, T)
     } else {
-        ogeom::fillet::fillet_edges(&mut model, &shape, &chosen, r, T)
+        ogeom::fillet::BlendRequest::new()
+            .round(chosen.iter().cloned(), r)
+            .build(&mut model, &shape, T)
     };
     let (_, m) = match judged(&model, &what, result) {
         Ok(r) => r,
@@ -1232,9 +1246,13 @@ fn drum_round(model: &mut Model, frame: Frame, dims: (f64, f64, f64), rng: &mut 
         if bevel { "bevelled" } else { "rounded" }
     );
     let result = if bevel {
-        ogeom::fillet::chamfer_edges(model, &shape, &chosen, r, T)
+        ogeom::fillet::BlendRequest::new()
+            .chamfer(chosen.iter().cloned(), r)
+            .build(model, &shape, T)
     } else {
-        ogeom::fillet::fillet_edges(model, &shape, &chosen, r, T)
+        ogeom::fillet::BlendRequest::new()
+            .round(chosen.iter().cloned(), r)
+            .build(model, &shape, T)
     };
     let (_, m) = match judged(model, &what, result) {
         Ok(r) => r,
@@ -1331,9 +1349,13 @@ fn bore_round(model: &mut Model, frame: Frame, dims: (f64, f64, f64), rng: &mut 
         if bevel { "bevelled" } else { "rounded" }
     );
     let result = if bevel {
-        ogeom::fillet::chamfer_edges(model, &bored, &chosen, r, T)
+        ogeom::fillet::BlendRequest::new()
+            .chamfer(chosen.iter().cloned(), r)
+            .build(model, &bored, T)
     } else {
-        ogeom::fillet::fillet_edges(model, &bored, &chosen, r, T)
+        ogeom::fillet::BlendRequest::new()
+            .round(chosen.iter().cloned(), r)
+            .build(model, &bored, T)
     };
     let (_, m) = match judged(model, &what, result) {
         Ok(r) => r,
@@ -1396,7 +1418,9 @@ fn rounded_case(rng: &mut Rng) -> Verdict {
         ogeom::topo::explore_unique(&model, &built.shape, ShapeType::Edge).unwrap_or_default();
     let r = dims.0.min(dims.1).min(dims.2) * rng.range(0.05, 0.4);
     let what = format!("box {dims:?} at {at:?} along {z:?} x {x:?} rounded {r}");
-    let rounded = ogeom::fillet::fillet_edges(&mut model, &built.shape, &edges, r, T);
+    let rounded = ogeom::fillet::BlendRequest::new()
+        .round(edges.iter().cloned(), r)
+        .build(&mut model, &built.shape, T);
     let (rounded, mr) = match judged(&model, &what, rounded) {
         Ok(r) => r,
         Err(v) => return v,
@@ -1695,7 +1719,9 @@ fn fillet_case(part: &Part, rng: &mut Rng) -> Verdict {
         }
     }
     let radius = part.diagonal() * rng.range(0.005, 0.06);
-    let result = ogeom::fillet::fillet_edges(&mut model, &part.shape, &chosen, radius, T);
+    let result = ogeom::fillet::BlendRequest::new()
+        .round(chosen.iter().cloned(), radius)
+        .build(&mut model, &part.shape, T);
     let (_, m) = match judged(&model, "fillet", result) {
         Ok(r) => r,
         Err(v) => return v,
