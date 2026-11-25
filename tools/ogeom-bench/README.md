@@ -46,4 +46,4 @@ for r in 1 2 3; do cargo run --release -p ogeom-bench -- --threads 1 > run$r.jso
 ```
 
 The current baseline was taken at one thread on a 20-thread machine with a
-load average of about 2.
+load average of about 3.
