@@ -3461,9 +3461,10 @@ depends on how the rounds meet.
   between two rounds must lie on the edge between them, measured.
 - **Not blended** (these go on to trim through): two rounds meeting in a
   crease (the ball would rest on the crease, an edge seat this part does
-  not build), rounds of different radii or concave rounds at the corner, a
-  cone's foot, an open arc reaching a corner, and a stretch whose seats
-  stand closer than 0.01 rad.
+  not build), rounds of different radii or concave rounds at the corner,
+  an open arc reaching a corner, and a stretch whose seats stand closer
+  than 0.01 rad. A cone's foot was in this list; the part "a cone's foot
+  round a corner" below builds it.
 
 **Oracle** (`tests/blend_into_round.rs`). The reference is the closing of
 the part "more feet", its top over the corner taken in closed form from
@@ -3483,6 +3484,51 @@ Each result is valid and closed, with three fitted pieces. Blend into
 round off: trim through's refusal by name; every behaviour off: a refusal
 naming blend into round. The second boss on the block whose two top edges
 alone are rounded, meeting in a crease, gets what trim through gives.
+
+**Blend into round, a cone's foot round a corner.** The arcs that meet
+round a rounded corner, on a boss whose wall is a cone (narrowing away
+from the floor or widening as an undercut, up to 45 degrees) instead of a
+cylinder. No new rule: the closing by the rolling ball gives it, as in the
+part "arcs that meet". The ball's centre lies on the cone's offset, whose
+distance from the axis changes with height, and on the floor's offset,
+whose height over a point of the floor's plane depends on that point's
+distance from the sunk region. So, at each angle about the axis, the
+point under the centre and the centre's height are solved together, as a
+fixed point. While the cone's lean times the offset's slope stays under
+one the iteration contracts, so it reaches the one solution; where the
+solve leaves a residual the foot is not blended.
+
+- **Seats.** The ball still passes from one round to the next where the
+  point under its centre crosses the plane square to the outline through
+  the vertex between them. On a cylinder that point runs on the contact
+  circle; on a cone it moves along the radial as the ball drops over the
+  rounds (out on a narrowing cone, in under an undercut). So the seats
+  between rounds are found on the solved point, not on the circle. Where
+  the ball leaves the floor and comes back it stands at its radius, the
+  point under it on the contact circle, so those seats do not change.
+- **Built.** A closed rim on a cylinder or a cone, its round reaching such
+  a stretch. The tool, its faces and the proof are those of the part
+  "arcs that meet". Each centre's solve must close within a thousandth of
+  a confusion, and each ball's contact at a seat between two rounds must
+  lie on the edge between them, measured.
+- **Not blended**, as before: an open arc, a bevel, and the other cases
+  listed under "arcs that meet".
+
+**Oracle** (`tests/blend_into_round.rs`). The closing of the part "arcs
+that meet", given the cone's lean; its spine (where the two offsets meet)
+is solved by secant steps. Under the undercut its slanted lines are split
+where each leaves the floor's region round the corner. Block and foot
+round as in that part; cones lean by 2 over their height of 15.
+
+| case | fill built | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| cone r 5 to 3 at (11, 11), torus corner (upright edge r 12) | 43.314581592 | 43.314581460 | 1.3e-7 | 1.1e-6 | 7.4e-7 rad |
+| cone r 3.5 to 1.5 at (9, 9.3), sphere corner (three edges r 5) | 31.695105594 | 31.695105345 | 2.5e-7 | 1.2e-6 | 9.6e-7 rad |
+| cone r 5 to 7 (undercut) at (11, 11), torus corner | 82.064109603 | 82.064109614 | 1.1e-8 | 1.8e-7 | 7.2e-7 rad |
+
+Each result is valid and closed, with three fitted pieces. Blend into
+round off: trim through's refusal by name; every behaviour off: a refusal
+naming blend into round.
 
 **Blend into round, harder feet.** Three more feet. The closing by the
 rolling ball (the part "more feet") and the bevel's legs read on any

@@ -23,13 +23,16 @@
 //! lies in it, so the tool is capped flush in that plane (amendment "a rim
 //! arc ending obliquely on a flat").
 //!
-//! On a cylinder's closed rim the arcs may meet: where convex rounds of
-//! one radius run on into each other round a corner of the floor (a torus
-//! about an axis square to the floor, or a sphere), the top past the floor
-//! lies at that radius from the floor's region sunk by it, so the ball's
-//! centre stands over the nearest point of the floor's outline and rests
-//! on the round there, one fitted piece per round, passing from one to the
-//! next over the edge between them.
+//! On a closed rim the arcs may meet: where convex rounds of one radius
+//! run on into each other round a corner of the floor (a torus about an
+//! axis square to the floor, or a sphere), the top past the floor lies at
+//! that radius from the floor's region sunk by it, so the ball's centre
+//! stands over the nearest point of the floor's outline and rests on the
+//! round there, one fitted piece per round, passing from one to the next
+//! over the edge between them. On a cone's wall the centre moves along the
+//! radial as it climbs or drops, so where it stands over the outline is
+//! solved with its height, and the seats between rounds are where that
+//! point crosses the plane square to the outline at their vertex.
 //!
 //! A bevel of the same foot from a cylindrical wall, on a closed rim or an
 //! open arc, reaching rounds over arcs apart, is the cone between its two
@@ -154,6 +157,10 @@ enum Outline {
     /// A corner of the floor rounded by a sphere about the point under it.
     Corner(Point),
 }
+
+/// A point's foot on a piece of the outline, the direction there away
+/// from the floor, and how far the point stands past it ([`Element::seat`]).
+type OutlineFoot = (Point, Vector, f64);
 
 /// A piece of the outline, the round's face past it, and the floor's
 /// vertices at its ends in the loop's order.
@@ -345,8 +352,13 @@ impl Reach {
 
     /// The run whose stretch holds `theta` strictly, the piece there, and
     /// the foot on it of the ball centre's point on the floor.
-    fn run_at(&self, theta: f64) -> Option<(&Run, (Point, Vector, f64))> {
-        let p = self.on_line(theta);
+    fn run_at(&self, theta: f64) -> Option<(&Run, OutlineFoot)> {
+        self.run_solved(theta).map(|(run, seat, _)| (run, seat))
+    }
+
+    /// [`Reach::run_at`], with the ball centre's height over the floor and
+    /// the residual of its solve.
+    fn run_solved(&self, theta: f64) -> Option<(&Run, OutlineFoot, (f64, f64))> {
         self.runs.iter().find_map(|run| {
             let from = run.seats[0];
             let t = from + (theta - from).rem_euclid(TAU);
@@ -355,19 +367,45 @@ impl Reach {
                 return None;
             }
             let k = run.seats[1..].iter().position(|s| t <= *s)?;
-            Some((run, run.elements[k].seat(p, self.up, false)?))
+            let piece = &run.elements[k];
+            let (p, z, residual) = self.over_run(theta, run.round_radius, |p| {
+                piece.seat(p, self.up, false).map_or(0.0, |(_, _, d)| d)
+            });
+            Some((run, piece.seat(p, self.up, false)?, (z, residual)))
         })
     }
 
-    /// The ball centre's height over the floor where it stands `d` past a
-    /// run's outline.
-    fn run_height(&self, run: &Run, d: f64) -> f64 {
-        let a = run.round_radius;
+    /// The ball centre's height over the floor where it stands `d` past the
+    /// outline of a run whose rounds have radius `a`.
+    fn run_height(&self, a: f64, d: f64) -> f64 {
+        let d = d.max(0.0);
         (a + self.radius)
             .mul_add(a + self.radius, -d * d)
             .max(0.0)
             .sqrt()
             - a
+    }
+
+    /// The ball centre at `theta` over a run whose rounds have radius `a`,
+    /// `past` giving how far a point of the floor's plane stands past the
+    /// run's outline: the point under the centre on the floor's plane, its
+    /// height, and the residual of the solve. The wall's offset leans by
+    /// `slope`, so the height is a fixed point of the rounds' offset over
+    /// the spine radius it gives.
+    fn over_run(&self, theta: f64, a: f64, past: impl Fn(Point) -> f64) -> (Point, f64, f64) {
+        let radial = self.radial(theta);
+        let under = |z: f64| self.base + radial * self.spine_radius(z);
+        let at = |z: f64| self.run_height(a, past(under(z)));
+        let mut z = self.radius;
+        for _ in 0..200 {
+            let next = at(z);
+            let step = (next - z).abs();
+            z = next;
+            if step <= f64::EPSILON * (1.0 + z.abs()) {
+                break;
+            }
+        }
+        (under(z), z, (at(z) - z).abs())
     }
 
     /// The ball centre's height over a round `s` past its tangent line.
@@ -391,8 +429,8 @@ impl Reach {
         if let Size::Bevel { rise, .. } = self.size {
             return (rise, 0.0);
         }
-        if let Some((run, (_, _, d))) = self.run_at(theta) {
-            return (self.run_height(run, d), 0.0);
+        if let Some((_, _, solved)) = self.run_solved(theta) {
+            return solved;
         }
         let Some((c, d)) = self.crossing_at(theta) else {
             return (self.radius, 0.0);
@@ -1350,15 +1388,15 @@ fn stretches(
 
 /// [`read_reach`] where the contact circle crosses a stretch of the floor's
 /// outline along which rounds of one radius meet one another, at a corner
-/// a torus or a sphere rounds: a round of a closed rim on a cylinder's
-/// foot, the rounds convex.
+/// a torus or a sphere rounds: a round of a closed rim on a cylinder's or
+/// a cone's foot, the rounds convex.
 #[expect(clippy::too_many_lines, reason = "one reading of the runs, in order")]
 fn run_reach(model: &Model, foot: Foot, size: Size, tol: Tolerances) -> OgeomResult<Option<Reach>> {
     let eps = tol.confusion();
     let Size::Round(radius) = size else {
         return Ok(None);
     };
-    if foot.slope != 0.0 || foot.arc_ends.is_some() {
+    if foot.arc_ends.is_some() {
         return Ok(None);
     }
     let Foot {
@@ -1369,7 +1407,7 @@ fn run_reach(model: &Model, foot: Foot, size: Size, tol: Tolerances) -> OgeomRes
         base,
         up,
         foot_radius,
-        reach_radius,
+        slope,
         ..
     } = foot;
     let first = curved.edges[&asked[0]]
@@ -1378,10 +1416,36 @@ fn run_reach(model: &Model, foot: Foot, size: Size, tol: Tolerances) -> OgeomRes
     let ex = first - base;
     let ex = (ex - up * ex.dot(up)) / (ex - up * ex.dot(up)).magnitude();
     let ey = up.cross(ex);
-    let at = |theta: f64| base + (ex * theta.cos() + ey * theta.sin()) * reach_radius;
+    let mut reach = Reach {
+        curved,
+        edges: asked,
+        wall,
+        floor,
+        base,
+        up,
+        ex,
+        ey,
+        foot_radius,
+        slope,
+        crossings: Vec::new(),
+        runs: Vec::new(),
+        open: None,
+        size,
+        radius,
+    };
+    let curved = &reach.curved;
     let mut runs: Vec<Run> = Vec::new();
     let mut corner = false;
-    for (chain, round_radius, closes) in chains(&curved, floor, &asked, up, tol)? {
+    for (chain, round_radius, closes) in chains(curved, floor, &reach.edges, up, tol)? {
+        // The point under the ball's centre on the floor's plane: on a cone's
+        // wall it moves along the radial as the ball climbs or drops.
+        let at = |theta: f64| {
+            reach
+                .over_run(theta, round_radius, |p| {
+                    nearest(&chain, p, up).map_or(0.0, |(_, (_, _, d))| d)
+                })
+                .0
+        };
         let Some(found) = stretches(&chain, closes, at, up) else {
             return Ok(None);
         };
@@ -1402,7 +1466,7 @@ fn run_reach(model: &Model, foot: Foot, size: Size, tol: Tolerances) -> OgeomRes
                     w[0].ends.0
                 };
                 let shared = curved.edges.iter().find_map(|(id, e)| {
-                    let mut f = faces_of(&curved, *id);
+                    let mut f = faces_of(curved, *id);
                     f.sort_unstable();
                     let mut pair = vec![w[0].face, w[1].face];
                     pair.sort_unstable();
@@ -1436,29 +1500,14 @@ fn run_reach(model: &Model, foot: Foot, size: Size, tol: Tolerances) -> OgeomRes
             return Ok(None);
         }
     }
-    let reach = Reach {
-        curved,
-        edges: asked,
-        wall,
-        floor,
-        base,
-        up,
-        ex,
-        ey,
-        foot_radius,
-        slope: 0.0,
-        crossings: Vec::new(),
-        runs,
-        open: None,
-        size,
-        radius,
-    };
-    // Every ball stays clear of the bottom of the run's rounds, and its
-    // contact at each seat between two of them lies on the edge they share.
+    reach.runs = runs;
+    // Every centre solves where the offsets meet, every ball stays clear of
+    // the bottom of the run's rounds, and its contact at each seat between
+    // two of them lies on the edge they share.
     let mut highest = radius;
     for theta in reach.proof_angles() {
-        if let Some((run, (_, _, d))) = reach.run_at(theta)
-            && d >= (run.round_radius + radius) * (1.0 - 1e-6)
+        if let Some((run, (_, _, d), (_, residual))) = reach.run_solved(theta)
+            && (residual > eps * 1e-3 || d >= (run.round_radius + radius) * (1.0 - 1e-6))
         {
             return Ok(None);
         }
@@ -1588,7 +1637,16 @@ fn clear(model: &Model, reach: &Reach, tol: Tolerances) -> OgeomResult<bool> {
     for i in 0..pairs {
         let j = (i + 1) % n;
         let step = (angles[j] - angles[i]).rem_euclid(TAU);
-        let far = reach.reach_radius() + reach.radius;
+        // The farthest from the axis either station reaches: past the
+        // contact circle where a cone's ball drops over a round.
+        let far = [&stations[i].0, &stations[j].0]
+            .into_iter()
+            .flatten()
+            .map(|p| {
+                let v = *p - reach.base;
+                (v - up * v.dot(up)).magnitude()
+            })
+            .fold(reach.reach_radius() + reach.radius, f64::max);
         let sag = far * (1.0 - (0.5 * step).cos()) + margin;
         let mut points = stations[i].0.clone();
         points.extend(stations[j].0.iter().copied());
@@ -2405,7 +2463,7 @@ fn run_pieces(
             floor_loop.push(c);
         }
         let mid = 0.5 * (ta + tb);
-        let Some((q, _, _)) = el.seat(reach.on_line(mid), up, false) else {
+        let Some((_, (q, _, _))) = reach.run_at(mid) else {
             return Ok(false);
         };
         let axis = q - up * a;
