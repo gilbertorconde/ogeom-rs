@@ -32,6 +32,7 @@ pub mod march;
 mod marched;
 mod pair_marched;
 mod pinched;
+mod request;
 mod rim_arc;
 #[allow(
     dead_code,
@@ -86,6 +87,7 @@ pub use march::{
     BlendStop, MarchedBlend, Sides, march_blend, march_blend_seeded, march_blend_sided,
 };
 pub use ogeom_algo::{FillBoundary, FillSide, Filled, make_filling_n};
+pub use request::{BlendRequest, BlendSection, Vary};
 pub use setback::{Setbacks, fillet_edges_cornered, round_vertex_setback};
 pub use sharp::round_vertex_setback_sharp;
 pub use sheet::{fillet_faces, fillet_sheet_edges};
