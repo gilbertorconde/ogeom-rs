@@ -5,7 +5,8 @@
 //!
 //! Built here for a boss's foot: the closed rim between a planar floor and
 //! a wall of revolution about an axis square to it (a cylinder, or a cone
-//! narrowing away from the floor), where the foot round's contact circle
+//! narrowing away from the floor or widening as an undercut), where the
+//! foot round's contact circle
 //! crosses straight edges of the floor along which cylindrical rounds meet
 //! the floor tangentially, convex or concave, over disjoint arcs. Where the
 //! contact lies on the floor the round is the torus its ball sweeps; past a
@@ -30,12 +31,13 @@
 //! on the round there, one fitted piece per round, passing from one to the
 //! next over the edge between them.
 //!
-//! A bevel of the same foot (a cylindrical wall, one convex round) is the
-//! cone between its two legs over the floor. Past the tangent line its leg
-//! on the floor is where the wall's offset meets the existing round, and
-//! its leg on the wall where the floor's offset meets the wall, so each
+//! A bevel of the same foot from a cylindrical wall, on a closed rim or an
+//! open arc, reaching rounds over arcs apart, is the cone between its two
+//! legs over the floor. Past a tangent line its leg on the floor is where
+//! the wall's offset meets the existing round, convex or concave, and its
+//! leg on the wall where the floor's offset meets the wall, so each
 //! section is the straight ruling between them in the plane through the
-//! wall's axis; the two pieces share that ruling where the leg crosses the
+//! wall's axis; the pieces share that ruling where the leg crosses the
 //! tangent line, and meet G1 there since the existing round leaves the
 //! floor tangentially.
 
@@ -454,7 +456,8 @@ impl Reach {
             };
             let s = self.reach_radius().mul_add(d.cos(), -c.gap);
             let r = c.round_radius;
-            return self.on_line(theta) + self.up * ((r * r - s * s).sqrt() - r);
+            let drop = r - r.mul_add(r, -s * s).sqrt();
+            return self.on_line(theta) + self.up * if c.concave { drop } else { -drop };
         }
         let centre = self.centre(theta);
         if let Some((run, (q, _, _))) = self.run_at(theta) {
@@ -720,7 +723,7 @@ fn read_reach(
         }
         _ => return Ok(None),
     };
-    if axis.direction.vector().cross(up).magnitude() > ang || !(-LEAN..=0.0).contains(&slope) {
+    if axis.direction.vector().cross(up).magnitude() > ang || !(-LEAN..=LEAN).contains(&slope) {
         return Ok(None);
     }
     let foot_radius = match (&curved.faces[wall].surface, at_floor) {
@@ -733,8 +736,8 @@ fn read_reach(
     }
     let base = axis.location - up * (axis.location - plane.origin()).dot(up);
     // Every edge lies on the foot circle on the floor. Together they turn
-    // once round the axis, or, for a round, they are an open arc whose
-    // ends stand on planes through the axis.
+    // once round the axis, or they are an open arc whose ends stand on
+    // planes through the axis.
     let mut turned = 0.0;
     let mut samples: Vec<Vector> = Vec::new();
     for e in &asked {
@@ -767,7 +770,7 @@ fn read_reach(
     }
     let arc_ends = match once[..] {
         [] if (turned - TAU).abs() <= 1e-6 => None,
-        [a, b] if round && turned < TAU - APART => {
+        [a, b] if turned < TAU - APART => {
             let ends = (curved.points[&a] - base, curved.points[&b] - base);
             let Some(found) = open_ends(
                 &curved,
@@ -891,7 +894,7 @@ fn crossing_reach(
         let off = off - along * off.dot(along);
         let concave = if (off - up * round_radius).magnitude() <= eps * 10.0 {
             false
-        } else if round && (off + up * round_radius).magnitude() <= eps * 10.0 {
+        } else if (off + up * round_radius).magnitude() <= eps * 10.0 {
             true
         } else {
             continue;
@@ -906,7 +909,7 @@ fn crossing_reach(
         if gap <= foot_radius + eps * 10.0 {
             continue;
         }
-        if !round && !concave && gap < reach_radius + eps * 10.0 {
+        if !round && gap < reach_radius + eps * 10.0 {
             let angle = (gap / reach_radius).min(1.0).acos();
             if angle < GRAZE {
                 *graze = Some(graze.map_or(angle, |g| g.min(angle)));
@@ -939,7 +942,7 @@ fn crossing_reach(
             concave,
         });
     }
-    if crossings.is_empty() || (!round && (crossings.len() > 1 || crossings[0].concave)) {
+    if crossings.is_empty() {
         return Ok(None);
     }
     let ex = crossings[0].across;

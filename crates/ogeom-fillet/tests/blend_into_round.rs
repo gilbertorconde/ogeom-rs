@@ -1,7 +1,7 @@
 //! Blend into round beyond a cylinder's foot on one convex round: a foot
-//! round reaching two rounds at a corner, a conical boss's foot, and a
-//! foot reaching a concave round. Each is measured against the
-//! morphological closing, sampled without the construction.
+//! round reaching two rounds at a corner, a conical boss's foot (narrowing
+//! or undercut), and a foot reaching a concave round. Each is measured
+//! against the morphological closing, sampled without the construction.
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{FRAC_PI_2, PI, TAU};
@@ -365,6 +365,74 @@ impl Closing {
         0.5 * (lo + hi)
     }
 
+    /// The volume per unit of angle at `t` under an undercut wall, out to
+    /// `out` along the floor, by the lines of [`Closing::slanted`]: split
+    /// where the floor crosses a tangent line. The line from the foot runs
+    /// up the wall to its touch, where the ball is tangent to it, so the
+    /// length falls as a square root of the distance from the foot: the
+    /// first range runs in the root's square.
+    fn slanted_ring(&self, t: f64, out: f64, g: &[(f64, f64)]) -> f64 {
+        let mut cuts = vec![self.foot];
+        for r in &self.rounds {
+            let towards = r.n.0.mul_add(t.cos(), r.n.1 * t.sin());
+            let cross = -r.past(self.axis.0, self.axis.1) / towards;
+            if towards > 0.0 && cross > self.foot && cross < out {
+                cuts.push(cross);
+            }
+        }
+        cuts.sort_by(f64::total_cmp);
+        cuts.push(out);
+        let mut ring = 0.0;
+        for (i, w) in cuts.windows(2).enumerate() {
+            let span = w[1] - w[0];
+            for (gs, ws) in g {
+                let u = 0.5 * (gs + 1.0);
+                let (rho, drho) = if i == 0 {
+                    (span.mul_add(u * u, w[0]), span * u)
+                } else {
+                    (span.mul_add(u, w[0]), 0.5 * span)
+                };
+                ring += ws * self.slanted(rho, t) * drho;
+            }
+        }
+        ring
+    }
+
+    /// Under an undercut wall the fill is integrated along lines parallel
+    /// to the wall in each plane through the axis, from the floor at `rho`,
+    /// `t` up to the ball: a vertical column there would pass the ball and
+    /// meet the pocket between it and the wall. The line's length by
+    /// bisection, and the volume it carries per unit of `rho` and of `t`:
+    /// the integral of the distance from the axis along it, times the
+    /// shear's area factor `(1 - k g') / sqrt(1 + k^2)`, `g'` the floor's
+    /// slope along the radius.
+    fn slanted(&self, rho: f64, t: f64) -> f64 {
+        let k = self.slope;
+        let q = k.hypot(1.0);
+        let (c, s) = (t.cos(), t.sin());
+        let along = Vector::new(k * c / q, k * s / q, 1.0 / q);
+        let g = self.ground(rho, t);
+        let (mut lo, mut hi) = (0.0, 3.0 * FOOT);
+        if !self.in_fill(g) {
+            return 0.0;
+        }
+        for _ in 0..50 {
+            let mid = 0.5 * (lo + hi);
+            if self.in_fill(g + along * mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        let length = 0.5 * (lo + hi);
+        let h = 1e-6;
+        // The floor's own height, not the wall's within `h` of the foot.
+        let floor = |r: f64| self.floor(r.mul_add(c, self.axis.0), r.mul_add(s, self.axis.1));
+        let slope = (floor(rho + h) - floor(rho - h)) / (2.0 * h);
+        let moment = rho.mul_add(length, k * length * length / (2.0 * q));
+        moment * k.mul_add(-slope, 1.0) / q
+    }
+
     /// Where along the radius at `t` the fill ends on the solid's surface,
     /// between `inside` (in the fill) and `outside`. Past that point the
     /// surface lies at exactly the radius from `Free`, so the test asks for
@@ -388,8 +456,9 @@ impl Closing {
     /// ends on the floor, each angular range split where the ball's seat
     /// changes; Gauss-Legendre of `n` points per range. Over a cylinder's
     /// foot the columns run `rho = out - (out - foot) cos s`, smooth where
-    /// the round meets the wall; up a cone's wall and out along the floor
-    /// they are split at the foot circle.
+    /// the round meets the wall; up a narrowing cone's wall and out along
+    /// the floor they are split at the foot circle; under an undercut they
+    /// are the slanted lines of [`Closing::slanted_ring`].
     /// Over a rounded corner: the angles about the axis at which the ball's
     /// centre, on the circle of radius `reach`, changes seat (between the
     /// floor, either round and the corner), found by sampling and
@@ -493,6 +562,8 @@ impl Closing {
                         let drho = (out - self.foot) * s.sin() * FRAC_PI_2 * 0.5;
                         ring += ws * self.column(rho, t) * rho * drho;
                     }
+                } else if self.slope > 0.0 {
+                    ring = self.slanted_ring(t, out, &g);
                 } else {
                     let low = self.foot + self.slope * 3.0 * FOOT;
                     let start = self.edge(t, self.foot, low);
@@ -648,11 +719,24 @@ const LEAN: f64 = -2.0 / 15.0;
 /// round's contact circle (radius `6 + 3 sqrt(1 + k^2) + 3 k`) crosses the
 /// tangent line `y = 5`.
 fn conical() -> Case {
+    cone_boss(LEAN)
+}
+
+/// The boss of [`conical`] leaning by `k`: its radius 6 at the floor,
+/// `6 + 15 k` at its top.
+fn cone_boss(k: f64) -> Case {
     let mut m = Model::new();
     let rounded = rounded_block(&mut m, false);
-    let boss = ogeom_algo::make_cone(&mut m, at(20.0, 12.0, 15.0), 6.0, 4.0, 15.0, T)
-        .unwrap()
-        .shape;
+    let boss = ogeom_algo::make_cone(
+        &mut m,
+        at(20.0, 12.0, 15.0),
+        6.0,
+        15.0f64.mul_add(k, 6.0),
+        15.0,
+        T,
+    )
+    .unwrap()
+    .shape;
     let s = ogeom_bool::fuse(&mut m, &rounded, &boss, T).unwrap().shape;
     let foot = foot_rim(&m, &s, (20.0, 12.0, 15.0), 6.0);
     Case {
@@ -662,7 +746,7 @@ fn conical() -> Case {
         reference: Closing {
             axis: (20.0, 12.0),
             foot: 6.0,
-            slope: LEAN,
+            slope: k,
             rounds: vec![convex_edge_round()],
             corner: None,
         },
@@ -789,7 +873,13 @@ fn a_conical_boss_s_foot_round_blends_into_the_edge_round() {
 #[test]
 #[ignore = "heavy: the sampled reference takes about 10 s"]
 fn a_conical_boss_s_foot_round_fills_as_the_closing() {
-    let k = LEAN;
+    pappus_checks(LEAN);
+    fills_as_the_closing(conical());
+}
+
+/// The reference on a boss leaning by `k`, clear of any round, against
+/// Pappus.
+fn pappus_checks(k: f64) {
     let clear = Closing {
         axis: (20.0, 40.0),
         foot: 6.0,
@@ -812,7 +902,14 @@ fn a_conical_boss_s_foot_round_fills_as_the_closing() {
         if area < 0.0 {
             moment = -moment;
         }
-        let (from, to) = (k.atan2(-1.0), -FRAC_PI_2);
+        // From the wall's touch down to the floor's, through the corner's
+        // side: an undercut's touch lies above the radial, a lean's below.
+        let from = k.atan2(-1.0);
+        let to = if from > 0.0 {
+            3.0 * FRAC_PI_2
+        } else {
+            -FRAC_PI_2
+        };
         let sector =
             big * FOOT * FOOT * 0.5 * (to - from) + FOOT.powi(3) / 3.0 * (to.sin() - from.sin());
         TAU * (moment - sector)
@@ -822,7 +919,29 @@ fn a_conical_boss_s_foot_round_fills_as_the_closing() {
         (self_check - pappus).abs() < 1e-6,
         "the reference {self_check} against Pappus {pappus}"
     );
-    fills_as_the_closing(conical());
+}
+
+/// The undercut boss's lean: its radius grows from 6 to 8 over its height
+/// of 15.
+const UNDERCUT: f64 = 2.0 / 15.0;
+
+/// A boss widening away from the floor, an undercut, by the block's
+/// rounded top edge: its foot round's contact circle (radius 9.43) crosses
+/// the tangent line `y = 5` by 2.43. The wall's offset leans the same way,
+/// so past the line the ball's centre comes in toward the axis as it
+/// drops; the seat change keeps its section in the plane through the axis.
+#[test]
+fn an_undercut_boss_s_foot_round_blends_into_the_edge_round() {
+    blends_smoothly(cone_boss(UNDERCUT));
+}
+
+/// Under the undercut wall the fill's columns end on the wall out to its
+/// touch, and on the ball past it.
+#[test]
+#[ignore = "heavy: the sampled reference takes about 10 s"]
+fn an_undercut_boss_s_foot_round_fills_as_the_closing() {
+    pappus_checks(UNDERCUT);
+    fills_as_the_closing(cone_boss(UNDERCUT));
 }
 
 #[test]
@@ -1151,5 +1270,53 @@ fn a_foot_round_reaching_a_creased_corner_is_not_blended() {
         .shape;
     let s = ogeom_bool::fuse(&mut m, &block, &boss, T).unwrap().shape;
     let foot = foot_rim(&m, &s, (9.5, 10.0, 15.0), 4.0);
+    not_blended(m, &s, &foot);
+}
+
+/// The block of [`rounded_block`] with its top milled down by 1 to
+/// `z = 14`: the edge round now meets the floor along `y = 2` at a crease,
+/// 37 degrees from tangent. A boss r 6 at `(20, 9)`: its foot round's
+/// contact circle (radius 9) crosses that edge, where the ball would rest
+/// on the crease, an edge seat. Not blended: the default gives what blend
+/// into round off gives.
+#[test]
+fn a_foot_round_reaching_a_round_not_tangent_to_the_floor_is_not_blended() {
+    let mut m = Model::new();
+    let rounded = rounded_block(&mut m, false);
+    let mill = ogeom_algo::make_box(&mut m, at(-1.0, -1.0, 14.0), (42.0, 32.0, 5.0), T)
+        .unwrap()
+        .shape;
+    let milled = ogeom_bool::cut(&mut m, &rounded, &mill, T).unwrap().shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, at(20.0, 9.0, 14.0), 6.0, 15.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &milled, &boss, T).unwrap().shape;
+    let foot = foot_rim(&m, &s, (20.0, 9.0, 14.0), 6.0);
+    not_blended(m, &s, &foot);
+}
+
+/// A boss r 4 standing on a horizontal cylinder r 20 (the floor curves
+/// away under it) near its end, whose rim is rounded at 5: the foot round
+/// reaches the end's round over a curved floor. Not blended: the default
+/// gives what blend into round off gives.
+#[test]
+fn a_foot_round_on_a_curved_floor_is_not_blended() {
+    let mut m = Model::new();
+    let frame = Frame::new(Point::new(0.0, 0.0, 0.0), Direction::X, Direction::Y, T).unwrap();
+    let drum = ogeom_algo::make_cylinder(&mut m, frame, 20.0, 40.0, T)
+        .unwrap()
+        .shape;
+    let rim = edges_where(&m, &drum, |p| {
+        p.x.abs() < 1e-9 && (p.y.hypot(p.z) - 20.0).abs() < 1e-9
+    });
+    let drum = fillet_edges(&mut m, &drum, &rim, 5.0, T).unwrap().shape;
+    let boss = ogeom_algo::make_cylinder(&mut m, at(10.0, 0.0, 15.0), 4.0, 15.0, T)
+        .unwrap()
+        .shape;
+    let s = ogeom_bool::fuse(&mut m, &drum, &boss, T).unwrap().shape;
+    let foot = edges_where(&m, &s, |p| {
+        ((p.x - 10.0).hypot(p.y) - 4.0).abs() < 1e-6 && (p.y.hypot(p.z) - 20.0).abs() < 1e-6
+    });
+    assert!(!foot.is_empty(), "the foot rim");
     not_blended(m, &s, &foot);
 }

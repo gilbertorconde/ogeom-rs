@@ -3250,8 +3250,9 @@ settled here, and it needs no choice beyond the seat.
   height and radius solve together. The seat change keeps its section in
   the plane through the axis, since the round leaves the floor
   tangentially and the cone's offset depends on height alone, so the
-  pieces meet G1 there. A cone widening away from the floor (an undercut),
-  or leaning more than 45 degrees, is not blended.
+  pieces meet G1 there. A cone leaning more than 45 degrees is not
+  blended. A cone widening away from the floor (an undercut) is built by
+  the part "Blend into round, harder feet" below.
 - **A concave round.** The round curves up from the floor: its axis
   stands above the floor at its radius. The ball climbs it, its centre on
   the cylinder of the round's radius less the ball's about that axis. It
@@ -3270,7 +3271,8 @@ settled here, and it needs no choice beyond the seat.
 - **Not blended** (these go on to trim through): an open arc of a foot
   (the part "an open arc of a foot" below builds some), a round not
   tangent to the floor, a curved floor, and a bevel reaching anything but one convex
-  round from a cylindrical wall.
+  round from a cylindrical wall (the part "harder feet" below builds more
+  bevels).
 
 **Oracle** (`tests/blend_into_round.rs`). The reference is the closing,
 sampled without the construction, as for the first case, generalised: the
@@ -3326,7 +3328,7 @@ third face. Blend into round keeps that end.
   on a plane beside the axis, or on a curved face or several faces, where
   the trim would cut the round obliquely; an arc whose seat on a round
   reaches one of its ends, where the end plane would cut the fitted piece;
-  a bevel's open arc.
+  a bevel's open arc (the part "harder feet" below builds it).
 
 **Oracle** (`tests/blend_into_round.rs`). The reference is the closing of
 the whole boss, as above, integrated over the arc's wedge alone, the end
@@ -3401,6 +3403,74 @@ Each result is valid and closed, with three fitted pieces. Blend into
 round off: trim through's refusal by name; every behaviour off: a refusal
 naming blend into round. The second boss on the block whose two top edges
 alone are rounded, meeting in a crease, gets what trim through gives.
+
+**Blend into round, harder feet.** Three more feet. The closing by the
+rolling ball (the part "more feet") and the bevel's legs read on any
+curved seat (the chamfer step above) give each one; the public
+documentation surveyed above describes the smooth overflow by its result
+alone, so there is no choice to make beyond what the part builds.
+
+- **An undercut wall.** A cone widening away from the floor, by up to 45
+  degrees, is built as the narrowing cone is. The ball's centre runs on
+  the cone's offset where it meets the floor's; over the floor that is a
+  circle and the round a torus, past the tangent line height and radius
+  solve together. The offset depends on height alone, so the seat change
+  keeps its section in the plane through the axis and the pieces meet G1.
+  The fill now stands under the wall as well as beside it; the proof is
+  the closed rim's, unchanged.
+- **Bevels beyond the first case.** A bevel's foot is now taken on the
+  round's terms, except where the round's own reading needs a ball:
+  - several rounds whose arcs stand apart, the cone between each two
+    fitted pieces;
+  - a concave round, its leg on the floor climbing the round short of
+    where it turns square. The floor along the radius is convex there, so
+    the ruling between the legs stays over it;
+  - an open arc whose ends stand on planes through the axis, capped flush
+    in each end's plane, which holds the ruling there.
+  The leg on the floor crosses each tangent line under the angle that
+  says the floor and the round are left wedges too sharp to build; where
+  it does so under a hundredth of a radian, a convex or a concave round
+  alike, the refusal by that name holds.
+- **Not blended** (these go on to trim through, pinned by tests):
+  - a round not tangent to the floor, where the ball would rest on the
+    crease between them, an edge seat (a top milled down across its edge
+    round);
+  - a curved floor, where the round over the floor is no torus and the
+    rounds' tangent lines are no lines (a boss on a drum by its rounded
+    end);
+  - a bevel up a cone, whose leg on a leaning wall is not read as the
+    round's offset is; a bevel whose arcs meet at a rounded corner, which
+    needs the ball's nearest-point reading.
+
+**Oracle** (`tests/blend_into_round.rs`, `tests/chamfer_overflow.rs`).
+
+- **Undercut.** The closing of the part "more feet", integrated in each
+  plane through the axis along lines parallel to the wall, from the floor
+  up to the ball: a vertical column there would pass the ball and meet the
+  pocket between it and the wall. The line from the foot runs up the wall
+  to its touch, where the ball is tangent to the wall, so the first range
+  runs in the square of its root. On a boss clear of any round it
+  reproduces Pappus (the quadrilateral of the foot, the touches and the
+  centre, less the ball's sector) to 1e-6.
+- **Bevels.** The bevel's definition integrated without the construction,
+  as in the chamfer step, for any straight rounds of the floor, convex or
+  concave, and within an open arc's wedge. On a clear boss it reproduces
+  Pappus over the whole turn and over half of it to 1e-9.
+- Gauss-Legendre throughout; the bound is the change from 32 to 64 points
+  per range. Each result is valid and closed, with one fitted piece per
+  round reached.
+
+| case | fill built | reference | error | bound | worst G1 |
+|---|---|---|---|---|---|
+| cone r 6 to 8 over 15 at (20, 12), edge round r 5, foot round r 3 | 107.873066065 | 107.873066080 | 1.5e-8 | 1e-9 | 1.8e-6 rad |
+| bevel 3 of a boss r 6 at (12, 12), two rounds r 5 | 193.743217880 | 193.743217900 | 2.0e-8 | 1e-9 | 3.2e-7 rad |
+| bevel 3 of a boss r 6 at (20, 21), concave round r 6 | 199.638554683 | 199.638554675 | 7.7e-9 | 1e-9 | 6.3e-7 rad |
+| bevel 3 of a half boss r 6 cut at `y = 12`, edge round r 5 | 96.871608919 | 96.871608950 | 3.1e-8 | 1e-9 | 3.2e-7 rad |
+
+With blend into round off each gets trim through's refusal or its own
+different solid, and with every behaviour off a refusal naming blend into
+round. The milled top, the drum and the conical boss's bevel get what
+trim through gives.
 
 **Narrow passages.** A concave zone is a narrow passage where it is
 tighter than the radius, so that the ball cannot roll through touching its

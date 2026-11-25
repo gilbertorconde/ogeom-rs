@@ -16,13 +16,15 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// - `blend_into_round`: where a bevel's leg reaches an existing round of
 ///   the body, the bevel runs on over that round with no step. Built for a
 ///   boss's foot: the closed rim between a planar floor and a cylindrical
-///   wall standing square on it, every edge of the rim asking the same
-///   legs, whose leg on the floor crosses a straight edge of the floor
-///   along which a convex cylindrical round meets the floor tangentially.
-///   Over the floor the bevel is the cone between its legs; past the
-///   tangent line its leg on the floor is where the wall's offset meets
-///   the round, and each section is the straight ruling between the legs,
-///   the two pieces meeting G1.
+///   wall standing square on it, or an open arc of it whose ends stand on
+///   planes through the wall's axis, every edge of the rim asking the same
+///   legs, whose leg on the floor crosses straight edges of the floor
+///   along which cylindrical rounds, convex or concave, meet the floor
+///   tangentially, over arcs apart. Over the floor the bevel is the cone
+///   between its legs; past each tangent line its leg on the floor is
+///   where the wall's offset meets the round, and each section is the
+///   straight ruling between the legs, the pieces meeting G1. An open
+///   arc's ends are capped flush in their planes.
 /// - `trim_through`: the bevel keeps its own surface, and the faces it
 ///   reaches are trimmed or extended to meet it: the engine's own
 ///   construction, what the chamfer built before this option set.
