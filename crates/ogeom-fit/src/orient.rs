@@ -48,7 +48,7 @@ use ogeom_math::{Axis, Direction, Frame, Point, Vector};
 use ogeom_topo::Triangulation;
 
 use crate::Cutoff;
-use ogeom_algo::recognize::{covariance, smallest_direction};
+use crate::recognize::{covariance, smallest_direction};
 
 /// How [`face_directions`] and [`axis_of_revolution`] read a mesh's
 /// normals.

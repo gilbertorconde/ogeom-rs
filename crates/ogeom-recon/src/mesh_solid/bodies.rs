@@ -8,7 +8,7 @@ use ogeom_topo::{Model, Shape};
 
 use super::weld::{Piece, inside};
 use super::{Carrier, FallbackReason, Groups, MeshSolidReport};
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 /// One closed body of the result: the solid, and the mesh triangles of its
 /// shell and of the voids inside it.
@@ -124,7 +124,7 @@ pub(super) fn body_culprits(
     built: &[Option<Shape>],
     bodies: &[Body],
     flat: f64,
-    kept: &crate::mass::VolumeKept,
+    kept: &ogeom_algo::mass::VolumeKept,
     held: &mut Vec<bool>,
     tol: Tolerances,
     report: &mut MeshSolidReport,
@@ -179,8 +179,14 @@ pub(super) fn body_culprits(
                 )?;
                 mesh.volume()
             } else {
-                crate::mass::volume_as_flagged(model, &body.solid, deflection, Some(kept), tol)?
-                    .mass
+                ogeom_algo::mass::volume_as_flagged(
+                    model,
+                    &body.solid,
+                    deflection,
+                    Some(kept),
+                    tol,
+                )?
+                .mass
             })
         };
         // Measured at the facets' corners and edge middles, the allowance
@@ -238,7 +244,8 @@ pub(super) fn body_culprits(
                         (b - a).cross(c - a).magnitude() / 2.0
                     })
                     .sum();
-                let face_area = crate::mass::surface_properties(model, face, deflection, tol)?.mass;
+                let face_area =
+                    ogeom_algo::mass::surface_properties(model, face, deflection, tol)?.mass;
                 if face_area > drawn * AREA_ASTRAY || drawn > face_area * AREA_ASTRAY {
                     astray.push(g);
                 }
@@ -300,7 +307,7 @@ fn inverted_faces(
             let [a, b, c] = triangles[tris[k * tris.len() / votes]].map(|v| points[v as usize]);
             let normal = (b - a).cross(c - a);
             let middle = Point::from_vector((a.to_vector() + b.to_vector() + c.to_vector()) / 3.0);
-            let Ok(foot) = crate::measure::project_on_surface(surface, middle, 8, tol) else {
+            let Ok(foot) = ogeom_algo::measure::project_on_surface(surface, middle, 8, tol) else {
                 continue;
             };
             let Ok(outward) = surface.normal_at(foot.parameters.0, foot.parameters.1, tol) else {

@@ -15,8 +15,8 @@ use super::segment::{axis_frame, unit_normal};
 use super::snap::plane_through;
 use super::weld::from_to;
 use super::{Carrier, Curved, Found, MeshSolid, MeshSolidOptions, MeshSolidReport};
-use crate::recognize::{self, Canonical, recognize_curved, worst_deviation};
 use crate::recognize_patch::Refused;
+use ogeom_fit::recognize::{self, Canonical, recognize_curved, worst_deviation};
 
 /// The regions of a mesh, found and not yet built.
 ///

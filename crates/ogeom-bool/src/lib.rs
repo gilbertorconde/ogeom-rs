@@ -57,7 +57,6 @@ mod box_tree;
 mod defeature;
 mod fuse_all;
 mod half_space;
-mod mesh_region;
 mod seam_join;
 mod seated;
 mod section_face;
@@ -71,7 +70,6 @@ pub use along_edges::note_meeting_along_edge;
 
 pub use defeature::remove_faces;
 pub use fuse_all::fuse_all;
-pub use mesh_region::cut_by_mesh_region;
 pub use ogeom_algo::POLE_TOUCHING;
 // The pole re-chart moved to `ogeom_algo`; re-exported here for one release.
 pub use ogeom_algo::{POLE_MARGIN, Recharted, rechart_clear_of_poles};

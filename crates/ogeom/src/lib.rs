@@ -37,23 +37,20 @@
 /// Construction, measurement, classification, sewing and mesh to solid.
 pub mod algo {
     pub use ogeom_algo::{
-        Agreement, Built, Canonical, ChartCrossing, ClosestPair, Containment, CurveFrame,
-        CurveFrames, CurveHit, CurveRestatement, Diagnosis, Extension, FallbackReason,
-        FillBoundary, FillSide, Filled, FitConstraints, Form, HalfSpaces, History, Hit,
-        MassProperties, Material, MedialAxis, MedialBranch, MedialGraph, MedialSite, MedialVertex,
-        MeshRegion, MeshRegions, MeshSolid, MeshSolidOptions, MeshSolidReport, Notch, Obb,
-        OutAndBack, POLE_MARGIN, PlanarFaces, PointDistance, ProbeCache, Problem, ProjectedCurve,
-        Projection, Recharted, Recognized, Region, RegionFallback, RegionId, RegionRefusal,
-        Reshape, SelfCrossing, Severity, Sewn, ShapeDistance, SheetDistortion, SheetMethod,
-        SheetPlacement, SolidBoundary, SolidMesh, SurfaceKind, SurfaceProjection,
-        SurfaceRestatement, SurfaceSeeds, SurfaceSheet, Thickness, Uncertified, UnifyOptions,
-        agreeing_orientation, attach_pcurve, attach_seam, baked_shape, baked_where_placed,
-        belted_wire, build, certify, certify_face_within, chain_wire_branches, chart_breaks,
-        chart_crossings, check, check_kept, check_self_intersection, check_self_intersection_near,
-        check_tessellation, classify, classify_in_solid, classify_in_solid_exact,
-        classify_in_solid_exact_banded, classify_on_face, closed_at_poles, convert, copied,
-        covers_whole_surface, curve_bounds, curve_hit, curve_length, derived, distance,
-        distance_between_shapes, edge_pcurve_gap, edge_uses, edge_vertices, edges_apart,
+        Agreement, Built, ChartCrossing, ClosestPair, Containment, CurveFrame, CurveFrames,
+        CurveHit, CurveRestatement, Diagnosis, Extension, FillBoundary, FillSide, Filled, Form,
+        HalfSpaces, History, Hit, MassProperties, Material, MedialAxis, MedialBranch, MedialGraph,
+        MedialSite, MedialVertex, Notch, Obb, OutAndBack, POLE_MARGIN, PlanarFaces, PointDistance,
+        ProbeCache, Problem, ProjectedCurve, Projection, Recharted, Region, Reshape, SelfCrossing,
+        Severity, Sewn, ShapeDistance, SheetDistortion, SheetMethod, SheetPlacement, SolidBoundary,
+        SolidMesh, SurfaceProjection, SurfaceRestatement, SurfaceSeeds, SurfaceSheet, Thickness,
+        Uncertified, UnifyOptions, agreeing_orientation, attach_pcurve, attach_seam, baked_shape,
+        baked_where_placed, belted_wire, build, certify, certify_face_within, chain_wire_branches,
+        chart_breaks, chart_crossings, check, check_kept, check_self_intersection,
+        check_self_intersection_near, check_tessellation, classify, classify_in_solid,
+        classify_in_solid_exact, classify_in_solid_exact_banded, classify_on_face, closed_at_poles,
+        convert, copied, covers_whole_surface, curve_bounds, curve_hit, curve_length, derived,
+        distance, distance_between_shapes, edge_pcurve_gap, edge_uses, edge_vertices, edges_apart,
         edges_turn, extend, extend_face, extent_along, face_bounds, face_normal,
         faces_from_planar_wires, find_plane, frames, general_transformed_shape, history, hit,
         inside_out_faces, inside_out_faces_kept, is_shell_closed, is_tail, is_wire_closed,
@@ -65,41 +62,47 @@ pub mod algo {
         make_prism, make_prism_tapered, make_profile_revolution_band, make_revolution,
         make_revolution_band, make_shell, make_solid, make_sphere, make_text, make_torus,
         make_vertex, make_wedge, make_wire, make_wire_unordered, mass, measure, medial,
-        medial_axis, medial_graph, merge_edges, mesh_solid, normals_oppose, notch_of, on_own_nodes,
+        medial_axis, medial_graph, merge_edges, normals_oppose, notch_of, on_own_nodes,
         on_own_nodes_with, order_edges, oriented_bounds, out_and_back, outer_solid,
         parameter_at_length, pcurve_fit, pcurve_gap, place, placed_edge_curve, placed_edge_uses,
         points_by_count, points_by_spacing, pole, pole_crossings, primitive,
         project_edge_onto_plane, project_on_curve, project_on_planar_curve, project_on_surface,
-        project_on_surface_from, project_plane, proximity, rechart_clear_of_poles, recognize,
-        recognize_points, reduce_tolerances, refine_solid, relative_deflection, restate_geometry,
-        restore_containment, rings_are_parallels, rotation_minimizing_frames, same_domain,
-        self_crossings, sew, sew_around, sew_around_within, sew_within, shape_bounds, sheet,
-        solid_from_mesh, split_ring_on_column, state_pcurve_gaps, state_pcurve_gaps_of,
-        surface_bounds, surface_iso_u_curve, surface_properties, sweep, text, thickness,
-        thickness_of_shape, tight, tight_bounds, to_nurbs, to_nurbs_within, torus_face_seamed_at,
-        traced, transformed, trimmed_or_fitted_where_bare, unify_same_domain,
-        unify_same_domain_around, unify_same_domain_with, unshare, vertex_bounds,
-        volume_difference, volume_properties, widened_to_hold,
+        project_on_surface_from, project_plane, proximity, rechart_clear_of_poles,
+        reduce_tolerances, relative_deflection, restate_geometry, restore_containment,
+        rings_are_parallels, rotation_minimizing_frames, same_domain, self_crossings, sew,
+        sew_around, sew_around_within, sew_within, shape_bounds, sheet, split_ring_on_column,
+        state_pcurve_gaps, state_pcurve_gaps_of, surface_bounds, surface_iso_u_curve,
+        surface_properties, sweep, text, thickness, thickness_of_shape, tight, tight_bounds,
+        to_nurbs, to_nurbs_within, torus_face_seamed_at, traced, transformed,
+        trimmed_or_fitted_where_bare, unify_same_domain, unify_same_domain_around,
+        unify_same_domain_with, unshare, vertex_bounds, volume_difference, volume_properties,
+        widened_to_hold,
     };
     pub use ogeom_fit::{
-        Across, ChainedPatch, CurveDef, Cutoff, IrregularCorner, LoopSide, NetOutside, Network,
-        NetworkOptions, Outline, PatchDef, PatchFit, PatchSide, Piece2, Rest, Segment2, Segments,
-        Wire2d, fit, fit_loop_quads, fit_network, fit_network_chained, fit_outline,
-        fit_segments_2d, held, net_held_within, network, orient, outline, register, rest,
-        resting_faces, resting_faces_of, segments_2d,
+        Across, Canonical, ChainedPatch, CurveDef, Cutoff, IrregularCorner, LoopSide, NetOutside,
+        Network, NetworkOptions, Outline, PatchDef, PatchFit, PatchSide, Piece2, Recognized, Rest,
+        Segment2, Segments, Wire2d, fit, fit_loop_quads, fit_network, fit_network_chained,
+        fit_outline, fit_segments_2d, held, net_held_within, network, orient, outline, recognize,
+        recognize_points, register, rest, resting_faces, resting_faces_of, segments_2d,
     };
     pub use ogeom_geom::fit::{Spacing, approximate, approximate_within, interpolate};
     pub use ogeom_mesh::single_precision_quantum;
+    pub use ogeom_recon::{
+        FallbackReason, FitConstraints, MeshRegion, MeshRegions, MeshSolid, MeshSolidOptions,
+        MeshSolidReport, RegionFallback, RegionId, RegionRefusal, SurfaceKind, mesh_solid,
+        refine_solid, solid_from_mesh,
+    };
 }
 
 /// Booleans, sections, splits and face removal.
 pub mod boolean {
     pub use ogeom_bool::{
-        Cells, POLE_MARGIN, POLE_TOUCHING, Recharted, cells, common, common_fuzzy, cut,
-        cut_by_mesh_region, cut_fuzzy, cut_seated, fuse, fuse_all, fuse_fuzzy, fuse_seated,
-        make_periodic, make_volume, note_meeting_along_edge, rechart_clear_of_poles, remove_faces,
-        section, section_face, self_union, split_sheet,
+        Cells, POLE_MARGIN, POLE_TOUCHING, Recharted, cells, common, common_fuzzy, cut, cut_fuzzy,
+        cut_seated, fuse, fuse_all, fuse_fuzzy, fuse_seated, make_periodic, make_volume,
+        note_meeting_along_edge, rechart_clear_of_poles, remove_faces, section, section_face,
+        self_union, split_sheet,
     };
+    pub use ogeom_recon::cut_by_mesh_region;
 }
 
 /// Arenas, identity, errors, tolerances, predicates and diagnostics.

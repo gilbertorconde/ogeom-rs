@@ -1,0 +1,33 @@
+[package]
+name = "ogeom-recon"
+description = "A B-rep solid from a triangle mesh: regions recognized, fitted and built into faces"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+# Hooks the workspace's own tests use to hand the converter's build
+# surfaces it would never choose itself. Not a supported interface.
+test-hooks = []
+
+[dependencies]
+ogeom-core.workspace = true
+ogeom-math.workspace = true
+ogeom-geom.workspace = true
+ogeom-topo.workspace = true
+ogeom-mesh.workspace = true
+ogeom-intersect.workspace = true
+ogeom-algo.workspace = true
+ogeom-fit.workspace = true
+ogeom-bool.workspace = true
+nalgebra.workspace = true
+spade.workspace = true
+
+[lints]
+workspace = true

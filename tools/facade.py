@@ -43,7 +43,8 @@ INTERNAL: set[str] = {
     "ogeom_algo::self_crossings_kept",
     "ogeom_algo::to_mesh_with",
     "ogeom_algo::Pseudonormals",
-    "ogeom_algo::weld_points",
+    # The welding the mesh conversion and the fitting share.
+    "ogeom_mesh::weld_points",
     # Moved to `ogeom_geom::fit`; the old paths are kept until 0.23.0.
     "ogeom_algo::Spacing",
     "ogeom_algo::interpolate",

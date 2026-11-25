@@ -1146,9 +1146,9 @@ tests = ["crates/ogeom/tests/boolean_options.rs"]
 [[capability]]
 id = "bool.cut-by-mesh-region"
 title = "Cutting a solid by a break surface marked on a mesh: the break extended over its average plane clear of the solid, holes closed, thickened into a slab and cut away, one side kept, the solid's faces left on their own surfaces"
-crate = "ogeom-bool"
+crate = "ogeom-recon"
 verdict = "covered"
-symbols = ["ogeom_bool::cut_by_mesh_region", "ogeom_mesh::Side"]
+symbols = ["ogeom_recon::cut_by_mesh_region", "ogeom_mesh::Side"]
 tests = [
     "crates/ogeom/tests/cut_by_mesh_region.rs",
     "crates/ogeom/tests/cut_by_mesh_region.rs::a_block_through_a_synthetic_fracture_gives_the_piece_above_it",
@@ -3365,15 +3365,15 @@ be a third spelling of two existing ones."""
 [[capability]]
 id = "algo.solid-from-mesh"
 title = "A solid from a triangle mesh: coplanar triangles merged into planar faces, curved regions recognized as cylinders, cones, spheres and tori"
-crate = "ogeom-algo"
+crate = "ogeom-recon"
 verdict = "covered"
 symbols = [
-    "ogeom_algo::solid_from_mesh", "ogeom_algo::MeshSolidOptions",
-    "ogeom_algo::MeshSolid", "ogeom_algo::MeshSolidReport",
-    "ogeom_algo::recognize_points", "ogeom_algo::Canonical", "ogeom_algo::Recognized",
-    "ogeom_algo::MeshRegions", "ogeom_algo::MeshRegion", "ogeom_algo::RegionId",
-    "ogeom_algo::SurfaceKind", "ogeom_algo::FitConstraints", "ogeom_algo::RegionRefusal",
-    "ogeom_algo::RegionFallback", "ogeom_algo::FallbackReason",
+    "ogeom_recon::solid_from_mesh", "ogeom_recon::MeshSolidOptions",
+    "ogeom_recon::MeshSolid", "ogeom_recon::MeshSolidReport",
+    "ogeom_fit::recognize_points", "ogeom_fit::Canonical", "ogeom_fit::Recognized",
+    "ogeom_recon::MeshRegions", "ogeom_recon::MeshRegion", "ogeom_recon::RegionId",
+    "ogeom_recon::SurfaceKind", "ogeom_recon::FitConstraints", "ogeom_recon::RegionRefusal",
+    "ogeom_recon::RegionFallback", "ogeom_recon::FallbackReason",
 ]
 tests = ["crates/ogeom/tests/mesh_solid.rs", "crates/ogeom/tests/mesh_steps.rs"]
 

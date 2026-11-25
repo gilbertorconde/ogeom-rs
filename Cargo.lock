@@ -420,6 +420,7 @@ dependencies = [
  "ogeom-math",
  "ogeom-mesh",
  "ogeom-offset",
+ "ogeom-recon",
  "ogeom-topo",
  "proptest",
  "rustix",
@@ -464,7 +465,6 @@ dependencies = [
  "ogeom-topo",
  "proptest",
  "smallvec",
- "spade",
 ]
 
 [[package]]
@@ -652,6 +652,23 @@ dependencies = [
  "ogeom-mesh",
  "ogeom-topo",
  "proptest",
+]
+
+[[package]]
+name = "ogeom-recon"
+version = "0.21.0"
+dependencies = [
+ "nalgebra",
+ "ogeom-algo",
+ "ogeom-bool",
+ "ogeom-core",
+ "ogeom-fit",
+ "ogeom-geom",
+ "ogeom-intersect",
+ "ogeom-math",
+ "ogeom-mesh",
+ "ogeom-topo",
+ "spade",
 ]
 
 [[package]]

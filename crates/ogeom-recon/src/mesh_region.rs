@@ -32,7 +32,9 @@
 //! over every point of the rectangle once, so a line along the normal
 //! through the vertex meets it on one side only.
 
-use ogeom_algo::{Built, History, MeshSolidOptions, solid_from_mesh, tight_bounds};
+use ogeom_algo::{Built, History, tight_bounds};
+
+use crate::{MeshSolidOptions, solid_from_mesh};
 use ogeom_core::{Exact, OgeomResult, Predicates, Sign, Tolerances, ogeom_bail, ogeom_err};
 use ogeom_math::{Point, Vector};
 use ogeom_mesh::{Bvh, OFFSET_FARTHEST, Side, Thicken, thicken};
@@ -73,7 +75,7 @@ use spade::{ConstrainedDelaunayTriangulation, Triangulation as _};
 /// away from that normal, its rims cross or touch seen along it, or the
 /// region does not separate the shape (no piece lies on one side of it,
 /// the side kept included); and as [`thicken`](ogeom_mesh::thicken()),
-/// [`solid_from_mesh`] and [`cut`](crate::cut)
+/// [`solid_from_mesh`] and [`cut`](ogeom_bool::cut)
 /// fail.
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) if the
 /// thickened sheet does not build into one closed solid.
@@ -126,7 +128,7 @@ pub fn cut_by_mesh_region(
             "the thickened break did not build into one closed solid"
         );
     }
-    let cut = crate::cut(model, shape, &built.shape, tol)?;
+    let cut = ogeom_bool::cut(model, shape, &built.shape, tol)?;
 
     let bvh = Bvh::build(&sheet.mesh)?;
     let mut kept = Vec::new();

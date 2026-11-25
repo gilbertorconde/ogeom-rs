@@ -34,7 +34,6 @@ mod mass_chart;
 pub mod measure;
 pub mod medial;
 pub mod medial_graph;
-pub mod mesh_solid;
 pub mod out_and_back;
 pub mod pcurve_fit;
 pub mod pcurve_gap;
@@ -44,9 +43,6 @@ pub mod pole;
 pub mod primitive;
 pub mod project_plane;
 pub mod proximity;
-pub mod recognize;
-mod recognize_patch;
-mod recognize_swept;
 mod reshape;
 mod seam_columns;
 mod self_cross;
@@ -107,11 +103,6 @@ pub use measure::{
 };
 pub use medial::{MedialAxis, medial_axis};
 pub use medial_graph::{MedialBranch, MedialGraph, MedialSite, MedialVertex, medial_graph};
-pub use mesh_solid::{
-    FallbackReason, FitConstraints, MeshRegion, MeshRegions, MeshSolid, MeshSolidOptions,
-    MeshSolidReport, RegionFallback, RegionId, RegionRefusal, SurfaceKind, refine_solid,
-    solid_from_mesh,
-};
 /// Moved to `ogeom_geom::fit`. These paths are kept until 0.23.0, which
 /// removes them.
 pub use ogeom_geom::fit::{Spacing, approximate, approximate_within, interpolate};
@@ -133,7 +124,6 @@ pub use primitive::{
 };
 pub use project_plane::{ProjectedCurve, project_edge_onto_plane};
 pub use proximity::{ClosestPair, PointDistance, ShapeDistance, distance_between_shapes};
-pub use recognize::{Canonical, Recognized, recognize_points};
 pub use reshape::Reshape;
 pub use seam_columns::join_seam_columns;
 pub use self_cross::{SelfCrossing, self_crossings};
@@ -147,8 +137,6 @@ pub use check::{check_wire, edge_spanned_past};
 pub use distance::{Pseudonormals, to_mesh_with};
 #[doc(hidden)]
 pub use mass::{VolumeKept, volume_as_flagged};
-#[doc(hidden)]
-pub use mesh_solid::weld::weld_points;
 #[doc(hidden)]
 pub use self_cross::crossings as self_crossings_kept;
 pub use sew::{

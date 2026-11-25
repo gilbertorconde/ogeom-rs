@@ -37,6 +37,7 @@ mod sphere_trim;
 mod tails;
 pub mod thicken;
 pub mod triangulate;
+mod weld;
 
 pub use attach::{Tessellated, polyline_of, tessellate, triangulation_of};
 pub use boolean::{
@@ -71,3 +72,5 @@ pub use triangulate::{
     triangulate_face, triangulate_face_kept, triangulate_face_with, triangulate_with_chords,
     triangulate_with_face_meshes, triangulate_with_faces,
 };
+#[doc(hidden)]
+pub use weld::weld_points;

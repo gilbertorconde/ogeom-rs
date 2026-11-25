@@ -68,7 +68,6 @@ It has two crates of its own, above `ogeom-algo` (#1264):
   `cut_by_mesh_region`).
 
 Splitting the code out adds no capability, so the scope does not change.
-Until the move lands, the code is in `ogeom-algo` and `ogeom-bool`.
 
 Neighbouring surfaces may be built from each other where a geometric
 relation between them holds within the tolerance: a constant-radius fillet

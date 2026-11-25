@@ -15,7 +15,7 @@ use super::seams::{
 };
 use super::segment::{evaluate, unwrapped};
 use super::weld::Half;
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 impl Builder<'_> {
     /// A sphere's cap: its rim, a meridian seam from the rim to the pole,
@@ -51,7 +51,7 @@ impl Builder<'_> {
             ogeom_bail!(Construction, "a cap's rim has no chart position");
         };
         let (a, b) = if with { (0.0, tau) } else { (tau, 0.0) };
-        crate::build::attach_pcurve(
+        ogeom_algo::build::attach_pcurve(
             self.model,
             &edges[rim],
             linear((a, v_rim), (b, v_rim), (0.0, tau), self.tol)?,
@@ -78,7 +78,7 @@ impl Builder<'_> {
             EdgeData::on_curve(id, Location::identity(), seam_range),
             &[rim_vertex, pole.clone()],
         )?;
-        crate::build::attach_seam(
+        ogeom_algo::build::attach_seam(
             self.model,
             &seam,
             linear((tau, v_rim), (tau, north), seam_range, self.tol)?,
@@ -90,7 +90,7 @@ impl Builder<'_> {
         let mut data = EdgeData::new();
         data.degenerate = true;
         let tip = self.model.add_edge(data, &[pole.clone(), pole])?;
-        crate::build::attach_pcurve(
+        ogeom_algo::build::attach_pcurve(
             self.model,
             &tip,
             linear((0.0, north), (tau, north), (0.0, tau), self.tol)?,
@@ -177,7 +177,7 @@ impl Builder<'_> {
             if with == forward && walk.len() > 1 {
                 ogeom_bail!(Construction, "a cone's rim arcs turn against each other");
             }
-            crate::build::attach_pcurve(
+            ogeom_algo::build::attach_pcurve(
                 self.model,
                 &edges[edge],
                 linear((a, v_rim), (b, v_rim), (t0, t1), self.tol)?,
@@ -208,7 +208,7 @@ impl Builder<'_> {
             EdgeData::on_curve(id, Location::identity(), seam_range),
             &[apex.clone(), rim_vertex],
         )?;
-        crate::build::attach_seam(
+        ogeom_algo::build::attach_seam(
             self.model,
             &seam,
             linear((tau, v_apex), (tau, v_rim), seam_range, self.tol)?,
@@ -220,7 +220,7 @@ impl Builder<'_> {
         let mut data = EdgeData::new();
         data.degenerate = true;
         let tip = self.model.add_edge(data, &[apex.clone(), apex])?;
-        crate::build::attach_pcurve(
+        ogeom_algo::build::attach_pcurve(
             self.model,
             &tip,
             linear((0.0, v_apex), (tau, v_apex), (0.0, tau), self.tol)?,
@@ -279,7 +279,7 @@ impl Builder<'_> {
                     &edges[edge],
                     Tolerance::new(deviation.max(self.tol.confusion()))?,
                 )?;
-                crate::build::attach_pcurve(
+                ogeom_algo::build::attach_pcurve(
                     self.model,
                     &edges[edge],
                     pcurve,
@@ -362,7 +362,7 @@ impl Builder<'_> {
         let far = linear((a.0 + over, a.1), (b.0 + over, b.1), range, self.tol)?;
         let near = linear(a, b, range, self.tol)?;
         let (forward, back) = if outward { (far, near) } else { (near, far) };
-        crate::build::attach_seam(
+        ogeom_algo::build::attach_seam(
             self.model,
             &seam,
             forward,
@@ -374,7 +374,7 @@ impl Builder<'_> {
         let mut tip_data = EdgeData::new();
         tip_data.degenerate = true;
         let tip = self.model.add_edge(tip_data, &[pole.clone(), pole])?;
-        crate::build::attach_pcurve(
+        ogeom_algo::build::attach_pcurve(
             self.model,
             &tip,
             linear((b.0 + over, north), (b.0, north), (0.0, tau), self.tol)?,
@@ -406,7 +406,7 @@ impl Builder<'_> {
             let list = if outward { list } else { walked_back(&list) };
             wires.push(self.model.add_wire(&list)?);
         }
-        crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
+        ogeom_algo::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
         let mut face_data = FaceData::new(surface, Location::identity());
         face_data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
         let face = self.model.add_face(face_data, &wires)?;
@@ -452,7 +452,7 @@ impl Builder<'_> {
                         &edges[edge],
                         Tolerance::new(deviation.max(self.tol.confusion()))?,
                     )?;
-                    crate::build::attach_pcurve(
+                    ogeom_algo::build::attach_pcurve(
                         self.model,
                         &edges[edge],
                         pcurve,
@@ -469,7 +469,7 @@ impl Builder<'_> {
             }
             wires.push(self.model.add_wire(&ring_edges)?);
         }
-        crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
+        ogeom_algo::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
         let mut face_data = FaceData::new(surface, Location::identity());
         face_data.tolerance = data.tolerance;
         let face = self.model.add_face(face_data, &wires)?;
@@ -517,7 +517,7 @@ impl Builder<'_> {
                     &edges[edge],
                     Tolerance::new(deviation.max(self.tol.confusion()))?,
                 )?;
-                crate::build::attach_pcurve(
+                ogeom_algo::build::attach_pcurve(
                     self.model,
                     &edges[edge],
                     pcurve,
@@ -639,7 +639,7 @@ impl Builder<'_> {
             // The wire is built counter-clockwise in the working chart and
             // turned over where that chart is the surface's mirrored.
             let (forward, back) = if swap { (high, low) } else { (low, high) };
-            crate::build::attach_seam(
+            ogeom_algo::build::attach_seam(
                 self.model,
                 &piece,
                 forward,
@@ -686,7 +686,7 @@ impl Builder<'_> {
             self.tol,
         )?;
         let (forward, back) = if swap { (near, far) } else { (far, near) };
-        crate::build::attach_seam(
+        ogeom_algo::build::attach_seam(
             self.model,
             &side,
             forward,
@@ -729,7 +729,7 @@ impl Builder<'_> {
             }
             wires.push(self.model.add_wire(&list)?);
         }
-        crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
+        ogeom_algo::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
         let mut data = FaceData::new(surface, Location::identity());
         data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
         let face = self.model.add_face(data, &wires)?;
@@ -748,8 +748,12 @@ impl Builder<'_> {
         let outward = self.outward(curved, g);
         let face = match curved.shape {
             Canonical::Sphere(s) => {
-                let built =
-                    crate::primitive::make_sphere(self.model, s.frame(), s.radius(), self.tol)?;
+                let built = ogeom_algo::primitive::make_sphere(
+                    self.model,
+                    s.frame(),
+                    s.radius(),
+                    self.tol,
+                )?;
                 let Some(face) = ogeom_topo::explore_unique(
                     self.model,
                     &built.shape,
@@ -761,7 +765,7 @@ impl Builder<'_> {
                 };
                 face
             }
-            Canonical::Torus(t) => crate::primitive::torus_face_seamed_at(
+            Canonical::Torus(t) => ogeom_algo::primitive::torus_face_seamed_at(
                 self.model,
                 t.frame(),
                 t.major_radius(),

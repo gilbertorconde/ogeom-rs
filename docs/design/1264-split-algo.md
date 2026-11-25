@@ -333,13 +333,18 @@ and the full `cargo test -p ogeom -- --include-ignored`. Each touches
    - `git mv` `mesh_solid` (with its directory), `recognize_patch` and
      `recognize_swept`, and `ogeom-bool/src/mesh_region.rs`.
    - `git mv` `recognize` to `ogeom-fit`, where the note puts it.
-   - `fit::grow_smooth` in `ogeom-fit` calls `weld_points`, so `weld` cannot
-     go up with `mesh_solid`. It moves to `ogeom-fit` (or down to
-     `ogeom-mesh`) instead.
+   - `fit::grow_smooth` in `ogeom-fit` calls `weld_points`, so it cannot go
+     up with `mesh_solid`. Only that function moves, down to `ogeom-mesh` as
+     `#[doc(hidden)] ogeom_mesh::weld_points`: it is a function of points
+     alone. The rest of `mesh_solid::weld` (pairing, unfolding, orientation)
+     reads `MeshSolidReport` and goes up with `mesh_solid`.
+   - `ogeom-bool` drops `spade`, which only `mesh_region` used. `ogeom-algo`
+     keeps its `test-hooks` feature, which `derived` still uses.
    - Add a `test-hooks` feature. `crates/ogeom` enables it in its dev
      dependencies as it does for `ogeom-algo`.
    - Update `tools/converter-check.sh` (`-p ogeom-algo` becomes
-     `-p ogeom-recon`), the capabilities paths, the README and
+     `-p ogeom-recon`, plus `-p ogeom-fit --lib` for the tests inside
+     `recognize`), the capabilities paths, the README and
      `CONTRIBUTING.md`.
    - This PR meets the issue's acceptance: mesh to solid in its own crate, the
      facade path unchanged, build times before and after.

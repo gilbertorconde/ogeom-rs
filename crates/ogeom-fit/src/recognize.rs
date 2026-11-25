@@ -193,7 +193,7 @@ impl SweptShape {
     /// The foot of `p` on the surface: its parameters, the point there and
     /// the distance to it.
     #[must_use]
-    pub fn foot(&self, p: Point) -> Option<crate::measure::SurfaceProjection> {
+    pub fn foot(&self, p: Point) -> Option<ogeom_algo::measure::SurfaceProjection> {
         use ogeom_geom::{Curve3d as _, Surface as _, SurfaceGeometry as S};
         match &self.surface {
             // The nearest point of a revolution lies in the point's own
@@ -216,7 +216,7 @@ impl SweptShape {
                 let back = ogeom_math::Transform::rotation(axis, -u).apply(p);
                 let (v, distance) = self.on_profile(r.curve(), back)?;
                 let point = self.surface.point_at(u, v, self.tol).ok()?;
-                Some(crate::measure::SurfaceProjection {
+                Some(ogeom_algo::measure::SurfaceProjection {
                     parameters: (u, v),
                     point,
                     distance,
@@ -232,7 +232,7 @@ impl SweptShape {
                 let shadow = p - d * v;
                 let (u, _) = self.on_profile(e.curve(), shadow)?;
                 let point = e.curve().point_at(u, self.tol).ok()? + d * v;
-                Some(crate::measure::SurfaceProjection {
+                Some(ogeom_algo::measure::SurfaceProjection {
                     parameters: (u, v),
                     point,
                     distance: point.distance(p),
@@ -272,12 +272,17 @@ impl SweptShape {
                     .iter()
                     .filter(|(d, _)| d.is_finite())
                     .filter_map(|(_, start)| {
-                        crate::measure::project_on_surface_from(&self.surface, p, *start, self.tol)
-                            .ok()
+                        ogeom_algo::measure::project_on_surface_from(
+                            &self.surface,
+                            p,
+                            *start,
+                            self.tol,
+                        )
+                        .ok()
                     })
                     .min_by(|a, b| a.distance.total_cmp(&b.distance))
             }
-            other => crate::measure::project_on_surface(other, p, 24, self.tol).ok(),
+            other => ogeom_algo::measure::project_on_surface(other, p, 24, self.tol).ok(),
         }
     }
 }
@@ -406,7 +411,8 @@ pub fn recognize_points(
 }
 
 /// Whether the samples lie within `tolerance` of one plane.
-pub(crate) fn is_flat(points: &[Point], tolerance: f64, tol: Tolerances) -> bool {
+#[doc(hidden)]
+pub fn is_flat(points: &[Point], tolerance: f64, tol: Tolerances) -> bool {
     fit_plane(points, tol).is_some_and(|plane| worst_deviation(&plane, points) <= tolerance)
 }
 
@@ -417,7 +423,8 @@ pub(crate) fn is_flat(points: &[Point], tolerance: f64, tol: Tolerances) -> bool
 /// as exactly on a sphere as on a cylinder, but the cylinder's rulings run
 /// between them and the mesh draws those as edges on the surface, midpoint
 /// and all, where no chord of a sphere lies on it.
-pub(crate) fn recognize_curved(
+#[doc(hidden)]
+pub fn recognize_curved(
     points: &[Point],
     normals: &[Vector],
     chords: &[(Point, Point)],
@@ -433,7 +440,8 @@ pub(crate) fn recognize_curved(
 
 /// The fewest samples a torus is fitted to: its seven parameters and half
 /// as many again, the most any kind asks.
-pub(crate) const TORUS_SAMPLES: usize = 11;
+#[doc(hidden)]
+pub const TORUS_SAMPLES: usize = 11;
 
 /// Every curved kind fitted and refined, with its worst deviation over all
 /// the samples. Fitted on an even subsample of a large set and verified on
@@ -649,7 +657,8 @@ fn choose(fits: &[Recognized], chords: &[(Point, Point)], tolerance: f64) -> Opt
 /// isolate them), and fitted again, until what is left fits within the
 /// tolerance or too little is left. Returns the surface and which samples
 /// it keeps, or, when nothing fits, how close the closest fit came.
-pub(crate) fn recognize_trimmed(
+#[doc(hidden)]
+pub fn recognize_trimmed(
     points: &[Point],
     normals: &[Vector],
     chords: &[(Point, Point)],
@@ -852,15 +861,15 @@ fn rows_by_planes(points: &[Point], hopeless: f64) -> Option<[Vec<usize>; 2]> {
 }
 
 /// The worst distance from any sample to the candidate.
-pub(crate) fn worst_deviation(candidate: &Canonical, points: &[Point]) -> f64 {
+#[doc(hidden)]
+pub fn worst_deviation(candidate: &Canonical, points: &[Point]) -> f64 {
     points
         .iter()
         .map(|p| candidate.distance_to(*p))
         .fold(0.0, f64::max)
 }
 
-#[doc(hidden)]
-pub fn centroid(points: &[Point]) -> Vector {
+pub(crate) fn centroid(points: &[Point]) -> Vector {
     let mut sum = Vector::ZERO;
     for p in points {
         sum += p.to_vector();
@@ -874,8 +883,7 @@ pub fn centroid(points: &[Point]) -> Vector {
 }
 
 /// The eigenvector of a 3×3 symmetric matrix for its smallest eigenvalue.
-#[doc(hidden)]
-pub fn smallest_direction(m: nalgebra::Matrix3<f64>) -> Vector {
+pub(crate) fn smallest_direction(m: nalgebra::Matrix3<f64>) -> Vector {
     let eigen = nalgebra::SymmetricEigen::new(m);
     let mut best = 0;
     for i in 1..3 {
@@ -887,8 +895,7 @@ pub fn smallest_direction(m: nalgebra::Matrix3<f64>) -> Vector {
     Vector::new(v[0], v[1], v[2])
 }
 
-#[doc(hidden)]
-pub fn covariance(vectors: impl Iterator<Item = Vector>) -> nalgebra::Matrix3<f64> {
+pub(crate) fn covariance(vectors: impl Iterator<Item = Vector>) -> nalgebra::Matrix3<f64> {
     let mut m = nalgebra::Matrix3::zeros();
     for v in vectors {
         let n = nalgebra::Vector3::new(v.x, v.y, v.z);
@@ -1069,7 +1076,8 @@ pub fn fit_cylinder(points: &[Point], normals: &[Vector], tol: Tolerances) -> Op
     ))
 }
 
-pub(crate) fn fit_cone(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Canonical> {
+#[doc(hidden)]
+pub fn fit_cone(points: &[Point], normals: &[Vector], tol: Tolerances) -> Option<Canonical> {
     let (through, axis) = revolution_axis(points, normals, tol)?;
     match ruled_about(points, through, axis, 0.0, tol)? {
         cone @ Canonical::Cone(_) => Some(cone),
@@ -1134,8 +1142,10 @@ pub fn ruled_about(
 /// A circle through points in space: its plane from their covariance, its
 /// centre and radius from an algebraic fit in that plane, and the rms of
 /// how far the points miss it.
-#[doc(hidden)]
-pub fn circle_through(points: &[Point], tol: Tolerances) -> Option<(Point, Direction, f64, f64)> {
+pub(crate) fn circle_through(
+    points: &[Point],
+    tol: Tolerances,
+) -> Option<(Point, Direction, f64, f64)> {
     let c = centroid(points);
     let normal = Direction::new(
         smallest_direction(covariance(points.iter().map(|p| p.to_vector() - c))),
@@ -1316,7 +1326,8 @@ fn parameters(surface: &Canonical) -> Option<Vec<f64>> {
 
 /// A point's signed distance to the surface `x` describes, of the kind
 /// `like` is.
-pub(crate) fn residual(like: &Canonical, x: &[f64], p: Point) -> f64 {
+#[doc(hidden)]
+pub fn residual(like: &Canonical, x: &[f64], p: Point) -> f64 {
     Gauge::of(like, x).residual(p)
 }
 
@@ -1401,7 +1412,8 @@ impl Gauge {
     }
 }
 
-pub(crate) fn rebuild(like: &Canonical, x: &[f64], tol: Tolerances) -> Option<Canonical> {
+#[doc(hidden)]
+pub fn rebuild(like: &Canonical, x: &[f64], tol: Tolerances) -> Option<Canonical> {
     let o = Point::new(x[0], x[1], x[2]);
     if let Canonical::Sphere(_) = like {
         return Some(Canonical::Sphere(Sphere::centred(o, x[3], tol).ok()?));
@@ -1462,7 +1474,8 @@ fn regauged(like: &Canonical, mut x: Vec<f64>, points: &[Point]) -> Vec<f64> {
 /// rather than amplified, and each step halved until it lowers the cost.
 /// The Jacobian is by central differences: a handful of numbers, and a
 /// residual cheap enough that exactness in it buys nothing.
-pub(crate) fn refine(
+#[doc(hidden)]
+pub fn refine(
     seed: Canonical,
     points: &[Point],
     hopeless: f64,

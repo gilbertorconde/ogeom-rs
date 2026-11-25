@@ -32,9 +32,10 @@
 
 use ogeom_core::{FastMap, FastSet, OgeomResult, Tolerances, ogeom_bail};
 use ogeom_math::{Plane, Point};
+use ogeom_mesh::weld_points;
 use ogeom_topo::{Model, Shape, ShapeType, TShapeId, Triangulation, explore_unique};
 
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 mod astray;
 mod bodies;
@@ -73,7 +74,6 @@ use regions::{flat_noise, split_disconnected};
 use segment::{coplanar_groups, one_each, plane_of, segment, widen_where_pressed};
 use weld::{
     Adjacency, Piece, by_position, diagonal, has_area, inside, lowest_first, orient, unfold,
-    weld_points,
 };
 
 /// How [`solid_from_mesh`] builds.
@@ -374,7 +374,7 @@ pub fn refine_solid(
     options: &MeshSolidOptions,
     tol: Tolerances,
 ) -> OgeomResult<MeshSolid> {
-    let bounds = crate::tight_bounds(model, shape, tol)?;
+    let bounds = ogeom_algo::tight_bounds(model, shape, tol)?;
     let size = match (bounds.low(), bounds.high()) {
         (Some(lo), Some(hi)) => lo.distance(hi),
         _ => ogeom_bail!(Construction, "the shape has no extent to refine"),
@@ -732,7 +732,7 @@ fn build(
     // Face meshes kept across every build from these regions, and whether
     // each body's volume held on the last build that measured it: most
     // faces recur unchanged from one build to the next.
-    let kept = crate::mass::VolumeKept::default();
+    let kept = ogeom_algo::mass::VolumeKept::default();
     let mut held: Vec<bool> = Vec::new();
     loop {
         let narrowing = match build_from(
@@ -794,7 +794,7 @@ fn build_from(
     flat: f64,
     options: &MeshSolidOptions,
     protected: &[bool],
-    kept: &crate::mass::VolumeKept,
+    kept: &ogeom_algo::mass::VolumeKept,
     held: &mut Vec<bool>,
     tol: Tolerances,
 ) -> OgeomResult<Result<MeshSolid, Unbuilt>> {
@@ -1322,7 +1322,7 @@ fn build_from(
         }
         break shape;
     };
-    crate::pcurve_gap::state_pcurve_gaps(model, &shape, tol)?;
+    ogeom_algo::pcurve_gap::state_pcurve_gaps(model, &shape, tol)?;
     Ok(Ok(MeshSolid {
         shape,
         closed: all_closed,

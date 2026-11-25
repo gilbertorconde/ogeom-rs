@@ -207,8 +207,9 @@ pub trait Operation {
 ```
 
 History is not optional, not deferred, and not "added when something needs
-it". Every operation in `ogeom-algo`, `ogeom-fit`, `ogeom-bool`, `ogeom-fillet`
-and `ogeom-offset` fills these in from the first commit that introduces it.
+it". Every operation in `ogeom-algo`, `ogeom-fit`, `ogeom-bool`, `ogeom-recon`,
+`ogeom-fillet` and `ogeom-offset` fills these in from the first commit that
+introduces it.
 
 The reason is downstream. A parametric application records "fillet *that*
 edge" and must still find that edge after the model is rebuilt with different

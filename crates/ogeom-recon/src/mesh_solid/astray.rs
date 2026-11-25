@@ -186,7 +186,7 @@ pub(super) fn astray_faces(
             // little past the last row of the mesh; a face closed the wrong way
             // round reaches a fair fraction of the region's size past it.
             let margin = bulge[g] * 2.0 + flat * 20.0 + lo.distance(hi) * 0.1;
-            let bounds = crate::tight_bounds(model, face, tol)?;
+            let bounds = ogeom_algo::tight_bounds(model, face, tol)?;
             let (Some(flo), Some(fhi)) = (bounds.low(), bounds.high()) else {
                 return Ok(false);
             };

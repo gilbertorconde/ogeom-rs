@@ -17,7 +17,7 @@ use super::segment::{
 use super::snap::plane_through;
 use super::weld::{Adjacency, Half, from_to};
 use super::{Carrier, Curved, Groups, MeshSolidOptions};
-use crate::recognize::{Canonical, recognize_curved, worst_deviation};
+use ogeom_fit::recognize::{Canonical, recognize_curved, worst_deviation};
 
 /// How much larger than a curved region's own facets a flat patch must be
 /// to be a face of its own rather than facets of the curve.
@@ -666,7 +666,7 @@ struct FirstFit {
     /// coarse mesh it can span several surfaces, and a failed fit says
     /// nothing about the triangles in it but the seed.
     wide: bool,
-    found: Option<(crate::recognize::Recognized, Vec<bool>)>,
+    found: Option<(ogeom_fit::recognize::Recognized, Vec<bool>)>,
 }
 
 /// The mesh as recognition reads it.
@@ -844,7 +844,8 @@ impl Surfaces<'_> {
                 continue;
             }
             let chords = self.chords(&region);
-            match crate::recognize::recognize_trimmed(&pts, &nrm, &chords, self.flat, self.tol) {
+            match ogeom_fit::recognize::recognize_trimmed(&pts, &nrm, &chords, self.flat, self.tol)
+            {
                 Ok(fit) => {
                     found = Some(fit);
                     break;
@@ -859,7 +860,7 @@ impl Surfaces<'_> {
                 Err(closest)
                     if queue.is_empty()
                         || (closest > span(&pts) * 1e-2
-                            && pts.len() >= crate::recognize::TORUS_SAMPLES) =>
+                            && pts.len() >= ogeom_fit::recognize::TORUS_SAMPLES) =>
                 {
                     break;
                 }
@@ -1286,7 +1287,7 @@ pub(super) fn recognized_regions(
             let spans_off = region.iter().any(|&t| spans(t));
             let pts: Vec<Point> = vertices.iter().map(|&v| points[v as usize]).collect();
             let deviation = worst_deviation(&shape, &pts);
-            let flat_too = crate::recognize::is_flat(&pts, flat, tol);
+            let flat_too = ogeom_fit::recognize::is_flat(&pts, flat, tol);
             // A sphere or a torus through a handful of noisy vertices is
             // as likely the noise's as the part's: twice its unknowns are
             // asked for.
@@ -1820,7 +1821,7 @@ pub(super) fn swept_claim(
         .collect();
     let found = crate::recognize_swept::fit_extrusion(&pts, &nrm, flat, tol)
         .or_else(|| crate::recognize_swept::fit_revolution(&pts, &nrm, flat, tol))?;
-    let shape = Canonical::Swept(Box::new(crate::recognize::SweptShape::new(
+    let shape = Canonical::Swept(Box::new(ogeom_fit::recognize::SweptShape::new(
         found.surface,
         tol,
     )));
@@ -2256,7 +2257,7 @@ pub(super) fn region_patch(
     vertices.sort_unstable();
     vertices.dedup();
     Ok(Curved {
-        shape: Canonical::Swept(Box::new(crate::recognize::SweptShape::new(
+        shape: Canonical::Swept(Box::new(ogeom_fit::recognize::SweptShape::new(
             patch.surface,
             tol,
         ))),

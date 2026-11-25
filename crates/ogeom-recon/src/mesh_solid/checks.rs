@@ -16,7 +16,7 @@ use super::planner::REACH;
 use super::seams::{distance_to_line, distance_to_segment, segments_cross};
 use super::weld::{Adjacency, from_to};
 use super::{Carrier, Fan, Groups};
-use crate::recognize::worst_deviation;
+use ogeom_fit::recognize::worst_deviation;
 
 /// The planar regions some of whose vertices stand off their plane by more
 /// than twice the coplanar distance. Every plane the regions are found on
@@ -145,7 +145,7 @@ pub(super) fn failing_faces(
         ogeom_mesh::triangulate_face(model, face, ogeom_mesh::Deflection::default(), tol).is_err()
             || fine
                 .as_ref()
-                .is_ok_and(|&fine| crate::surface_properties(model, face, fine, tol).is_err())
+                .is_ok_and(|&fine| ogeom_algo::surface_properties(model, face, fine, tol).is_err())
     });
     let found: Vec<usize> = faces
         .iter()
@@ -204,7 +204,7 @@ pub(super) fn overlapping_faces(
         if let Some(face) = face {
             boxes.insert(
                 g,
-                crate::shape_bounds(model, face, tol)?.expanded(tol.confusion()),
+                ogeom_algo::shape_bounds(model, face, tol)?.expanded(tol.confusion()),
             );
         }
     }
@@ -232,7 +232,7 @@ pub(super) fn overlapping_faces(
     let mut alone = Vec::new();
     let mut covering = std::collections::BTreeSet::new();
     for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
-        for face in crate::check::inside_out_faces(model, &solid, tol)? {
+        for face in ogeom_algo::check::inside_out_faces(model, &solid, tol)? {
             let Some(&g) = of_face.get(&face.node()) else {
                 continue;
             };
@@ -344,7 +344,7 @@ pub(super) fn backwards_facets(
 /// Whether any face of the shape's solids faces into their material.
 pub(super) fn any_turned_in(model: &Model, shape: &Shape, tol: Tolerances) -> OgeomResult<bool> {
     for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
-        if !crate::check::inside_out_faces(model, &solid, tol)?.is_empty() {
+        if !ogeom_algo::check::inside_out_faces(model, &solid, tol)?.is_empty() {
             return Ok(true);
         }
     }
@@ -375,7 +375,7 @@ pub(super) fn collapsed_beside(
         .filter_map(|&g| built.get(g).and_then(Option::as_ref))
     {
         let area = areas.area(model, face, fine, tol)?;
-        let reach = crate::shape_bounds(model, face, tol)?.diagonal();
+        let reach = ogeom_algo::shape_bounds(model, face, tol)?.diagonal();
         if area <= reach * tol.confusion() {
             return Ok(true);
         }
@@ -822,7 +822,7 @@ fn fan_onto(
 }
 
 /// The faces whose boundary crosses itself in its surface's chart
-/// ([`chart_crossings`](crate::chart_crossings)) where the drawing
+/// ([`chart_crossings`](ogeom_algo::chart_crossings)) where the drawing
 /// [`folded_seams`] reads is too coarse to show it: a facet all but
 /// tangent to a curved face beside it meets that face's surface along a
 /// curve that can run across the facet's other side a little short of the
@@ -850,7 +850,7 @@ pub(super) fn crossed_boundaries(
         .filter_map(|(g, b)| b.as_ref().map(|f| (g, f)))
         .collect();
     let crossed = ogeom_core::parallel::map_ordered(&faces, |_, &(_, face)| {
-        let crossings = crate::chart_crossings(model, face, tol)?;
+        let crossings = ogeom_algo::chart_crossings(model, face, tol)?;
         if crossings.is_empty() {
             return Ok(Vec::new());
         }
@@ -1074,12 +1074,12 @@ pub(super) fn broken_faces(
         .filter_map(|(g, b)| b.as_ref().map(|f| (g, f)))
         .collect();
     let broken = ogeom_core::parallel::map_ordered(&faces, |_, &(_, face)| {
-        let mut found = crate::Diagnosis::default();
+        let mut found = ogeom_algo::Diagnosis::default();
         for wire in model.ordered_children_of(face)? {
-            crate::check::check_wire(model, &wire, tol, &mut found)?;
+            ogeom_algo::check::check_wire(model, &wire, tol, &mut found)?;
         }
         Ok(!found.problems.is_empty()
-            || !crate::chart_breaks(model, face, &|_| false, tol)?.is_empty())
+            || !ogeom_algo::chart_breaks(model, face, &|_| false, tol)?.is_empty())
     });
     let mut out = Vec::new();
     for (&(g, _), broken) in faces.iter().zip(broken) {
@@ -1103,7 +1103,7 @@ pub(super) fn broken_faces(
 
 /// The built faces of `shape` that pass through another face of it, or
 /// through themselves, away from the edges they share
-/// ([`self_crossings`](crate::self_crossings)): a seam fitted between two
+/// ([`self_crossings`](ogeom_algo::self_crossings)): a seam fitted between two
 /// boundary nodes can bow past the facet it bounds and carry its curved
 /// face through a face beyond, a fold no check on one face or one seam
 /// sees. The curved faces of each crossing pair are the culprits; where
@@ -1128,7 +1128,7 @@ pub(super) fn crossing_faces(
     let mut out = std::collections::BTreeSet::new();
     let mut stuck = None;
     for solid in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Solid)? {
-        for crossing in crate::self_cross::crossings(model, &solid, kept, tol)? {
+        for crossing in ogeom_algo::self_crossings_kept(model, &solid, kept, tol)? {
             let pair: Vec<usize> = [&crossing.face, &crossing.other]
                 .into_iter()
                 .filter_map(|f| of_face.get(&f.node()).copied())
@@ -1151,7 +1151,7 @@ pub(super) fn crossing_faces(
 }
 
 /// The built faces to withdraw for an edge of `shape` whose pcurve stands
-/// farther off it than the edge is long, as [`check`](crate::check())
+/// farther off it than the edge is long, as [`check`](ogeom_algo::check())
 /// reports the edge suspect once the build has stated its pcurves' gaps.
 /// A curved face fitted to scattered vertices holds a seam's points only
 /// to its fit, and its image of a seam shorter than that scatter stands
@@ -1169,7 +1169,7 @@ pub(super) fn spanned_faces(
     regrouped: &Regrouped,
     tol: Tolerances,
 ) -> OgeomResult<Vec<usize>> {
-    crate::pcurve_gap::state_pcurve_gaps(model, shape, tol)?;
+    ogeom_algo::pcurve_gap::state_pcurve_gaps(model, shape, tol)?;
     let curved = |g: usize| matches!(groups.carriers.get(g), Some(Carrier::Curved(_)));
     let of_surface: FastMap<ogeom_topo::SurfaceId, usize> = built
         .iter()
@@ -1181,7 +1181,7 @@ pub(super) fn spanned_faces(
         .collect();
     let mut out = std::collections::BTreeSet::new();
     for edge in ogeom_topo::explore_unique(model, shape, ogeom_topo::ShapeType::Edge)? {
-        let Some(length) = crate::check::edge_spanned_past(model, &edge, tol)? else {
+        let Some(length) = ogeom_algo::check::edge_spanned_past(model, &edge, tol)? else {
             continue;
         };
         let Some(data) = model.node(&edge).and_then(|n| n.data().as_edge()) else {
@@ -1223,7 +1223,7 @@ pub(super) fn spanned_faces(
                 let Some(pcurve) = model.geometry().pcurve(side) else {
                     continue;
                 };
-                let gap = crate::pcurve_gap::pcurve_gap(
+                let gap = ogeom_algo::pcurve_gap::pcurve_gap(
                     (curve, *range),
                     (pcurve, pcurve_range),
                     geometry,
@@ -1375,7 +1375,7 @@ pub(super) fn unmatched_faces(
                 };
                 ends.iter().all(|&p| {
                     inside(p)
-                        && crate::measure::project_on_curve(curve, p, 64, tol)
+                        && ogeom_algo::measure::project_on_curve(curve, p, 64, tol)
                             .is_ok_and(|near| near.distance <= *reach)
                 })
             })

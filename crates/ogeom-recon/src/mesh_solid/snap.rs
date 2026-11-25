@@ -13,7 +13,7 @@ use super::planner::{CHORD_SAG, Planner, REACH};
 use super::seams::distance_to_line;
 use super::segment::{angular_spread, axis_frame, chart, evaluate, gradient, periodic, unwrapped};
 use super::{Carrier, Curved};
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 impl Planner<'_> {
     /// As [`Self::snapped`], solved afresh.
@@ -1222,7 +1222,8 @@ pub(super) fn image_on(
         return Some((pcurve, deviation));
     }
     let (pcurve, error, _, off, _) =
-        crate::pcurve_fit::fit_projected_pcurve_capped(curve, range, surface, reach, tol).ok()?;
+        ogeom_algo::pcurve_fit::fit_projected_pcurve_capped(curve, range, surface, reach, tol)
+            .ok()?;
     let deviation = error.max(off);
     (deviation <= reach).then_some((pcurve, deviation))
 }

@@ -11,7 +11,7 @@ use super::seams::distance_to_line;
 use super::segment::{axis_frame, leans_as_the_surface, unit_normal};
 use super::weld::{Adjacency, from_to};
 use super::{Carrier, Curved, Groups};
-use crate::recognize::{Canonical, worst_deviation};
+use ogeom_fit::recognize::{Canonical, worst_deviation};
 
 /// The normals of the planes the triangles left over from recognition
 /// gather into (`planes`, the groups with those planes grown), the largest
@@ -557,7 +557,7 @@ fn round_between(
         let s = (b * e - d) / (1.0 - b * b);
         let apex = p1 + d1 * s;
         if let Ok(axis) = Direction::new(axis, tol)
-            && let Some(shape) = crate::recognize::ruled_about(&pts, apex, axis, flat, tol)
+            && let Some(shape) = ogeom_fit::recognize::ruled_about(&pts, apex, axis, flat, tol)
             && holds(&shape)
         {
             return Some(shape);
