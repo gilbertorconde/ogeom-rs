@@ -2989,7 +2989,8 @@ No new survey: each rule below follows from rules this record holds.
     cylinder through the fill is not the face there. A constant fill stops
     square at such an end, as before; a varying one is refused by name.
   - A fill ending at a face that is neither a plane nor a cylinder is
-    refused by name, constant or varying: a square cap stands past a face
+    refused by name (a sphere is built since amendment "a concave fill
+    ending at a ball"), constant or varying: a square cap stands past a face
     leaning in and leaves a notch beside one leaning out.
   - The constant fill used to stop square at a cylinder: a notch where the
     drum leans out (8.148 added on the test's slab, 8.176 due), and folded
@@ -3045,6 +3046,51 @@ No new survey: each rule below follows from rules this record holds.
   bevel's plane, `(20 - p) A - (p / q) M` for the fill and `(12 - p) A -
   (p / q) M` for the cut, `M` the section's first moment about the floor;
   asserted to 1e-7, the same solid naming the other faces.
+
+### Amendment: a concave fill ending at a ball (#1237)
+
+Amendment "asymmetric rounds' last leftovers" ends a concave edge's fill
+in a cylinder at its end and refuses any other curved face. A sphere is
+built now, by the same rule: the fill ends in the face at its end, the
+face continued where the fill stands past it.
+
+- **The trim.** The fill runs on with its laws held level until it clears
+  the sphere, and the whole sphere trims it, kept on the material's side
+  (inside where the face's material lies within the sphere, outside where
+  it lies without). A sphere has no ruling to carry the face along, so its
+  continuation is the sphere itself, as mainstream CAD extends an analytic
+  face to trim a blend ending against it.
+- **Spanning the end.** The continuation is read from the faces of the
+  edge (the hosts) the sphere meets. Each point of the fill's end section,
+  run along the crease to the sphere, is pulled to the sphere's nearest
+  point in the plane of each host sharing an edge with the face; each of
+  those points must lie on the face itself. On a cylinder whose axis is a
+  host's normal this is the drum's own test (carried along the axis to the
+  vertex's height). A sphere the line misses, a face meeting neither host,
+  or a pulled point off the face is refused by name, constant or varying:
+  the sphere through the fill is then not the face continued. A ball cut
+  by an upright flat and a plate, off its centre, is the case: the flat's
+  foot runs into the ball, which lies only beyond the flat, so the fill
+  beside it would end in the ball's continuation across the floor.
+- **Tangent.** A crease running into the sphere along its surface gives
+  no end, and is refused by name as at a cylinder.
+- Any other end face (a cone, a torus, a free-form surface) stays refused
+  by name.
+
+**Oracles** (`tests/asymmetric.rs`): the slab on a block ending in a ball,
+leaning in (the radius 12 ball about (35, 0, 5) cut out, the fill running
+past the edge's end above the top and stopping short below) and out (kept
+within the radius 45 ball about (-20, 10, 5)). Over the top's leg `u` and
+along x, the height of the fill's section standing on the block's side of
+the ball, the ball's chord at `(x, 5 - u)` in closed form, split where the
+ball's circle passes the section's foot or top and where the laws kink.
+With constant distances each point's run along x is closed too, and the
+two references agree within 4e-15. Tripling the reference's resolution moves
+it by less than 3e-12. Measured: constant within 1.5e-10, asserted to
+1e-9; varying (laws 1 to 2 on the top, 0.5 to 1.5 on the slab) within
+2.6e-9, asserted to 1e-8. The block itself matches its closed form within
+1e-11. Valid, tangent to top and slab within 1e-7, the same solid to the
+bit whichever face is named.
 
 ### Amendment: overflow handling
 

@@ -273,17 +273,18 @@ pub(crate) fn varying_marched(
 /// band runs past it where planes following the crease there lean back
 /// from it, far enough to clear them, and is trimmed by those overhanging
 /// it: the circular round's own ends. A concave seat's fill ends in the
-/// faces following its crease there, planes or cylinders: where one is a
-/// cylinder or a plane not square to the crease, the fill runs on until
-/// it clears them all and is trimmed by each, kept on the side of the
-/// material its face bounds. A varying law is held level over the run
+/// faces following its crease there, planes, cylinders or spheres: where
+/// one is curved or a plane not square to the crease, the fill runs on
+/// until it clears them all and is trimmed by each, kept on the side of
+/// the material its face bounds. A varying law is held level over the run
 /// past an end.
 ///
 /// # Errors
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
-/// where a fill's end meets a face that is neither a plane nor a
-/// cylinder, or a cylinder the crease runs into tangent to it.
+/// where a fill's end meets a face that is not a plane, a cylinder or a
+/// sphere, a curved face the crease runs into tangent to it, or a sphere
+/// that does not span the fill's end.
 pub(super) fn extended_sweep(
     model: &mut Model,
     solid: &Shape,
@@ -326,8 +327,9 @@ pub(super) fn extended_sweep(
                     ogeom_bail!(
                         Construction,
                         "a round's fill on a concave edge ends in the faces at its edge's \
-                         ends, and an end of this edge meets a face that is neither a plane \
-                         nor a cylinder; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+                         ends, and an end of this edge meets a face that is not a plane, a \
+                         cylinder or a sphere; see docs/CAPABILITIES.md, \
+                         fillet.asymmetric-rounds"
                     );
                 }
                 continue;
@@ -366,6 +368,56 @@ pub(super) fn extended_sweep(
                     spans = spans && on;
                 }
             }
+            // A sphere ends the fill only where its continuation past the
+            // face is read from the hosts the face meets: each point of the
+            // end section, run along the crease to the sphere, and pulled to
+            // the sphere's nearest point in the plane of each host sharing
+            // an edge with the face, lands on the face itself. Elsewhere the
+            // fill is refused, constant or varying.
+            for (face, end_face) in &ends {
+                let crate::support::EndFace::Ball(centre, radius, _) = *end_face else {
+                    continue;
+                };
+                let mut planes = Vec::new();
+                for (host, normal) in hosts.iter().zip(original.normals) {
+                    if shares_edge(model, face, host)? {
+                        planes.push(normal);
+                    }
+                }
+                let mut held = !planes.is_empty();
+                for p in hull_at(if end == 0 { 0.0 } else { section.length() }) {
+                    let Some(t) = end_face.exit(p, outward) else {
+                        held = false;
+                        break;
+                    };
+                    let c = p + outward * t;
+                    for normal in &planes {
+                        let flat = c - *normal * (c - at).dot(*normal);
+                        let hub = centre - *normal * (centre - at).dot(*normal);
+                        let off = flat - hub;
+                        let ring = radius.mul_add(radius, -(centre - hub).dot(centre - hub));
+                        if ring <= 0.0 || off.magnitude() <= tol.confusion() {
+                            held = false;
+                            continue;
+                        }
+                        let q = hub + off * (ring.sqrt() / off.magnitude());
+                        let nudge = *normal * (tol.confusion() * 10.0);
+                        let mut on = false;
+                        for q in [q, q + nudge, q - nudge] {
+                            on = on || crate::support::on_face_itself(model, face, q, tol)?;
+                        }
+                        held = held && on;
+                    }
+                }
+                if !held {
+                    ogeom_bail!(
+                        Construction,
+                        "a round's fill on a concave edge ends in the faces at its edge's \
+                         ends, and a sphere at an end of this edge does not span the fill's \
+                         end; see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
+                    );
+                }
+            }
             if !spans {
                 if matches!(spec, RoundSpec::Varying { .. }) {
                     ogeom_bail!(
@@ -385,7 +437,7 @@ pub(super) fn extended_sweep(
                     let rate = normal.dot(outward).abs();
                     rate <= tol.angular() || rate >= 1.0 - tol.angular()
                 }
-                crate::support::EndFace::Drum(..) => false,
+                crate::support::EndFace::Drum(..) | crate::support::EndFace::Ball(..) => false,
             };
             if !original.convex && ends.iter().all(|(_, end)| square(end)) {
                 continue;
@@ -412,16 +464,15 @@ pub(super) fn extended_sweep(
                             trims.push(Trim::Plane(origin, normal));
                         }
                     }
-                    crate::support::EndFace::Drum(..) => {
-                        // A cylinder the crease runs into along its surface
-                        // gives no end the fill could stop in.
+                    crate::support::EndFace::Drum(..) | crate::support::EndFace::Ball(..) => {
+                        // A curved face the crease runs into along its
+                        // surface gives no end the fill could stop in.
                         if face.normal_at(at).dot(outward).abs() <= tol.angular() {
                             ogeom_bail!(
                                 Construction,
                                 "a round's fill on a concave edge ends in the face at its \
-                                 end, and that face is a cylinder the edge runs into \
-                                 tangent to it; see docs/CAPABILITIES.md, \
-                                 fillet.asymmetric-rounds"
+                                 end, and the edge runs into that curved face tangent to it; \
+                                 see docs/CAPABILITIES.md, fillet.asymmetric-rounds"
                             );
                         }
                         for p in &hull {
@@ -429,7 +480,7 @@ pub(super) fn extended_sweep(
                                 reach = reach.max(t);
                             }
                         }
-                        trims.push(Trim::Drum(face));
+                        trims.push(Trim::Curved(face));
                     }
                 }
             }
@@ -465,7 +516,10 @@ pub(super) fn extended_sweep(
             Trim::Plane(origin, normal) => {
                 crate::support::trimmed_wedge(model, &tool.solid, (origin, normal), span, tol)?
             }
-            Trim::Drum(face) => {
+            Trim::Curved(face @ crate::support::EndFace::Ball(..)) => {
+                crate::support::trimmed_by_ball(model, &tool.solid, face, tol)?
+            }
+            Trim::Curved(face) => {
                 crate::support::trimmed_by_drum(model, &tool.solid, face, span, tol)?
             }
         };
@@ -479,8 +533,20 @@ enum Trim {
     /// The half-space behind this plane (a point on it and the normal
     /// pointing away from what is kept) is cut away.
     Plane(ogeom_math::Point, ogeom_math::Vector),
-    /// Only what lies on the material side of this cylinder is kept.
-    Drum(crate::support::EndFace),
+    /// Only what lies on the material side of this cylinder or sphere is
+    /// kept.
+    Curved(crate::support::EndFace),
+}
+
+/// Whether faces `a` and `b` share an edge.
+fn shares_edge(model: &Model, a: &Shape, b: &Shape) -> OgeomResult<bool> {
+    use ogeom_topo::{Filter, explore};
+    let theirs = explore(model, b, Filter::OfType(ogeom_topo::ShapeType::Edge))?;
+    Ok(
+        explore(model, a, Filter::OfType(ogeom_topo::ShapeType::Edge))?
+            .iter()
+            .any(|e| theirs.iter().any(|f| f.is_same(e))),
+    )
 }
 
 /// How a host of a ruled seat meets the plane square to its edge: a line,
