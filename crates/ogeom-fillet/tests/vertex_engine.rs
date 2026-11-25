@@ -1,5 +1,9 @@
 //! Vertex-only geometry, ancestry and engine ownership.
 #![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
+#![allow(
     clippy::unwrap_used,
     reason = "test constructions and source inspection"
 )]

@@ -1817,6 +1817,10 @@ fn find_face(model: &Model, solid: &Shape, p: Point, what: &str) -> Result<Shape
 /// between the faces or not: a chamfer or an old round by the kernel, or a
 /// wedge cut off or filled in by a prism tool, plane or B-spline, over the
 /// whole run or part of it.
+#[allow(
+    deprecated,
+    reason = "the one-edge constructions are kept verbatim until they are removed"
+)]
 fn planes(rng: &mut Rng, concave: bool) -> Result<Scene, Verdict> {
     let frame = random_frame(rng)?;
     let mut model = Model::new();
@@ -2521,6 +2525,10 @@ fn ring(pieces: &[Piece]) -> f64 {
 
 /// A drum's top rim (convex, plane square to a cylinder's axis), bare,
 /// chamfered unevenly, or rounded.
+#[allow(
+    deprecated,
+    reason = "the one-edge constructions are kept verbatim until they are removed"
+)]
 fn rim(rng: &mut Rng) -> Result<Scene, Verdict> {
     let frame = random_frame(rng)?;
     let mut model = Model::new();

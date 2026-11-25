@@ -1,6 +1,10 @@
 //! An operation run on a boolean's result leaves the boolean's operands as
 //! they were, though the result holds the faces the boolean set aside as
 //! the operand's own nodes.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::FastSet;

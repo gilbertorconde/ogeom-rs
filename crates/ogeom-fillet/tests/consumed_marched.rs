@@ -2,6 +2,10 @@
 //! whole: the marched counterpart of a rim's round over a chamfer. Where
 //! the bevel is wider than the round's setback on it, the round rolls
 //! between the bevel and the face beside it instead.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

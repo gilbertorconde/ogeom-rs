@@ -1,6 +1,10 @@
 //! Removing a set of faces, the wound closed from the
 //! neighbours' own geometry, measured against the solids the features were
 //! cut from, not against plausibility.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/walks.rs"]

@@ -4,6 +4,10 @@
 //! The part is a block whose top front edge is rounded, with a boss fused
 //! on its top near that round: the boss's foot reaches the round, which
 //! blend into round takes and the other behaviours do not.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

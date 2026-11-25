@@ -1,5 +1,9 @@
 //! Cancellation that stops a long operation at its next checkpoint, and
 //! parallelism whose answer is bit-identical at any thread count.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::{OgeomError, Tolerances, parallel, progress};

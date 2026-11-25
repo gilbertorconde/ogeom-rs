@@ -1,5 +1,9 @@
 //! Chamfers on the rims where a plane meets a sphere, in all three
 //! spellings, against Pappus.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

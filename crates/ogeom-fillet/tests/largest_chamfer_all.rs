@@ -3,6 +3,10 @@
 //! the setback, builds at the answer under both corners and is refused just
 //! past it. Where the request builds past its seat, the seat is still the
 //! closed form and the answer is past it.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use std::f64::consts::{FRAC_PI_3, FRAC_PI_4, FRAC_PI_6};

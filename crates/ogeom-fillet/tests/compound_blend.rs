@@ -1,5 +1,9 @@
 //! A blend on a compound of solids: each solid blended alone, the solids
 //! with no edge asked handed back as they are, the compound kept.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

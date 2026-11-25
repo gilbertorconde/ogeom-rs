@@ -2,6 +2,10 @@
 //! "largest-size readings confirmed by the build"): for each case the
 //! reading's limit `L` builds valid at `L (1 - tol)` and is refused at
 //! `L (1 + tol)`, `tol` the reading's own [`LIMIT_TOLERANCE`].
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

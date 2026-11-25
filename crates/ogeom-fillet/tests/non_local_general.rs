@@ -3,6 +3,10 @@
 //! taken off a copy of the part, the rounds built on the copy as the local
 //! request they are there, and the copy less its rounding cut, the rounding
 //! less the copy fused, on the part as given.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{FRAC_PI_4, PI};

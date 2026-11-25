@@ -1,4 +1,8 @@
 //! What `check` sees that topology alone cannot: a face turned inside out.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use std::f64::consts::TAU;

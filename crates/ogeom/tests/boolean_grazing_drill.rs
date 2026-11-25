@@ -9,6 +9,10 @@
 //! the drill less the part and the common add up to the drill, and the
 //! common matches the drill's share of the part integrated ray by ray
 //! along the drill's axis.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 #![allow(
     clippy::cast_precision_loss,

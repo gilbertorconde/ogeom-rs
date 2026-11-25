@@ -1,5 +1,9 @@
 //! Variable-radius rounds under a radius law: the straight planar seat's
 //! exact envelope, and closed curved seats marched with the law's radius.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

@@ -2,6 +2,10 @@
 //! bore's wall and top after its rim is chamfered, a post's wall and the
 //! block's top after its foot is rounded. Each face's rings must close in
 //! its surface's chart for the face blend's cuts to find them.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

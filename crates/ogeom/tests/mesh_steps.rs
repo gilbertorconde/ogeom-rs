@@ -2,6 +2,10 @@
 //! split and fitted, then built. Each corrected conversion is measured
 //! against the exact solid its mesh was drawn from, and against what the
 //! automatic conversion builds where it finds the same regions.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{

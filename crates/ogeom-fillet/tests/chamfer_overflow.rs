@@ -3,6 +3,10 @@
 //! boss's foot bevel on over the straight rounds it reaches; trim through is
 //! the construction the chamfer built before the option set; with both off
 //! the request is refused by name. Hold edge does not apply to a bevel.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{PI, TAU};

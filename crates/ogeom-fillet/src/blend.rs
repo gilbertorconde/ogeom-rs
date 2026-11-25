@@ -7,6 +7,10 @@ use ogeom_topo::{Model, Shape};
 
 /// How [`blend_edges`] blends one edge.
 #[derive(Debug, Clone)]
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendSection`, which `Blend` converts to"
+)]
 pub enum Blend {
     /// A round of this radius, as [`fillet_edges_with`](crate::fillet_edges_with).
     Round(f64),
@@ -52,6 +56,10 @@ pub enum Blend {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) where
 /// an edge is asked twice, or a round's edge does not come through the
 /// bevels as one edge.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, blend)` per pair, then `.chamfer_corner(c).build(..)`"
+)]
 pub fn blend_edges(
     model: &mut Model,
     solid: &Shape,
@@ -91,6 +99,10 @@ pub fn blend_edges(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction), by
 /// name, where a blend reaches other geometry and no behaviour that is on
 /// builds it.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, blend)` per pair, then `.chamfer_corner(c).overflow(o).build(..)`"
+)]
 pub fn blend_edges_overflow(
     model: &mut Model,
     solid: &Shape,

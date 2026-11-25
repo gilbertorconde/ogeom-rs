@@ -10,6 +10,10 @@ use ogeom_algo::Built;
 use ogeom_core::{OgeomError, OgeomResult, Tolerances, ogeom_err};
 use ogeom_topo::{Model, Shape};
 
+#[allow(
+    deprecated,
+    reason = "the old calls' sizings and blends that the request lowers to"
+)]
 use crate::{
     Blend, BlendLimit, BlendRefusal, BlendSizing, Chamfer, ChamferCorner, DistanceLawSize,
     FilletCorner, LawSize, LawStation, Overflow, RadiusLaw, RoundProfile, Setbacks,
@@ -93,6 +97,7 @@ impl From<Chamfer> for BlendSection {
     }
 }
 
+#[allow(deprecated, reason = "converts Blend while it is deprecated")]
 impl From<Blend> for BlendSection {
     fn from(blend: Blend) -> Self {
         match blend {
@@ -140,6 +145,10 @@ struct Entry {
 }
 
 /// A request read as the call that builds it, with that call's arguments.
+#[allow(
+    deprecated,
+    reason = "mixed blends lower to blend_edges_overflow's own pairs"
+)]
 enum Lowered<'a> {
     /// Rounds of one radius.
     Rounds { edges: Vec<Shape>, radius: f64 },
@@ -286,6 +295,10 @@ impl BlendRequest {
     /// of one radius under the default overflow, rolling corners with
     /// anything but rounds of one radius, distance laws under overflow
     /// options.
+    #[allow(
+        deprecated,
+        reason = "builds through the calls kept verbatim and blend_edges_overflow"
+    )]
     pub fn build(&self, model: &mut Model, solid: &Shape, tol: Tolerances) -> OgeomResult<Built> {
         let lowered = self.lower()?;
         let what = lowered.what();
@@ -597,6 +610,7 @@ impl BlendRequest {
     /// The request read as the [`BlendSizing`] its reading takes, and the
     /// request's measure in that sizing's: the sizing reads `unit` where the
     /// request is at a factor of one.
+    #[allow(deprecated, reason = "a reading takes the BlendSizing it lowers to")]
     fn reading<R>(
         &self,
         vary: Vary,
@@ -871,6 +885,7 @@ const fn is_law(section: &BlendSection) -> bool {
 }
 
 /// A constant section as [`blend_edges`](crate::blend_edges) takes it.
+#[allow(deprecated, reason = "blend_edges_overflow takes its blends as Blend")]
 fn constant(section: &BlendSection) -> Option<Blend> {
     Some(match section {
         BlendSection::Round(r) => Blend::Round(*r),

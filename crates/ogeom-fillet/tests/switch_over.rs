@@ -1,5 +1,9 @@
 //! Rounds whose ball changes walls off the chain's vertex (ADR 0001,
 //! amendment "a ball changing walls off the vertex").
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 /// The free-ball reference for a concave foot loop round a convex wall,

@@ -3,6 +3,10 @@
 //! trims it there; and the ends that stay with trim through, where the
 //! balls past the end face cannot stand or the boolean does not resolve
 //! the cut.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

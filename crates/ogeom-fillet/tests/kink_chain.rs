@@ -1,6 +1,10 @@
 //! Tangent chains (ADR 0001, amendments "tangent chains stop at a kink"
 //! and "tangent chains through fading creases"): which edges a pick runs
 //! on to, and what a round ending at a kink takes.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

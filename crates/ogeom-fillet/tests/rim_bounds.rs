@@ -1,4 +1,8 @@
 //! A carried round can rest only on the bounded circular edge.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, reason = "test constructions")]
 
 use ogeom_core::Tolerances;

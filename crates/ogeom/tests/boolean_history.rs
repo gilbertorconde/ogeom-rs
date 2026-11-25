@@ -1,6 +1,10 @@
 //! Every face of a boolean's result is reachable through its history from
 //! the input it came from, carried over unchanged or split, and the same
 //! through the fillets and chamfers that compose booleans.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{Built, make_box};

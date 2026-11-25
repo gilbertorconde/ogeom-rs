@@ -1,5 +1,9 @@
 //! Setback corners: the bands at a vertex stopped a chosen distance along
 //! their edges, and one patch over the opening between them.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

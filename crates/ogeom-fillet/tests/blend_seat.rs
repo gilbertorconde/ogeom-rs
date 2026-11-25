@@ -1,6 +1,10 @@
 //! The seat reading on its own: a face's reach for a round of two
 //! distances, the other distance small enough that only that face stops
 //! it, read without building.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

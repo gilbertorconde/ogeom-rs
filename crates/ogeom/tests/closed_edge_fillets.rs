@@ -1,5 +1,9 @@
 //! Fillet chains holding closed edges: both rims of a drum, and a rim the
 //! solid keeps as two halves.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{make_box, make_cylinder, volume_properties};

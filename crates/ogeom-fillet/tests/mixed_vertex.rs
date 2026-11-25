@@ -1,5 +1,9 @@
 //! A convex and a concave round meeting at one vertex: the L-bracket's
 //! front edge at its re-entrant edge, (5, 0, 5).
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

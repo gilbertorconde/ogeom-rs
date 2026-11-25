@@ -4,6 +4,10 @@
 //! corner it crosses fillets and the corner ball together. Oblique tools
 //! through a slanted box rounded on every edge take its volume, Steiner's,
 //! in two shares.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{check, make_box, make_cone, make_cylinder, volume_properties};

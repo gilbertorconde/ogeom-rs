@@ -4,6 +4,10 @@
 //! reading's limit `L` builds valid at `L (1 - tol)` and is refused at
 //! `L (1 + tol)`, `tol` the reading's own [`LIMIT_TOLERANCE`], and `L`
 //! stands at the closed form the geometry gives.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

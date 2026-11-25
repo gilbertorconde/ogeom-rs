@@ -2,6 +2,10 @@
 //! every face shrunk to its setback corners, every bevelled edge a quad,
 //! every vertex of three bevels a facet. Checked against closed forms that
 //! do not share the construction, and against every order of the request.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

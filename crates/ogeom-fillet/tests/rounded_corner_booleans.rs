@@ -1,5 +1,9 @@
 //! Booleans against a solid whose rounded corner closes on a patch with a
 //! point side lying on a plane of the other solid.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

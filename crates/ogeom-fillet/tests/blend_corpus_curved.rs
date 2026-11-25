@@ -16,6 +16,10 @@
 //! faces route through the engine (ADR 0001, §11): today's path fails each,
 //! refusing it or answering differently by the request's order, as each
 //! case's documentation records. Without it each returns at once.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

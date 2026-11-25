@@ -1,5 +1,9 @@
 //! Rounds where a flat wall runs tangent into a curved one, the face
 //! between them narrowing to a cusp at the tangent point.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

@@ -1,6 +1,10 @@
 //! Contact configurations the boolean resolves rather than refuses: curved
 //! same-domain pairs unify, and contact confined to lines or points is
 //! classified off the contact, so it shares no volume.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;

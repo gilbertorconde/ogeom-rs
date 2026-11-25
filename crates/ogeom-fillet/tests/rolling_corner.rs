@@ -1,6 +1,10 @@
 //! Rolling corners (`FilletCorner::Rolling`): every vertex where rounds
 //! meet closed by the ball rolling through it, on spheres and tori, never
 //! a patch; and refused by name where the ball's sweep does not close it.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

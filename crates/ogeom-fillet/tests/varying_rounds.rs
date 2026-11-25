@@ -1,5 +1,9 @@
 //! A round of varying radius through the blend engine: a box's edge, the
 //! ball's radius following a law along it, flush in the end faces.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::FRAC_PI_4;

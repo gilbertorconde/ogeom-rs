@@ -52,6 +52,10 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction), by
 /// name, where a bevel reaches other geometry and no behaviour that is on
 /// builds it.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, spec)` per spec, then `.chamfer_corner(c).overflow(o).build(..)`"
+)]
 pub fn chamfer_edges_overflow(
     model: &mut Model,
     solid: &Shape,

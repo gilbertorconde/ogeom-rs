@@ -45,6 +45,10 @@ impl std::error::Error for BlendRefusal {
 /// # Errors
 ///
 /// As [`fillet_edges`](crate::fillet_edges), in a [`BlendRefusal`].
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, r).build_checked(..)`, which names every refused edge"
+)]
 pub fn fillet_edges_checked(
     model: &mut Model,
     solid: &Shape,
@@ -89,6 +93,14 @@ pub fn fillet_edges_checked(
 ///
 /// As [`fillet_edges_corner`](crate::fillet_edges_corner), in a
 /// [`BlendRefusal`].
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, r).round_corner(c).build_checked(..)`, which names every refused edge"
+)]
+#[allow(
+    deprecated,
+    reason = "the setback reading is fillet_edges_checked's own"
+)]
 pub fn fillet_edges_corner_checked(
     model: &mut Model,
     solid: &Shape,
@@ -157,6 +169,10 @@ pub fn fillet_edges_corner_checked(
 ///
 /// As [`chamfer_edges_with`](crate::chamfer_edges_with), in a
 /// [`BlendRefusal`].
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, spec)` per spec, then `.build_checked(..)`, which names every refused edge"
+)]
 pub fn chamfer_edges_checked(
     model: &mut Model,
     solid: &Shape,
@@ -193,6 +209,10 @@ pub fn chamfer_edges_checked(
 /// As [`fillet_edges_corner_overflow`](crate::fillet_edges_corner_overflow),
 /// in a [`BlendRefusal`]; its `edges` empty where cancelled or where
 /// `edges` is empty.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, r).round_corner(c).overflow(o).build_checked(..)`"
+)]
 pub fn fillet_edges_corner_overflow_checked(
     model: &mut Model,
     solid: &Shape,
@@ -249,6 +269,10 @@ pub(crate) fn rounds_checked(
 /// As [`chamfer_edges_overflow`](crate::chamfer_edges_overflow), in a
 /// [`BlendRefusal`]; its `edges` empty where cancelled or where `specs` is
 /// empty.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, spec)` per spec, then `.chamfer_corner(c).overflow(o).build_checked(..)`"
+)]
 pub fn chamfer_edges_overflow_checked(
     model: &mut Model,
     solid: &Shape,
@@ -307,6 +331,10 @@ pub(crate) fn bevels_checked(
 ///
 /// As [`fillet_edges`](crate::fillet_edges) where no edge is accepted (the
 /// first edge's refusal), and [`OgeomError::Cancelled`] when cancelled.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, r).build_partial(..)`"
+)]
 pub fn fillet_edges_partial(
     model: &mut Model,
     solid: &Shape,
@@ -368,6 +396,10 @@ pub(crate) fn rounds_partial(
 ///
 /// As [`chamfer_edges_with`](crate::chamfer_edges_with) where no spec is
 /// accepted, and [`OgeomError::Cancelled`] when cancelled.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, spec)` per spec, then `.build_partial(..)`"
+)]
 pub fn chamfer_edges_partial(
     model: &mut Model,
     solid: &Shape,

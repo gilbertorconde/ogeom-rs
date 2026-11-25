@@ -1,6 +1,10 @@
 //! What a blend achieved, measured: blends between faces that share no
 //! edge, edges whose envelope has no closed form, and the corner where
 //! three of them meet.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;

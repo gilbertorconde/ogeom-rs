@@ -257,6 +257,10 @@ fn setback_own(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// where a vertex is named twice, an edge meeting a named vertex is not in
 /// `edges`, or the setbacks at both ends of an edge meet.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, r)`, one `.setback(v, s)` per corner, then `.build(..)`"
+)]
 pub fn fillet_edges_cornered(
     model: &mut Model,
     solid: &Shape,

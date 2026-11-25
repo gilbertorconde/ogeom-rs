@@ -6,6 +6,10 @@
 //! a number that comes out right at one chord and differently at another
 //! was read off a mesh, and a part whose faces are a cylinder and two
 //! planes should not have to be meshed to be weighed.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/cpu_time.rs"]

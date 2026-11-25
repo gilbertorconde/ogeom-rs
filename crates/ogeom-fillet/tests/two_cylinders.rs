@@ -1,6 +1,10 @@
 //! Concave rounds between two walls along their rulings: three
 //! cylinders fused side by side, the two concave seams on one side rounded,
 //! each strip the exact cylinder whose axis stands a radius off both walls.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

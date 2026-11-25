@@ -2,6 +2,10 @@
 //! on (ADR 0001, amendment "a marched band leaning into its end face"):
 //! carried past the vertex and clipped by that face, the band ends on it,
 //! the face keeps all it holds, and the volume is the rolling ball's.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

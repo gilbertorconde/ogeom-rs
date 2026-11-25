@@ -1,6 +1,10 @@
 //! What one fillet call costs on a solid with many faces away from it, and
 //! that rounding many edges of a holed plate at once gives the closed-form
 //! solid.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/cpu_time.rs"]

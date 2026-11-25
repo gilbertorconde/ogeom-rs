@@ -5,6 +5,10 @@
 //! a box edge's round takes the prism `r^2 (1 - pi/4)` along its length,
 //! a whole rim's the ring Pappus gives, and the seam's piece what its own
 //! round takes.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

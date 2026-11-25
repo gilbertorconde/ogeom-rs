@@ -3,6 +3,10 @@
 //! cell (here a 1 × 1 × 1 void) would be lost from a solid that still
 //! checks valid. Each corner that cuts a cell refuses it by name instead.
 //! The engine's corners cut no cell: there a void clear of the round stays.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

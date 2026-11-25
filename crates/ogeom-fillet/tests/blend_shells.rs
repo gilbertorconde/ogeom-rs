@@ -2,6 +2,10 @@
 //! measured on the solids it gives: each edge walked once each way, every
 //! pcurve within its edge's stated tolerance, the meshes closed and true to
 //! the exact measures, and the volumes against closed forms.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::{FastMap, Tolerances};

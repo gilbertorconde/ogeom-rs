@@ -12,6 +12,10 @@ mod asym;
 mod asym_law;
 mod between;
 mod blame;
+#[allow(
+    deprecated,
+    reason = "Blend is the mixed call's own until it is removed"
+)]
 mod blend;
 pub mod bridge;
 pub mod chamfer;
@@ -27,6 +31,10 @@ pub mod facepair;
 pub mod fillet;
 mod fits;
 mod law;
+#[allow(
+    deprecated,
+    reason = "BlendSizing and its law sizes are the readings' own until they are removed"
+)]
 mod limit;
 pub mod march;
 mod marched;
@@ -50,34 +58,74 @@ mod turned_pole;
 pub use analyse::{
     BlendContact, FaceCurvature, analyse_blend, face_curvature_at, face_curvature_samples,
 };
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use asym::{
     RoundProfile, fillet_edge_distances, fillet_edge_distances_overflow, largest_fillet_distances,
 };
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use asym_law::{fillet_edge_distances_variable, fillet_edges_distances_variable};
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use blame::{
     BlendRefusal, chamfer_edges_checked, chamfer_edges_overflow_checked, chamfer_edges_partial,
     fillet_edges_checked, fillet_edges_corner_checked, fillet_edges_corner_overflow_checked,
     fillet_edges_partial,
 };
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use blend::{Blend, blend_edges, blend_edges_overflow};
 pub use bridge::{End, make_blend_curve, make_blend_surface};
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use chamfer::{
     Chamfer, chamfer_edge, chamfer_edge_angle, chamfer_edge_distances, chamfer_edges,
     chamfer_edges_with, largest_chamfer_distance, largest_chamfer_distance_all,
     largest_chamfer_distance_all_overflow, largest_chamfer_distance_overflow,
 };
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use chamfer_corner::{ChamferCorner, chamfer_edges_cornered};
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use chamfer_overflow::chamfer_edges_overflow;
 pub use corner2d::{chamfer_corner_2d, fillet_corner_2d};
 pub use engine::vertex::round_vertex;
 pub use facepair::blend_faces;
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use fillet::{
     FilletCorner, Overflow, fillet_edge, fillet_edge_variable, fillet_edges, fillet_edges_corner,
     fillet_edges_corner_overflow, fillet_edges_overflow, fillet_edges_variable,
     fillet_edges_variable_overflow, fillet_edges_with,
 };
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use fits::{largest_fillet_radius, largest_fillet_radius_all, largest_fillet_radius_overflow};
 pub use law::RadiusLaw;
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use limit::{
     BlendLimit, BlendSizing, DistanceLawSize, LIMIT_PROBES, LIMIT_SAMPLES, LIMIT_TOLERANCE,
     LawSize, LawStation, blend_limit, blend_seat, largest_law_distances, largest_law_radius,
@@ -88,6 +136,10 @@ pub use march::{
 };
 pub use ogeom_algo::{FillBoundary, FillSide, Filled, make_filling_n};
 pub use request::{BlendRequest, BlendSection, Vary};
+#[allow(
+    deprecated,
+    reason = "re-exported for the release they are deprecated in"
+)]
 pub use setback::{Setbacks, fillet_edges_cornered, round_vertex_setback};
 pub use sharp::round_vertex_setback_sharp;
 pub use sheet::{fillet_faces, fillet_sheet_edges};

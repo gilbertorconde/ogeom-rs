@@ -2,6 +2,10 @@
 //! own two faces. Blend into round bends a boss's foot round into the
 //! straight round it reaches; each behaviour switched off passes the
 //! request to the next, or it is refused by name.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{FRAC_PI_2, PI, TAU};

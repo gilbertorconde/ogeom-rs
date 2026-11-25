@@ -28,6 +28,10 @@ use crate::round::section::{PlanarSection, RoundSpec};
 /// open law is asked round a closed chain, a contact sets back past its
 /// face's side, or the bands do not join; and as the bands themselves.
 #[allow(clippy::too_many_lines, reason = "one chain, walked end to end")]
+#[allow(
+    deprecated,
+    reason = "level distance laws build as blend_edges builds the constant round"
+)]
 pub(crate) fn varying(
     model: &mut Model,
     solid: &Shape,
