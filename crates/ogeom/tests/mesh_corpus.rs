@@ -8,8 +8,8 @@ mod walks;
 
 use ogeom::algo::{
     Canonical, FallbackReason, FitConstraints, MeshRegion, MeshRegions, MeshSolidOptions,
-    MeshSolidReport, SurfaceKind, check, shape_bounds, solid_from_mesh, surface_properties,
-    volume_properties,
+    MeshSolidReport, SurfaceKind, check, linear_properties, shape_bounds, solid_from_mesh,
+    surface_properties, volume_properties,
 };
 use ogeom::core::Tolerances;
 use ogeom::geom::{Curve, Curve2d as _, Curve3d as _, Surface as _, SurfaceGeometry};
@@ -578,25 +578,6 @@ fn meshed(name: &str) -> ogeom::topo::Triangulation {
     ogeom::mesh::triangulate(model, part, chord, T).unwrap()
 }
 
-/// The face of `faces` of `kind` and sizes `sizes` nearest `near`: its area.
-fn area_near(
-    faces: &[(&'static str, Vec<f64>, f64, ogeom::math::Point)],
-    kind: &str,
-    sizes: &[f64],
-    near: ogeom::math::Point,
-) -> f64 {
-    faces
-        .iter()
-        .filter(|(k, s, _, _)| {
-            *k == kind
-                && s.len() == sizes.len()
-                && s.iter().zip(sizes).all(|(a, b)| (a - b).abs() < 0.05)
-        })
-        .min_by(|a, b| a.3.distance(near).total_cmp(&b.3.distance(near)))
-        .map(|f| f.2)
-        .unwrap()
-}
-
 /// nist_ftc_07 with one cylinder's fit made to press against the default
 /// distance: the vertices inside its region, every triangle round them on
 /// it, pushed off it and back by turns, by 0.8 of the distance. The
@@ -694,10 +675,51 @@ fn default_distance(mesh: &ogeom::topo::Triangulation) -> f64 {
     MeshRegions::find(mesh, &options, T).unwrap().distance()
 }
 
+/// The face of `model`'s `shape` on a surface of `kind` and sizes `sizes`
+/// nearest `near`: its surface's axis and sizes, its area, and the length
+/// of its edges.
+fn round_near(
+    model: &Model,
+    shape: &Shape,
+    kind: &str,
+    sizes: &[f64],
+    near: ogeom::math::Point,
+) -> (ogeom::math::Axis, Vec<f64>, f64, f64) {
+    let face = explore_unique(model, shape, ShapeType::Face)
+        .unwrap()
+        .into_iter()
+        .filter_map(|face| {
+            let data = model.node(&face).unwrap().data().as_face().unwrap();
+            let (axis, found) = match (kind, model.geometry().surface(data.surface).unwrap()) {
+                ("cylinder", SurfaceGeometry::Cylinder(c)) => {
+                    (c.cylinder().axis(), vec![c.cylinder().radius()])
+                }
+                ("torus", SurfaceGeometry::Torus(t)) => (
+                    t.torus().axis(),
+                    vec![t.torus().major_radius(), t.torus().minor_radius()],
+                ),
+                _ => return None,
+            };
+            if found.len() != sizes.len()
+                || found.iter().zip(sizes).any(|(a, b)| (a - b).abs() >= 0.05)
+            {
+                return None;
+            }
+            let area = surface_properties(model, &face, Deflection::default(), T).unwrap();
+            Some((face, axis, found, area.mass, area.centre))
+        })
+        .min_by(|a, b| a.4.distance(near).total_cmp(&b.4.distance(near)))
+        .unwrap();
+    let (face, axis, found, area, _) = face;
+    let fine = Deflection::with_chord(1e-3).unwrap();
+    let perimeter = linear_properties(model, &face, fine, T).unwrap().mass;
+    (axis, found, area, perimeter)
+}
+
 /// The round of `nist_ftc_10` and the one of `nist_ctc_05` that press
 /// against the default distance: the distance widens for them, and each
-/// takes rim triangles the default left as facets, coming back larger than
-/// at the default alone.
+/// comes back on the part's own surface, covering no more of it than the
+/// part's face does, give or take a chord along the face's edges.
 #[test]
 #[ignore = "heavy"]
 fn pressing_rounds_take_their_rims() {
@@ -716,28 +738,39 @@ fn pressing_rounds_take_their_rims() {
         ),
     ] {
         let near = ogeom::math::Point::new(near.0, near.1, near.2);
-        let mesh = meshed(name);
-        let round = |options: &MeshSolidOptions| {
-            let mut back = Model::new();
-            let out = solid_from_mesh(&mut back, &mesh, options, T).unwrap();
-            assert_eq!(
-                out.report.curved_faceted, 0,
-                "{name}: {:?}",
-                out.report.fallbacks
-            );
-            let area = area_near(&faces_of(&back, &out.shape), kind, &sizes, near);
-            (area, out.coplanar_distance)
-        };
-        let default = default_distance(&mesh);
-        let (widened, distance) = round(&MeshSolidOptions::default());
-        let (alone, _) = round(&MeshSolidOptions {
-            coplanar_distance: Some(default),
-            ..MeshSolidOptions::default()
-        });
-        assert!(distance > default, "{name}: the distance did not widen");
+        let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+        let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
+        let model = import.document.model();
+        let part = &import.solids[0];
+        let (axis, exact, area, perimeter) = round_near(model, part, kind, &sizes, near);
+        let chord = shape_bounds(model, part, T).unwrap().diagonal() * 1e-3;
+        let mesh = ogeom::mesh::triangulate(model, part, Deflection::with_chord(chord).unwrap(), T)
+            .unwrap();
+        let mut back = Model::new();
+        let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+        assert_eq!(
+            out.report.curved_faceted, 0,
+            "{name}: {:?}",
+            out.report.fallbacks
+        );
         assert!(
-            widened > alone,
-            "{name}: the round came back on {widened}, {alone} at the default alone"
+            out.coplanar_distance > default_distance(&mesh),
+            "{name}: the distance did not widen"
+        );
+        let (round_axis, round, round_area, _) = round_near(&back, &out.shape, kind, &sizes, near);
+        for (got, want) in round.iter().zip(&exact) {
+            assert!(
+                (got - want).abs() <= 1e-4,
+                "{name}: the round came back of sizes {round:?}, the part's {exact:?}"
+            );
+        }
+        assert!(
+            round_axis.is_collinear(axis, T),
+            "{name}: the round came back about {round_axis:?}, the part's {axis:?}"
+        );
+        assert!(
+            round_area <= area + chord * perimeter,
+            "{name}: the round came back on {round_area}, the part's face {area} with {perimeter} of edges"
         );
     }
 }
