@@ -16,8 +16,9 @@
 //! walls meet at a sharp corner of any angle (a concave one: the band runs
 //! on to the next wall's plane and is cut there; a convex one: the ball
 //! pivots on the walls' edge and the spandrel is turned about it), at a
-//! square corner through a cylindrical corner face tighter than the radius,
-//! or across a half cylinder tangent to two facing walls; open ends are
+//! square corner through a corner face tighter than the radius all along
+//! (a circular or elliptic cylinder square to the floor), or across such a
+//! face closing two facing walls, tangent to both; open ends are
 //! flush on end faces square to their edge. Facing walls may stand closer
 //! than the radius, each band then crossing the wall it faces. Pieces are
 //! kept only where nothing else of the solid stands in their room, a
@@ -30,7 +31,7 @@ use core::f64::consts::{FRAC_PI_2, PI, TAU};
 use ogeom_algo::Built;
 use ogeom_core::{OgeomResult, Tolerances};
 use ogeom_geom::{Curve, PlaneSurface, SurfaceGeometry};
-use ogeom_math::{Aabb, Axis, Circle, Direction, Frame, Plane, Point, Vector};
+use ogeom_math::{Aabb, Axis, Direction, Frame, Plane, Point, Vector};
 use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 
 use super::curved::{Curved, read};
@@ -47,7 +48,8 @@ pub(crate) enum Needs {
     /// that are cylinders tangent to both their walls.
     BlendMade,
     /// The tight zone spans one whole corner face that no constant-radius
-    /// round made: a cylinder meeting its walls at kinks.
+    /// round made: a cylinder meeting its walls at kinks, or an elliptic
+    /// cylinder.
     WholeFace,
     /// The tight zone covers part of a wall's face: walls facing each
     /// other closer than twice the radius over part of one's length only.
@@ -100,19 +102,12 @@ pub(crate) struct Narrow {
     shapes: Vec<(Id, Shape)>,
 }
 
-/// A rim edge of the floor: along a planar wall, or round a cylindrical
-/// corner face whose air lies inside it.
+/// A rim edge of the floor: along a planar wall, or round a corner face
+/// square to the floor whose air lies on its concave side.
 #[derive(Debug, Clone)]
 enum Rim {
-    Wall {
-        ends: (Id, Id),
-        inward: Vector,
-    },
-    Corner {
-        ends: (Id, Id),
-        circle: Circle,
-        range: (f64, f64),
-    },
+    Wall { ends: (Id, Id), inward: Vector },
+    Corner { ends: (Id, Id), bend: Bend },
 }
 
 impl Rim {
@@ -123,30 +118,88 @@ impl Rim {
     }
 }
 
-/// The least and greatest of `(p - from) . d` over the arc of `circle`
-/// across `range`.
-fn arc_extent(circle: &Circle, range: (f64, f64), from: Point, d: Vector) -> (f64, f64) {
-    let f = circle.frame();
-    let (o, x, y) = (f.origin(), f.x().vector(), f.y().vector());
-    let rc = circle.radius();
-    let at = |t: f64| (o - from).dot(d) + rc * (t.cos() * x.dot(d) + t.sin() * y.dot(d));
-    let mut values = vec![at(range.0), at(range.1)];
-    let peak = y.dot(d).atan2(x.dot(d));
-    for base in [peak, peak + PI] {
-        let mut t = base;
-        while t < range.0 {
-            t += TAU;
-        }
-        while t - TAU >= range.0 {
-            t -= TAU;
-        }
-        if t <= range.1 {
-            values.push(at(t));
-        }
+/// A corner face's rim edge: the arc of `o + a cos(t) x + b sin(t) y`
+/// over `range`, a circle where `a == b` (a corner a constant-radius round
+/// can make) and an ellipse otherwise.
+#[derive(Debug, Clone, Copy)]
+struct Bend {
+    o: Point,
+    x: Vector,
+    y: Vector,
+    a: f64,
+    b: f64,
+    range: (f64, f64),
+    circle: bool,
+}
+
+impl Bend {
+    fn at(&self, t: f64) -> Point {
+        self.o + self.x * (self.a * t.cos()) + self.y * (self.b * t.sin())
     }
-    let lo = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let hi = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    (lo, hi)
+
+    /// The unit tangent at `t`.
+    fn tangent(&self, t: f64) -> Vector {
+        let d = self.y * (self.b * t.cos()) - self.x * (self.a * t.sin());
+        d / d.magnitude()
+    }
+
+    /// The radius of curvature at `t`.
+    fn bend_radius(&self, t: f64) -> f64 {
+        let (s, c) = t.sin_cos();
+        let q = self.a * self.a * s * s + self.b * self.b * c * c;
+        q * q.sqrt() / (self.a * self.b)
+    }
+
+    /// The greatest radius of curvature over the arc: `a^2 sin^2 t +
+    /// b^2 cos^2 t` is greatest at an end or at a quarter turn between.
+    fn loosest(&self) -> f64 {
+        let mut worst = self
+            .bend_radius(self.range.0)
+            .max(self.bend_radius(self.range.1));
+        let mut t = (self.range.0 / FRAC_PI_2).ceil() * FRAC_PI_2;
+        while t < self.range.1 {
+            worst = worst.max(self.bend_radius(t));
+            t += FRAC_PI_2;
+        }
+        worst
+    }
+
+    /// The least and greatest of `(p - from) . d` over the arc.
+    fn extent(&self, from: Point, d: Vector) -> (f64, f64) {
+        let (cx, cy) = (self.a * self.x.dot(d), self.b * self.y.dot(d));
+        let at = |t: f64| (self.o - from).dot(d) + cx * t.cos() + cy * t.sin();
+        let (lo, hi) = self.range;
+        let mut values = vec![at(lo), at(hi)];
+        let peak = cy.atan2(cx);
+        for base in [peak, peak + PI] {
+            let mut t = base;
+            while t < lo {
+                t += TAU;
+            }
+            while t - TAU >= lo {
+                t -= TAU;
+            }
+            if t <= hi {
+                values.push(at(t));
+            }
+        }
+        let least = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let most = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        (least, most)
+    }
+
+    /// Whether the arc leaves its end at `p` square to `inward`: its
+    /// tangent's lean toward `inward`, scaled by its radius of curvature
+    /// there, within the length `slack`.
+    fn tangent_at(&self, p: Point, inward: Vector, slack: f64) -> bool {
+        let (lo, hi) = self.range;
+        let t = if self.at(lo).distance(p) <= self.at(hi).distance(p) {
+            lo
+        } else {
+            hi
+        };
+        self.tangent(t).dot(inward).abs() * self.bend_radius(t) <= slack
+    }
 }
 
 /// The faces at vertex `v` other than those listed.
@@ -181,6 +234,30 @@ fn rim_of(
     let (eps, ang) = (tol.confusion(), tol.angular());
     let e = curved.edges.get(&eid)?;
     let (pa, pb) = (curved.points[&e.ends.0], curved.points[&e.ends.1]);
+    // A corner face tighter than the radius all along, its air on the
+    // arc's concave side, where the arc's centre lies.
+    let corner = |ends: (Id, Id), range: (f64, f64), f: Frame, (a, b): (f64, f64), circle| {
+        let range = if range.0 <= range.1 {
+            range
+        } else {
+            (range.1, range.0)
+        };
+        let bend = Bend {
+            o: f.origin(),
+            x: f.x().vector(),
+            y: f.y().vector(),
+            a,
+            b,
+            range,
+            circle,
+        };
+        if bend.loosest() >= radius - eps {
+            return None;
+        }
+        let p = bend.at(0.5 * (range.0 + range.1));
+        let n = outward(curved, wall, p)?;
+        (n.dot(bend.o - p) > 0.0).then_some(Rim::Corner { ends, bend })
+    };
     match (&curved.faces[wall].surface, &e.curve) {
         (SurfaceGeometry::Plane(_), Curve::Line(_)) => {
             let n = outward(curved, wall, pa)?;
@@ -196,33 +273,25 @@ fn rim_of(
                 })
         }
         (SurfaceGeometry::Cylinder(c), Curve::Circle(circle)) => {
-            let circle = circle.circle();
+            let circle = circle.forward(tol).ok()?.circle();
             let rc = circle.radius();
             if c.cylinder().axis().direction.vector().cross(up).magnitude() > ang
                 || (rc - c.cylinder().radius()).abs() > eps
-                || rc >= radius - eps
             {
                 return None;
             }
-            // The air lies inside the cylinder: its outward normal there
-            // points to the axis.
-            let mid = 0.5 * (e.range.0 + e.range.1);
-            let f = circle.frame();
-            let p = f.origin() + (f.x().vector() * mid.cos() + f.y().vector() * mid.sin()) * rc;
-            let n = outward(curved, wall, p)?;
-            if n.dot(f.origin() - p) <= 0.0 {
+            corner(e.ends, e.range, circle.frame(), (rc, rc), true)
+        }
+        (SurfaceGeometry::Extrusion(x), Curve::Ellipse(ellipse)) => {
+            let ellipse = ellipse.forward(tol).ok()?.ellipse();
+            let f = ellipse.frame();
+            if x.direction().vector().cross(up).magnitude() > ang
+                || f.z().vector().cross(up).magnitude() > ang
+            {
                 return None;
             }
-            let (lo, hi) = if e.range.0 <= e.range.1 {
-                e.range
-            } else {
-                (e.range.1, e.range.0)
-            };
-            Some(Rim::Corner {
-                ends: e.ends,
-                circle,
-                range: (lo, hi),
-            })
+            let axes = (ellipse.major_radius(), ellipse.minor_radius());
+            corner(e.ends, e.range, f, axes, false)
         }
         _ => None,
     }
@@ -393,8 +462,7 @@ pub(crate) fn reach(
                     }
                     Rim::Corner {
                         ends: arc_ends,
-                        circle,
-                        range,
+                        bend,
                     } => {
                         let w = if arc_ends.0 == v {
                             arc_ends.1
@@ -409,17 +477,19 @@ pub(crate) fn reach(
                         };
                         reaches.extend(near(w));
                         let pw = curved.points[&w];
-                        let rc = circle.radius();
-                        let o = circle.frame().origin();
-                        let tangent = o.distance(pv + *inward * rc) <= eps * 10.0
-                            && o.distance(pw + *beyond * rc) <= eps * 10.0;
+                        let tangent = bend.tangent_at(pv, *inward, eps * 10.0)
+                            && bend.tangent_at(pw, *beyond, eps * 10.0);
+                        // No constant-radius round makes an elliptic corner.
+                        if !bend.circle {
+                            needs = needs.max(Needs::WholeFace);
+                        }
                         let square = beyond.dot(out) <= -1.0 + ang;
                         let facing = beyond.dot(*inward) <= -1.0 + ang;
                         if square {
                             // The corner face stands within the square
                             // the two bands cover, on their air side.
-                            let (lo_i, hi_i) = arc_extent(circle, *range, pv, *inward);
-                            let (lo_m, hi_m) = arc_extent(circle, *range, pw, *beyond);
+                            let (lo_i, hi_i) = bend.extent(pv, *inward);
+                            let (lo_m, hi_m) = bend.extent(pw, *beyond);
                             if lo_i < -eps || hi_i > radius || lo_m < -eps || hi_m > radius {
                                 return Ok(None);
                             }
@@ -428,7 +498,9 @@ pub(crate) fn reach(
                                 needs = needs.max(Needs::WholeFace);
                             }
                         } else if facing && tangent {
-                            ext[side] = rc;
+                            // The band runs on to the far side of the
+                            // face closing the zone.
+                            ext[side] = bend.extent(pv, out).1;
                         } else {
                             return Ok(None);
                         }
