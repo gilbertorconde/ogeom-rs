@@ -108,7 +108,7 @@ pub fn middle_path(
 
     let deflection = Deflection {
         chord: tolerance * 0.25,
-        ..Deflection::default()
+        ..Deflection::for_tolerances(tol)
     };
     let mesh = Slicer::new(triangulate(model, solid, deflection, tol)?);
     if !mesh.closed {

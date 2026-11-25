@@ -463,7 +463,7 @@ pub(crate) fn curved_corners(
                         &c_out,
                         ogeom_intersect::curves::CurveCurveOptions {
                             gap,
-                            ..ogeom_intersect::curves::CurveCurveOptions::default()
+                            ..ogeom_intersect::curves::CurveCurveOptions::for_tolerances(tol)
                         },
                         tol,
                     )
@@ -627,7 +627,7 @@ pub(crate) fn roll_overs(
                 &boundary,
                 ogeom_intersect::curves::CurveCurveOptions {
                     gap: tol.confusion(),
-                    ..ogeom_intersect::curves::CurveCurveOptions::default()
+                    ..ogeom_intersect::curves::CurveCurveOptions::for_tolerances(tol)
                 },
                 tol,
             )?;

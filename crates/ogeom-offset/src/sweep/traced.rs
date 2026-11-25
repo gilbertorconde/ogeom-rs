@@ -443,7 +443,7 @@ impl Graph {
             return Ok(None);
         }
         let at = placement.apply(foot.point);
-        let deflection = ogeom_mesh::Deflection::default();
+        let deflection = ogeom_mesh::Deflection::for_tolerances(tol);
         if classify_on_face(model, face, at, deflection, tol)? == Containment::Out {
             return Ok(None);
         }

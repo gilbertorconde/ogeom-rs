@@ -105,7 +105,7 @@ fn face_hit(
     let found = ogeom_intersect::intersect_curve_surface(
         &local,
         surface,
-        ogeom_intersect::CurveSurfaceOptions::default(),
+        ogeom_intersect::CurveSurfaceOptions::for_tolerances(tol),
         tol,
     )?;
     if found.crossings.is_empty() {
@@ -137,7 +137,7 @@ fn trim_deflection(model: &Model, face: &Shape, tol: Tolerances) -> OgeomResult<
     Ok(Deflection {
         chord: (size * 1e-5).max(tol.confusion()),
         angular: 0.05,
-        ..Deflection::default()
+        ..Deflection::for_tolerances(tol)
     })
 }
 

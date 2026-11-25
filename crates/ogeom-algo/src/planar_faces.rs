@@ -543,8 +543,8 @@ struct Probe {
 }
 
 impl Probe {
-    fn options() -> CurveCurveOptions {
-        CurveCurveOptions::default()
+    fn options(&self) -> CurveCurveOptions {
+        CurveCurveOptions::for_tolerances(self.tol)
     }
 
     /// Refuses a ring whose edges cross or run over each other anywhere
@@ -560,7 +560,7 @@ impl Probe {
                     a.ends.iter().any(|e| (p - *e).magnitude() <= self.margin)
                         && b.ends.iter().any(|e| (p - *e).magnitude() <= self.margin)
                 };
-                let met = intersect_curves_2d(&a.curve, &b.curve, Self::options(), tol)?;
+                let met = intersect_curves_2d(&a.curve, &b.curve, self.options(), tol)?;
                 for overlap in &met.overlaps {
                     if !self.is_point(&a.curve, overlap.on_a)? {
                         ogeom_bail!(Construction, "wire {i} runs back over itself");
@@ -601,8 +601,7 @@ impl Probe {
                     if !piece.bound.overlaps(&other.bound, self.margin) {
                         continue;
                     }
-                    let met =
-                        intersect_curves_2d(&piece.curve, &other.curve, Self::options(), tol)?;
+                    let met = intersect_curves_2d(&piece.curve, &other.curve, self.options(), tol)?;
                     for overlap in &met.overlaps {
                         if !self.is_point(&piece.curve, overlap.on_a)? {
                             ogeom_bail!(
@@ -692,7 +691,7 @@ impl Probe {
                 if !piece.bound.overlaps(&ray_bound, self.margin) {
                     continue;
                 }
-                let met = intersect_curves_2d(&ray, &piece.curve, Self::options(), tol)?;
+                let met = intersect_curves_2d(&ray, &piece.curve, self.options(), tol)?;
                 if let Some(overlap) = met.overlaps.first() {
                     if overlap.on_a.0.min(overlap.on_a.1) <= self.margin {
                         return Ok(Side::On);

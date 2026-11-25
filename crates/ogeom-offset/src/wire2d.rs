@@ -1005,7 +1005,7 @@ pub(crate) fn crossings(a: &Piece, b: &Piece, tol: Tolerances) -> OgeomResult<Ve
     let found = ogeom_intersect::intersect_curves_2d(
         &support(a)?,
         &support(b)?,
-        ogeom_intersect::CurveCurveOptions::default(),
+        ogeom_intersect::CurveCurveOptions::for_tolerances(tol),
         tol,
     )?;
     Ok(found.crossings.into_iter().map(|c| c.point).collect())

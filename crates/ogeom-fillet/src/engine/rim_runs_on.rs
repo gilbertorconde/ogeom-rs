@@ -992,7 +992,7 @@ fn cap_boundary(
             &boundary,
             ogeom_intersect::curves::CurveCurveOptions {
                 gap: tol.confusion(),
-                ..ogeom_intersect::curves::CurveCurveOptions::default()
+                ..ogeom_intersect::curves::CurveCurveOptions::for_tolerances(tol)
             },
             tol,
         )?;

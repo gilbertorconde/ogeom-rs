@@ -375,7 +375,7 @@ fn wound_recovers(
         for second in &candidates[i + 1..] {
             let sb = placed_surface(model, second, tol)?;
             let Ok(SurfaceIntersection::Along(sections)) =
-                intersect_surfaces(&sa, &sb, IntersectOptions::default(), tol)
+                intersect_surfaces(&sa, &sb, IntersectOptions::for_tolerances(tol), tol)
             else {
                 continue;
             };
@@ -540,7 +540,7 @@ fn close_wound(
     for (_, _, sides, points) in creases {
         let sa = surface_of(model, &sides[0])?;
         let sb = surface_of(model, &sides[1])?;
-        let meeting = intersect_surfaces(&sa, &sb, IntersectOptions::default(), tol)?;
+        let meeting = intersect_surfaces(&sa, &sb, IntersectOptions::for_tolerances(tol), tol)?;
         let SurfaceIntersection::Along(sections) = meeting else {
             ogeom_bail!(
                 Construction,
@@ -603,8 +603,12 @@ fn close_wound(
                 continue;
             }
             let se = surface_of(model, face)?;
-            let hit =
-                intersect_curve_surface(&crease.curve, &se, CurveSurfaceOptions::default(), tol)?;
+            let hit = intersect_curve_surface(
+                &crease.curve,
+                &se,
+                CurveSurfaceOptions::for_tolerances(tol),
+                tol,
+            )?;
             for c in &hit.crossings {
                 piercings.push((unwrapped(&crease.curve, c.on_curve, crease.anchor), c.point));
             }
@@ -967,7 +971,12 @@ fn close_by_extension(
             for earlier in &interrupted[..i] {
                 let other = placed_surface(model, earlier, tol)?;
                 let same = matches!(
-                    intersect_surfaces(&surface, &other, IntersectOptions::default(), tol),
+                    intersect_surfaces(
+                        &surface,
+                        &other,
+                        IntersectOptions::for_tolerances(tol),
+                        tol
+                    ),
                     Ok(SurfaceIntersection::Same)
                 );
                 if !same {
@@ -1047,7 +1056,7 @@ fn close_by_extension(
         for second in &leaders[i + 1..] {
             let sb = placed_surface(model, second, tol)?;
             let Ok(SurfaceIntersection::Along(sections)) =
-                intersect_surfaces(&sa, &sb, IntersectOptions::default(), tol)
+                intersect_surfaces(&sa, &sb, IntersectOptions::for_tolerances(tol), tol)
             else {
                 continue;
             };
@@ -1067,8 +1076,12 @@ fn close_by_extension(
                         continue;
                     }
                     let se = placed_surface(model, face, tol)?;
-                    let hit =
-                        intersect_curve_surface(&curve, &se, CurveSurfaceOptions::default(), tol)?;
+                    let hit = intersect_curve_surface(
+                        &curve,
+                        &se,
+                        CurveSurfaceOptions::for_tolerances(tol),
+                        tol,
+                    )?;
                     for c in &hit.crossings {
                         stops.push((unwrapped(&curve, c.on_curve, anchor), c.point, false));
                     }

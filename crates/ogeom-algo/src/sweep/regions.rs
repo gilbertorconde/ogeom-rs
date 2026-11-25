@@ -159,7 +159,7 @@ pub(super) fn apart(model: &Model, faces: &[Shape], tol: Tolerances) -> OgeomRes
 
     let options = CurveCurveOptions {
         gap: tol.confusion(),
-        ..CurveCurveOptions::default()
+        ..CurveCurveOptions::for_tolerances(tol)
     };
     for (i, first) in bounds.iter().enumerate() {
         for (j, second) in bounds.iter().enumerate().skip(i + 1) {
@@ -205,7 +205,7 @@ pub(super) fn apart(model: &Model, faces: &[Shape], tol: Tolerances) -> OgeomRes
     // either holds the other's unshared edges whole or holds none of them.
     let deflection = ogeom_mesh::Deflection {
         chord: tol.confusion() * 100.0,
-        ..ogeom_mesh::Deflection::default()
+        ..ogeom_mesh::Deflection::for_tolerances(tol)
     };
     for (i, face) in faces.iter().enumerate() {
         for (j, other) in bounds.iter().enumerate() {

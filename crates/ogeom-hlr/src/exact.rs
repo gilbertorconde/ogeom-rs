@@ -71,7 +71,7 @@ pub fn silhouettes(
         ogeom_bail!(Construction, "a silhouette needs a direction to look along");
     }
     let along = direction / magnitude;
-    let deflection = Deflection::default();
+    let deflection = Deflection::for_tolerances(tol);
 
     let faces = explore_unique(model, shape, ShapeType::Face)?;
     let per_face = ogeom_core::parallel::map_ordered(&faces, |_, face| {
@@ -244,7 +244,7 @@ pub fn iso_curves(
     let placement = face.transform(model.datums())?;
     let world = ogeom_geom::Transformable::transformed(&surface, &placement, tol)?;
     let ((u0, u1), (v0, v1)) = world.domain();
-    let rings = ogeom_mesh::face_boundary(model, face, Deflection::default(), tol)?;
+    let rings = ogeom_mesh::face_boundary(model, face, Deflection::for_tolerances(tol), tol)?;
 
     const ALONG: usize = 64;
     let mut out = Vec::new();
@@ -556,7 +556,7 @@ fn blocker(
     };
     let placement = face.transform(model.datums())?;
     let surface = ogeom_geom::Transformable::transformed(surface, &placement, tol)?;
-    let deflection = Deflection::default();
+    let deflection = Deflection::for_tolerances(tol);
     let rings = ogeom_mesh::face_boundary(model, face, deflection, tol)?;
     let bound = ogeom_algo::shape_bounds(model, face, tol)?.expanded(tol.confusion() * 1e3);
     let sampled = match surface {
@@ -588,7 +588,7 @@ fn blocker(
     Ok(Some(Blocker {
         surface: ogeom_intersect::PreparedSurface::new(
             surface,
-            ogeom_intersect::CurveSurfaceOptions::default(),
+            ogeom_intersect::CurveSurfaceOptions::for_tolerances(tol),
             tol,
         ),
         rings,
@@ -1204,7 +1204,7 @@ fn marched_silhouettes(
     use ogeom_intersect::walk::Condition as _;
     let options = ogeom_intersect::Marching {
         chord: tol.confusion() * 1e2,
-        ..ogeom_intersect::Marching::default()
+        ..ogeom_intersect::Marching::for_tolerances(tol)
     };
     let ((ua, ub), (va, vb)) = surface.domain();
     // The step control wants a *length*, and it must be the surface's own:

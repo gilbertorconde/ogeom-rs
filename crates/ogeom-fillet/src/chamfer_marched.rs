@@ -403,7 +403,7 @@ pub(crate) fn marched_bevel_with(
     keeping_face_meshes(|| -> OgeomResult<()> {
         let deflection = ogeom_mesh::Deflection {
             chord: reach * 1e-2,
-            ..ogeom_mesh::Deflection::default()
+            ..ogeom_mesh::Deflection::for_tolerances(tol)
         };
         for (touches, face) in [
             (&blend.touch_first, &faces[0]),
