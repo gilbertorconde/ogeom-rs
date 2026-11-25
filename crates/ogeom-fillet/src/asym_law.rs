@@ -55,6 +55,10 @@ use ogeom_topo::{Model, Shape};
     clippy::too_many_arguments,
     reason = "fillet_edge_distances' own, with laws for the distances"
 )]
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, BlendSection::DistanceLaws { .. }).build(..)`"
+)]
 pub fn fillet_edge_distances_variable(
     model: &mut Model,
     solid: &Shape,
@@ -209,6 +213,10 @@ pub(crate) fn distance_law_round(
 #[allow(
     clippy::too_many_arguments,
     reason = "fillet_edge_distances_variable's own, over a chain"
+)]
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().chain(chain, BlendSection::DistanceLaws { .. }).build(..)`"
 )]
 pub fn fillet_edges_distances_variable(
     model: &mut Model,

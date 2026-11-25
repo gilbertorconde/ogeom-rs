@@ -1,5 +1,9 @@
 //! Chamfers of solids with curved faces through the blend engine: what the
 //! history tells of each element, beside the M3 corpus's volumes.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

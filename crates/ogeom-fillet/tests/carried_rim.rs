@@ -1,4 +1,8 @@
 //! A boss's foot round transfers from a plate to the plate's straight edge.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, reason = "test constructions")]
 
 use ogeom_core::Tolerances;

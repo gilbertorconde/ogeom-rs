@@ -3,6 +3,10 @@
 //! void refused by name), a compound of solids (each rounded alone), a
 //! solid with placed shapes (rounded baked, its history carried back); and
 //! the shelf's two negatives refused by the engine itself, by name.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::FRAC_PI_4;

@@ -543,6 +543,11 @@ pub(crate) fn station_reaches(
 /// # Errors
 ///
 /// As [`largest_fillet_radius_all`].
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round([edge], 1.0).largest(.., Vary::Scale, ..)`"
+)]
+#[allow(deprecated, reason = "the one-edge reading is the many-edge one")]
 pub fn largest_fillet_radius(
     model: &Model,
     solid: &Shape,
@@ -574,6 +579,10 @@ pub fn largest_fillet_radius(
 ///
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
 /// `up_to` is not a usable length or `edges` is empty.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, 1.0).largest(.., Vary::Scale, ..)`"
+)]
 pub fn largest_fillet_radius_all(
     model: &Model,
     solid: &Shape,
@@ -597,6 +606,10 @@ pub fn largest_fillet_radius_all(
 /// # Errors
 ///
 /// As [`largest_fillet_radius_all`].
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, 1.0).overflow(o).largest(.., Vary::Scale, ..)`"
+)]
 pub fn largest_fillet_radius_overflow(
     model: &Model,
     solid: &Shape,

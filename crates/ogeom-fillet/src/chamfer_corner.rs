@@ -56,6 +56,10 @@ pub enum ChamferCorner {
 ///
 /// As [`chamfer_edges_with`](crate::chamfer_edges_with): a request the
 /// engine does not build is refused by name.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, spec)` per spec, then `.chamfer_corner(c).build(..)`"
+)]
 pub fn chamfer_edges_cornered(
     model: &mut Model,
     solid: &Shape,

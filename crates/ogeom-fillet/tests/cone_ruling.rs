@@ -1,6 +1,10 @@
 //! A cone meeting a plane along a ruling, rounded through the engine: the
 //! ball's centre runs on the conic the plane's and the cone's offsets cut,
 //! with no closed form, so the strip is fitted through its exact sections.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

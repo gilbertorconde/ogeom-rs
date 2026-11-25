@@ -1,5 +1,9 @@
 //! Refusals naming the request's edges they concern, and partial builds
 //! leaving the refused edges sharp.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

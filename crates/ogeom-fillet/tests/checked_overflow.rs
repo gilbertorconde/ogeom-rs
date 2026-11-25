@@ -5,6 +5,10 @@
 //! edges, by their indices in the request; the request without them builds
 //! with the same options, and its volume matches the closed form of the
 //! clear edges' blends; the feature's edges alone are refused.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

@@ -2,6 +2,10 @@
 //! engine's one boolean (ADR 0001, M5a and M5c): each arc's strip closed
 //! into its tool (the strip, its flap on each face, a cap where the arcs
 //! meet) and cut or fused.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{FRAC_PI_4, PI};

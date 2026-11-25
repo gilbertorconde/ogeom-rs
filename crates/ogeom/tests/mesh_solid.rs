@@ -1,5 +1,9 @@
 //! A triangle mesh becomes a B-rep solid: planar faces from its coplanar
 //! regions, topology from its own connectivity, windings made to agree.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/cpu_time.rs"]

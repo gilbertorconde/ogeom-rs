@@ -1,6 +1,10 @@
 //! A setback that runs past a face: 12 mm back on a 10 mm face. A fillet is
 //! refused there; a chamfer rolls over the face's far side as a notch, its
 //! plane carrying on into the solid beyond (ADR 0001, amendment "M5b").
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{make_face, make_polygon, make_prism, volume_properties};

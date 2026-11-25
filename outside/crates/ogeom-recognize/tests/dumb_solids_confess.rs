@@ -1,6 +1,10 @@
 //! Solids that carry no history are asked what features made them: a block
 //! wearing four of them, a rounded rim, and an imported part where the
 //! honest answer includes a refusal.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

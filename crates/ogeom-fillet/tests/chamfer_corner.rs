@@ -1,4 +1,8 @@
 //! A corner of three bevels closed as a point or a facet.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

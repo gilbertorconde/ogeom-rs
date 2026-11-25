@@ -176,6 +176,10 @@ pub(crate) fn conic_pieces(p: [Point; 3], w: f64) -> (Vec<Point>, f64, Vec<f64>)
     clippy::too_many_arguments,
     reason = "the chamfer's distances' own, and the profile"
 )]
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, BlendSection::RoundDistances { .. }).build(..)`"
+)]
 pub fn fillet_edge_distances(
     model: &mut Model,
     solid: &Shape,
@@ -225,6 +229,10 @@ pub fn fillet_edge_distances(
 #[allow(
     clippy::too_many_arguments,
     reason = "the chamfer's distances' own, the profile and the overflow"
+)]
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, BlendSection::RoundDistances { .. }).overflow(o).build(..)`"
 )]
 pub fn fillet_edge_distances_overflow(
     model: &mut Model,
@@ -294,6 +302,10 @@ pub(crate) fn distance_round(
 #[allow(
     clippy::too_many_arguments,
     reason = "the chamfer's distances' own, and the profile"
+)]
+#[allow(
+    deprecated,
+    reason = "the circular round is fillet_edge's own construction"
 )]
 fn distances_as_today(
     model: &mut Model,
@@ -903,6 +915,10 @@ pub(crate) fn rim_fits(
 #[allow(
     clippy::too_many_arguments,
     reason = "fillet_edge_distances' own, and the bound"
+)]
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, BlendSection::RoundDistances { .. }).largest(.., Vary::Scale, ..)`"
 )]
 pub fn largest_fillet_distances(
     model: &Model,

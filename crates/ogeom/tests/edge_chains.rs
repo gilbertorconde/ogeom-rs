@@ -1,6 +1,10 @@
 //! Edges treated as one operation: chamfers mitred along a chain, and three
 //! or more fillets closing their shared corner with the rolling ball's
 //! patch.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{make_edge_between, make_face_with_pcurves, make_prism, volume_properties};

@@ -563,6 +563,10 @@ fn limit_drum_rim() -> Option<Stats> {
 
 /// A fillet no closed form speaks: the elliptical seat of a post leaning
 /// twenty degrees out of a slab, rolled by the marched blend.
+#[allow(
+    deprecated,
+    reason = "the one-edge construction is kept verbatim until it is removed"
+)]
 fn fillet_marched() -> Option<Stats> {
     let mut model = Model::new();
     let slab = ogeom::algo::make_box(&mut model, Frame::WORLD, (20.0, 20.0, 2.0), T)
@@ -968,6 +972,10 @@ fn project_spline() -> Option<Stats> {
 
 /// A drum of radius 4 and height 6 with its top rim rolled to radius 1:
 /// two planes, a cylinder and a torus band.
+#[allow(
+    deprecated,
+    reason = "the one-edge construction is kept verbatim until it is removed"
+)]
 fn rimmed_drum(model: &mut Model) -> Option<Shape> {
     let drum = ogeom::algo::make_cylinder(model, Frame::WORLD, 4.0, 6.0, T)
         .ok()?

@@ -1,4 +1,8 @@
 //! The additive blends: concave edges, and the revolved seats in every sign.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/swept.rs"]

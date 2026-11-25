@@ -1,6 +1,10 @@
 //! A straight round along a cylinder's ruling reaching a face it does not
 //! end at, through the blend engine's one boolean (ADR 0001, M5a and M5c):
 //! the strip closed into its tool, capped on its end faces, and cut.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

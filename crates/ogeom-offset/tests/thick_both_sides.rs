@@ -1,6 +1,10 @@
 //! Walls on both sides of a solid's faces or a sheet: closed-form volumes,
 //! the rim left at each opening, the history to both walls, every wall's
 //! distance from its source face sampled, and the refusals by name.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_algo::Built;

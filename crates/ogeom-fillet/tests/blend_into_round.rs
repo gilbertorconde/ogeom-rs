@@ -2,6 +2,10 @@
 //! round reaching two rounds at a corner, a conical boss's foot (narrowing
 //! or undercut), and a foot reaching a concave round. Each is measured
 //! against the morphological closing, sampled without the construction.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{FRAC_PI_2, PI, TAU};

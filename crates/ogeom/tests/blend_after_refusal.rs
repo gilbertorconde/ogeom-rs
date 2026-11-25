@@ -2,6 +2,10 @@
 //! left, beside the given solid answers as on a model holding only that
 //! solid, read back from its native text: the same volume, or the same
 //! refusal, never a panic.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::Built;

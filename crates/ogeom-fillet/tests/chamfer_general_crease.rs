@@ -1,6 +1,10 @@
 //! A chamfer on a crease no closed form seats: where a tilted plane meets
 //! a cylinder in an ellipse, against the volume its section sweeps along
 //! the crease.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

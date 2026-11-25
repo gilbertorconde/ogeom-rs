@@ -1,6 +1,10 @@
 //! The largest measure several bevels take at once, confirmed against the
 //! build ([`BlendSizing::Chamfers`]): at the reading the request builds
 //! under its corner, and a [`LIMIT_TOLERANCE`] past it it is refused.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

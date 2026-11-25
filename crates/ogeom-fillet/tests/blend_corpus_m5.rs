@@ -11,6 +11,10 @@
 //! its classes route through the engine (ADR 0001, §11); without it each
 //! returns at once. The round side's cases are a shelf beside a taller
 //! cylinder and a stadium boss's foot; the chamfer side adds its own.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, reason = "test constructions")]
 
 use ogeom_core::Tolerances;

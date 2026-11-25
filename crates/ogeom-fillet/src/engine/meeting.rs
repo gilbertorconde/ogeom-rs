@@ -2126,6 +2126,10 @@ fn past_wall(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test code")]
+#[allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 mod tests {
     use super::*;
     use ogeom_algo::Containment;

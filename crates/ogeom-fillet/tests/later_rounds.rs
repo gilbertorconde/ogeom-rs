@@ -2,6 +2,10 @@
 //! "a later round reaching an earlier band at its end"): rounds asked one
 //! call after another, the later band running on past its end and trimmed
 //! by the earlier band's surface.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

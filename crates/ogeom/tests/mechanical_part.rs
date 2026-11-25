@@ -6,6 +6,10 @@
 //! its floor. Every operation contributes a closed-form volume change, so
 //! the final part's volume is an exact sum: the end-to-end answer is
 //! checked against arithmetic, not against itself.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

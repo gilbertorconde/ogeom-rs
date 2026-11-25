@@ -2,6 +2,10 @@
 //! cover: an elliptic wall, a plane bounded by an ellipse or by half of
 //! one. Each is integrated round its own chart boundary, so the answer
 //! does not depend on the deflection passed in.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{

@@ -74,6 +74,10 @@ use ogeom_topo::{Model, Shape, ShapeType};
 /// on such a far edge but comes onto the face beyond it, rests on far
 /// edges either side at once, or leaves a face or comes within its radius
 /// of another along the crease.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round([edge], r).build(..)`, which builds through the rounds of many edges"
+)]
 pub fn fillet_edge(
     model: &mut Model,
     solid: &Shape,
@@ -422,6 +426,10 @@ fn route(
 /// Where a round reaches geometry other than its own two faces, the
 /// behaviours of [`Overflow`] are tried in its order, every one on:
 /// [`fillet_edges_overflow`] chooses among them.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, r).build(..)`"
+)]
 pub fn fillet_edges(
     model: &mut Model,
     solid: &Shape,
@@ -563,6 +571,10 @@ impl Overflow {
 ///
 /// As [`fillet_edges`], and [`OgeomError::Construction`], by name, where a
 /// round reaches other geometry and no behaviour that is on builds it.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, r).overflow(o).build(..)`"
+)]
 pub fn fillet_edges_overflow(
     model: &mut Model,
     solid: &Shape,
@@ -900,6 +912,10 @@ pub enum FilletCorner {
 /// Where a round reaches geometry other than its own two faces, the
 /// behaviours of [`Overflow`] are tried in its order, every one on:
 /// [`fillet_edges_corner_overflow`] chooses among them.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, r).round_corner(c).build(..)`"
+)]
 pub fn fillet_edges_corner(
     model: &mut Model,
     solid: &Shape,
@@ -936,6 +952,10 @@ pub fn fillet_edges_corner(
 ///
 /// As [`fillet_edges_corner`], and as [`fillet_edges_overflow`] where a
 /// round reaches other geometry and no behaviour that is on builds it.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().round(edges, r).round_corner(c).overflow(o).build(..)`"
+)]
 pub fn fillet_edges_corner_overflow(
     model: &mut Model,
     solid: &Shape,
@@ -1008,6 +1028,10 @@ pub(crate) fn rounds_corner(
 /// target, and [`OgeomError::Construction`] where the corner is not a
 /// convex planar one every edge of which the request rounds. An edge asked
 /// twice at two radii is refused likewise.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, BlendSection::Round(r))` per edge, then `.build(..)`"
+)]
 pub fn fillet_edges_with(
     model: &mut Model,
     solid: &Shape,
@@ -1765,6 +1789,10 @@ fn has_cone_rim(
 /// # Errors
 ///
 /// As [`fillet_edge`], for the straight planar seat only.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, BlendSection::RoundLaw(RadiusLaw::Linear { start, end })).build(..)`, which builds through the round laws of chains"
+)]
 pub fn fillet_edge_variable(
     model: &mut Model,
     solid: &Shape,
@@ -1903,6 +1931,10 @@ fn fillet_edge_variable_own(
 /// Where a round reaches geometry other than its own two faces, the
 /// behaviours of [`Overflow`] are tried in its order, every one on:
 /// [`fillet_edges_variable_overflow`] chooses among them.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().chain(chain, BlendSection::RoundLaw(law)).build(..)`"
+)]
 pub fn fillet_edges_variable(
     model: &mut Model,
     solid: &Shape,
@@ -1943,6 +1975,10 @@ pub fn fillet_edges_variable(
 /// As [`fillet_edges_variable`], and [`OgeomError::Construction`], by
 /// name, where a round reaches other geometry and no behaviour that is on
 /// builds it.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().chain(chain, BlendSection::RoundLaw(law)).overflow(o).build(..)`"
+)]
 pub fn fillet_edges_variable_overflow(
     model: &mut Model,
     solid: &Shape,

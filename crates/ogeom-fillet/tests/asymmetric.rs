@@ -1,5 +1,9 @@
 //! Asymmetric rounds: a different distance onto each face of a straight
 //! edge between two planes, the section an ellipse or a conic.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2};

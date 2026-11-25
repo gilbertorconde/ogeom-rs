@@ -1152,6 +1152,10 @@ fn bosses(
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
+#[allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;

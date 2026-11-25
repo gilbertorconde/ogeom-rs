@@ -12,6 +12,10 @@
 //!   it by more than the fill's wobble.
 //!
 //! Each case is heavy and runs with the ignored tests.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

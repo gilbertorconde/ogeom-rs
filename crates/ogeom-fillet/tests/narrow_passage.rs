@@ -3,6 +3,10 @@
 //! between them is tighter than the radius. Each round keeps its constant
 //! section and runs on through the zone, and the rounds meet each other
 //! where they cross: the fill is the union of the bands' fills.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{FRAC_1_SQRT_2, PI};

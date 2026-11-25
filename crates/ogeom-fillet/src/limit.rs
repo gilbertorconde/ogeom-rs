@@ -64,6 +64,10 @@ pub struct BlendLimit {
 /// its blend call takes. The size scales what the request names.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
+#[deprecated(
+    since = "0.22.0",
+    note = "use a `BlendRequest`, read with `.limit`, `.largest` or `.seat`"
+)]
 pub enum BlendSizing<'a> {
     /// [`fillet_edges_corner`](crate::fillet_edges_corner) on `edges`
     /// closed as `corner` says; the size is the radius. Every behaviour of
@@ -249,6 +253,7 @@ pub enum LawStation {
 
 /// Which size of a radius law a reading frees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[deprecated(since = "0.22.0", note = "use `Vary::Law` or `Vary::Scale`")]
 pub enum LawSize {
     /// One value, the rest held as given.
     At(LawStation),
@@ -258,6 +263,10 @@ pub enum LawSize {
 
 /// Which size of a pair of distance laws a reading frees.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[deprecated(
+    since = "0.22.0",
+    note = "use `Vary::OnFace`, `Vary::OnOther` or `Vary::Scale`"
+)]
 pub enum DistanceLawSize {
     /// One value of the law along the named face, the rest held as given.
     OnFace(LawStation),
@@ -308,6 +317,10 @@ pub enum DistanceLawSize {
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
 /// `up_to`, an edge list or a distance is not usable; where the seat
 /// itself is refused and no size builds, that refusal.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: the request the sizing names, then `.limit(.., vary, ..)`"
+)]
 pub fn blend_limit(
     model: &Model,
     solid: &Shape,
@@ -347,6 +360,10 @@ pub(crate) fn limit_of(
 /// refuses them; otherwise the seat reading's own refusal, such as
 /// [`OgeomError::NotDone`](ogeom_core::OgeomError::NotDone) where the seat
 /// is not read from the seat (a marched crease).
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: the request the sizing names, then `.seat(.., vary, ..)`"
+)]
 pub fn blend_seat(
     model: &Model,
     solid: &Shape,
@@ -663,6 +680,10 @@ fn settle(
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
 /// `up_to` is not a usable length, `chain` is empty, `at` names no point
 /// of the law, or the law at `up_to` states no usable radius.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().chain(chain, BlendSection::RoundLaw(law)).largest(.., Vary::Law(at), ..)`"
+)]
 pub fn largest_law_radius(
     model: &Model,
     solid: &Shape,
@@ -686,6 +707,10 @@ pub fn largest_law_radius(
 /// # Errors
 ///
 /// As [`largest_law_radius`].
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().chain(chain, BlendSection::RoundLaw(law)).largest(.., Vary::Scale, ..)`"
+)]
 pub fn largest_law_scale(
     model: &Model,
     solid: &Shape,
@@ -710,6 +735,10 @@ pub fn largest_law_scale(
 #[allow(
     clippy::too_many_arguments,
     reason = "fillet_edge_distances_variable's own, with the size freed and its bound"
+)]
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, BlendSection::DistanceLaws { .. }).largest(.., vary, ..)`"
 )]
 pub fn largest_law_distances(
     model: &Model,

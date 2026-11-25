@@ -3,6 +3,10 @@
 //! Each line must keep resolving. One that stops is a breaking change for
 //! that application: keep the path with a re-export, or record the move.
 
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(unused_imports)]
 use ogeom::VERSION as _;
 use ogeom::algo::Built as _;

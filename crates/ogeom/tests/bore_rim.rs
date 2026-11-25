@@ -3,6 +3,10 @@
 //! circular profile swept against its own axis, as a tool pushed down
 //! through a block is, makes a cylinder, so the rim is the circle it is and
 //! the circular blend takes it.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{

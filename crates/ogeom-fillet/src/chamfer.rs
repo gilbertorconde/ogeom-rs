@@ -50,6 +50,10 @@ use ogeom_topo::{Model, Shape, ShapeType, explore_unique};
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if the edge is
 /// not straight, not convex, not shared by exactly two planar faces of
 /// `solid`, or `distance` is not a usable length.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().chamfer([edge], d).build(..)`, which builds through the bevels of many edges"
+)]
 pub fn chamfer_edge(
     model: &mut Model,
     solid: &Shape,
@@ -99,6 +103,10 @@ fn chamfer_edge_own(
 ///
 /// As [`chamfer_edge`], and additionally if `face` is not one of the edge's
 /// two faces.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, Chamfer::Distances { .. }).build(..)`, which builds through the bevels of many edges"
+)]
 pub fn chamfer_edge_distances(
     model: &mut Model,
     solid: &Shape,
@@ -160,6 +168,10 @@ fn chamfer_edge_distances_own(
 ///
 /// As [`chamfer_edge_distances`], and additionally if the bevel at that angle
 /// never reaches the other face.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, Chamfer::Angle { .. }).build(..)`, which builds through the bevels of many edges"
+)]
 pub fn chamfer_edge_angle(
     model: &mut Model,
     solid: &Shape,
@@ -242,6 +254,10 @@ pub enum Chamfer {
 /// # Errors
 ///
 /// As [`chamfer_edges_with`].
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().chamfer(edges, d).build(..)`"
+)]
 pub fn chamfer_edges(
     model: &mut Model,
     solid: &Shape,
@@ -319,6 +335,10 @@ pub fn chamfer_edges(
 /// [`chamfer_edge_angle`] per edge, judged on the solid as it stands before
 /// the call; and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// if no edges are given.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, spec)` per spec, then `.build(..)`"
+)]
 pub fn chamfer_edges_with(
     model: &mut Model,
     solid: &Shape,
@@ -1924,6 +1944,10 @@ fn sphere_leg(seat: &SphereSeat, face: &Shape, on_wall: f64, on_cap: f64) -> f64
 /// [`OgeomError::Construction`](ogeom_core::OgeomError::Construction) if
 /// `up_to` or a distance is not a usable length; as [`chamfer_edges_with`]
 /// where the seat or spelling is refused and no measure builds.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, spec).largest(.., Vary::Scale, ..)`, the spec at measure 1.0"
+)]
 pub fn largest_chamfer_distance(
     model: &Model,
     solid: &Shape,
@@ -2097,6 +2121,11 @@ const SLIVER: f64 = 4.0;
 /// `specs` is empty or `up_to` or a distance is not a usable length; as
 /// [`chamfer_edges_with`] where the seat or a spelling is refused and no
 /// measure builds.
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, spec)` per spec at measure 1.0, then `.largest(.., Vary::Scale, ..)`"
+)]
+#[allow(deprecated, reason = "the default reading is the overflow one")]
 pub fn largest_chamfer_distance_all(
     model: &Model,
     solid: &Shape,
@@ -2128,6 +2157,14 @@ pub fn largest_chamfer_distance_all(
 /// # Errors
 ///
 /// As [`largest_chamfer_distance_all`].
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: one `.edge(e, spec)` per spec at measure 1.0, then `.chamfer_corner(c).overflow(o).largest(.., Vary::Scale, ..)`"
+)]
+#[allow(
+    deprecated,
+    reason = "reads its own sizing, which no request lowers to for one bevel"
+)]
 pub fn largest_chamfer_distance_all_overflow(
     model: &Model,
     solid: &Shape,
@@ -2161,6 +2198,11 @@ pub fn largest_chamfer_distance_all_overflow(
     clippy::too_many_arguments,
     reason = "largest_chamfer_distance's own, with chamfer_edges_overflow's options"
 )]
+#[deprecated(
+    since = "0.22.0",
+    note = "use `BlendRequest`: `BlendRequest::new().edge(edge, spec).chamfer_corner(c).overflow(o).largest(.., Vary::Scale, ..)`, the spec at measure 1.0"
+)]
+#[allow(deprecated, reason = "the one-edge reading is the many-edge one")]
 pub fn largest_chamfer_distance_overflow(
     model: &Model,
     solid: &Shape,

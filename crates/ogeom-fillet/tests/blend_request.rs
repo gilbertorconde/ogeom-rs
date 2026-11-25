@@ -3,6 +3,10 @@
 //! part, give the same result (faces, area and volume to the bit) or the
 //! same refusal text; and each combination no call builds is refused by
 //! name (docs/design/1265-fillet-request.md).
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_algo::Built;

@@ -3,6 +3,10 @@
 //! pocket outlines with arcs, tangent chains, a pyramid's apex, rounds on
 //! rounds and a kidney pocket builds with `Rolling` too, sound, to the
 //! closed form where there is one, and alike in any edge order.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

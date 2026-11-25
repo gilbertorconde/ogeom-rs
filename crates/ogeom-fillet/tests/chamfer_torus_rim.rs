@@ -1,5 +1,9 @@
 //! Chamfers on the rims where a plane square to a torus's axis meets the
 //! torus, in all three spellings, against Pappus.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{PI, TAU};

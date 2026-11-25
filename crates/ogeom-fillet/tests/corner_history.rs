@@ -1,4 +1,8 @@
 //! Corner history identifies the new patch by the source vertex.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, reason = "test constructions")]
 use ogeom_core::Tolerances;
 use ogeom_geom::SurfaceGeometry;

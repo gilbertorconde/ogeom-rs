@@ -1,6 +1,10 @@
 //! Refining a solid never turns an exact measurement into an approximate
 //! one: the merged face of coplanar planes is a plane face, measured in
 //! closed form like the faces it replaced.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{make_box, make_cylinder, volume_properties};

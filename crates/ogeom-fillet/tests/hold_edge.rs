@@ -3,6 +3,10 @@
 //! sharp edge of one of them. The edge is kept: the ball there touches the
 //! other face and rests on the edge, sweeping a canal surface that meets
 //! the band G1 where the contact crosses the edge.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

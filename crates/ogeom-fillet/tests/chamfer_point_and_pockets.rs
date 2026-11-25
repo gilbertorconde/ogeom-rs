@@ -4,6 +4,10 @@
 //! exactly what the plain call builds, and concave bevels round a pocket
 //! floor's tangent loop and on straight edges between planes build, to the
 //! section swept along each edge (Pappus round each arc).
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::PI;

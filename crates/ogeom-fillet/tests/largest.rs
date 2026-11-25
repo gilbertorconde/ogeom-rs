@@ -1,6 +1,10 @@
 //! The largest radius a round, and distance a chamfer, builds at, read
 //! from the seat and confirmed by the build: every answer builds, and 5 %
 //! past it is refused.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom_core::Tolerances;

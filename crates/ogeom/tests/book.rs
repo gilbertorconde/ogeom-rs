@@ -1,6 +1,10 @@
 //! The guide's code, run. Every example in `docs/book/` is included from
 //! this file by anchor, so a snippet that stops compiling (or stops being
 //! true) fails the build instead of lying in the documentation.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::core::Tolerances;

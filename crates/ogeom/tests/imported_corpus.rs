@@ -1,5 +1,9 @@
 //! The corpus imported, healed, measured, and operated on: real files in,
 //! real modelling out.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/walks.rs"]

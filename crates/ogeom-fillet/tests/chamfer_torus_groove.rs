@@ -1,5 +1,9 @@
 //! Chamfers on the rims of a toroidal groove cut into a flat, the material
 //! outside the torus's tube, in all three spellings, against Pappus.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::{PI, TAU};

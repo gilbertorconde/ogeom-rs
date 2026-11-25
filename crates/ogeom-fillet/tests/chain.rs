@@ -1,4 +1,8 @@
 //! Filleting a tangent chain of edges in one call.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 #[path = "support/swept.rs"]

@@ -1,6 +1,10 @@
 //! One part, stated in micrometres, millimetres, inches, metres and
 //! kilometres, builds, cuts, checks, measures and reads back the same: the
 //! unit scale moves every linear tolerance with the numbers.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use ogeom::algo::{check, make_box, make_cylinder, volume_properties};

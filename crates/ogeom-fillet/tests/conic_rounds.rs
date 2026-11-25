@@ -1,6 +1,10 @@
 //! Rounds of an elliptical or conic section through the blend engine: a
 //! box's edge, each face its own distance, the strip the section swept
 //! along the edge, flush in the end faces.
+#![allow(
+    deprecated,
+    reason = "exercises the edge-blend calls BlendRequest replaces"
+)]
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test code")]
 
 use core::f64::consts::FRAC_PI_4;

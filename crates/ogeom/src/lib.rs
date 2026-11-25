@@ -123,6 +123,10 @@ pub mod doc {
 
 /// Fillets, chamfers and vertex blends.
 pub mod fillet {
+    #[allow(
+        deprecated,
+        reason = "re-exported for the release they are deprecated in"
+    )]
     pub use ogeom_fillet::{
         Blend, BlendContact, BlendLimit, BlendRefusal, BlendRequest, BlendSection, BlendSizing,
         BlendStop, ChainRules, Chamfer, ChamferCorner, DistanceLawSize, End, FaceCurvature,
