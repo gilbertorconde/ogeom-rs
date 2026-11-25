@@ -760,3 +760,97 @@ pub(super) fn widen_where_pressed(
     groups.carriers = carriers;
     groups.narrower = narrower;
 }
+
+/// The curved regions of `groups` that triangles lying on their surfaces
+/// are cut off from, each with the distance that would join them: how far
+/// the farthest corner of the triangles between stands off the surface.
+///
+/// From each curved region the walk crosses smooth edges into triangles no
+/// curved region holds. A triangle every corner of which lies within
+/// `flat` of the region's surface is on it; one whose corners stand off it
+/// by more, up to `reach`, lies between; one farther stops the walk. A
+/// triangle on the surface reached only through triangles between is cut
+/// off, and the distance it needs is the least, over the ways to it, of
+/// the farthest corner on the way. A region's fit pressed against `flat`
+/// there as surely as where its own vertices come near it: the corners
+/// between stood off by more than the distance and stopped the growth,
+/// and past them the surface holds again.
+pub(super) fn cut_off_from_curved(
+    points: &[Point],
+    triangles: &[[u32; 3]],
+    adjacency: &Adjacency,
+    options: &MeshSolidOptions,
+    groups: &Groups,
+    flat: f64,
+    reach: f64,
+) -> Vec<(usize, f64)> {
+    let cos_crease = options.crease.cos();
+    let normals: Vec<Vector> = triangles.iter().map(|&t| unit_normal(points, t)).collect();
+    let curved = |t: usize| matches!(groups.carriers.get(groups.of[t]), Some(Carrier::Curved(_)));
+    let mut held: ogeom_core::FastMap<usize, Vec<usize>> = ogeom_core::FastMap::default();
+    for (t, &g) in groups.of.iter().enumerate() {
+        if matches!(groups.carriers.get(g), Some(Carrier::Curved(_))) {
+            held.entry(g).or_default().push(t);
+        }
+    }
+    let mut regions: Vec<usize> = held.keys().copied().collect();
+    regions.sort_unstable();
+    let mut out = Vec::new();
+    for g in regions {
+        let Some(Carrier::Curved(region)) = groups.carriers.get(g) else {
+            continue;
+        };
+        let shape = &region.shape;
+        let off = |t: usize| {
+            triangles[t]
+                .iter()
+                .map(|&v| shape.distance_to(points[v as usize]))
+                .fold(0.0_f64, f64::max)
+        };
+        // The least, over the ways found to each triangle, of the farthest
+        // corner on the way: a walk taking the nearest-reached first.
+        let mut best: ogeom_core::FastMap<usize, f64> = ogeom_core::FastMap::default();
+        let mut queue: std::collections::BinaryHeap<(std::cmp::Reverse<u64>, usize)> =
+            std::collections::BinaryHeap::new();
+        let push = |from: usize,
+                    way: f64,
+                    best: &mut ogeom_core::FastMap<usize, f64>,
+                    queue: &mut std::collections::BinaryHeap<(std::cmp::Reverse<u64>, usize)>| {
+            for slot in &adjacency.twin[3 * from..3 * from + 3] {
+                let Some(u) = slot.map(|x| x / 3) else {
+                    continue;
+                };
+                if curved(u) || normals[from].dot(normals[u]) < cos_crease {
+                    continue;
+                }
+                let d = off(u);
+                if d > reach {
+                    continue;
+                }
+                let at = way.max(if d <= flat { 0.0 } else { d });
+                if best.get(&u).is_none_or(|&b| at < b) {
+                    best.insert(u, at);
+                    queue.push((std::cmp::Reverse(at.to_bits()), u));
+                }
+            }
+        };
+        for &t in &held[&g] {
+            push(t, 0.0, &mut best, &mut queue);
+        }
+        let mut needed: f64 = 0.0;
+        while let Some((std::cmp::Reverse(bits), t)) = queue.pop() {
+            let way = f64::from_bits(bits);
+            if best.get(&t).is_some_and(|&b| b < way) {
+                continue;
+            }
+            if way > flat && off(t) <= flat {
+                needed = needed.max(way);
+            }
+            push(t, way, &mut best, &mut queue);
+        }
+        if needed > flat {
+            out.push((g, needed));
+        }
+    }
+    out
+}

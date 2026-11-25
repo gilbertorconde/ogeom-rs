@@ -69,7 +69,9 @@ use checks::{
 };
 use planner::{NOISE_FLOOR, Planner, Replan};
 use regions::{flat_noise, split_disconnected};
-use segment::{coplanar_groups, one_each, plane_of, segment, widen_where_pressed};
+use segment::{
+    coplanar_groups, cut_off_from_curved, one_each, plane_of, segment, widen_where_pressed,
+};
 use weld::{
     Adjacency, Piece, by_position, diagonal, has_area, inside, lowest_first, orient, unfold,
     weld_points,
@@ -417,6 +419,18 @@ pub fn refine_solid(
 /// the surface, to be what bounds it.
 const PRESSED: f64 = 0.7;
 
+/// How many times the default distance the corners between a curved
+/// region and triangles on its surface cut off from it may stand off it
+/// for the distance to widen to join them: sixteen parts in a million of
+/// the mesh's diagonal at the default, far inside any chord a mesh is
+/// drawn to, and a few times what single precision resolves.
+const CUT_OFF_REACH: f64 = 16.0;
+
+/// How far past the farthest corner between a curved region and what is
+/// cut off from it the distance widens, so that corner is held and not
+/// on the line.
+const PAST_CUT_OFF: f64 = 1.25;
+
 /// Build a B-rep from a triangle mesh.
 ///
 /// See the module documentation for the construction. A closed piece
@@ -665,8 +679,14 @@ fn find_in(
     // exporters place their vertices a few times farther off their own
     // surfaces than that. The recognized surfaces say so: where their fits
     // press against the distance, it is the distance that stops them, and
-    // their rims' last triangles stay facets. Unless the caller chose the
-    // distance, it widens while that holds, twice at most. Where the mesh's
+    // their rims' last triangles stay facets. The distance stops a fit as
+    // surely where a few corners stand off its surface by a little more and
+    // cut it off from triangles that lie on it beyond them: a round whose
+    // rim runs along a blend whose edge the exporter drew a few times
+    // farther off than the default. Unless the caller chose the distance,
+    // it widens while either holds, twice at most, and where triangles are
+    // cut off, at least to just past the corners between, never past
+    // [`CUT_OFF_REACH`] times the default. Where the mesh's
     // own scatter (its noise or its rounding) set the distance, that
     // scatter is everywhere, and so is the widening. Otherwise it widens for
     // the smooth patches the pressing fits lie in alone: a fit that runs on
@@ -682,7 +702,7 @@ fn find_in(
         let narrow = groups.clone();
         let everywhere = scatter > 1e-6 * diagonal;
         for _ in 0..2 {
-            let pressing: Vec<usize> = groups
+            let mut pressing: Vec<usize> = groups
                 .carriers
                 .iter()
                 .enumerate()
@@ -691,10 +711,27 @@ fn find_in(
                     _ => None,
                 })
                 .collect();
-            if pressing.is_empty() {
+            let cut_off = cut_off_from_curved(
+                &points,
+                &triangles,
+                &adjacency,
+                options,
+                &groups,
+                flat,
+                CUT_OFF_REACH * found_at / PAST_CUT_OFF,
+            );
+            let joining = cut_off.iter().map(|&(_, d)| d).fold(0.0_f64, f64::max);
+            pressing.extend(cut_off.iter().map(|&(g, _)| g));
+            pressing.sort_unstable();
+            pressing.dedup();
+            // A fit pressing widens the distance by doubling, up to four
+            // times the default; triangles cut off widen it to just past
+            // the corners between.
+            let wider = (2.0 * flat).min(4.0 * found_at).max(PAST_CUT_OFF * joining);
+            if pressing.is_empty() || wider <= flat {
                 break;
             }
-            flat *= 2.0;
+            flat = wider;
             let wide = segment(&points, &triangles, &adjacency, options, flat, tol)?;
             widen_where_pressed(
                 &points,

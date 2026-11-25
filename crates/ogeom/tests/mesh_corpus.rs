@@ -742,6 +742,69 @@ fn pressing_rounds_take_their_rims() {
     }
 }
 
+/// The radius-8 round of `nist_ftc_10` runs along a blend whose edge the
+/// source draws a few times farther off the round's cylinder than the
+/// default distance, and the corners on that edge cut a strip of the round
+/// lying on the cylinder off the rest. The distance widens to join it, and
+/// the round comes back whole: its area is the source face's within a
+/// chord's width along its boundary, and its centre is the source face's
+/// within the shift such a band can make across the face's height.
+#[test]
+#[ignore = "heavy"]
+fn a_round_cut_off_along_its_blend_comes_back_whole() {
+    let name = "nist_ftc_10_asme1_rb.stp";
+    let path = format!("{}/../../tests/corpus/{name}", env!("CARGO_MANIFEST_DIR"));
+    let import = ogeom::io::read_step(&std::fs::read_to_string(path).unwrap(), T).unwrap();
+    let model = import.document.model();
+    let part = &import.solids[0];
+    let near = ogeom::math::Point::new(15.83, 29.69, 0.0);
+    let faces = explore_unique(model, part, ShapeType::Face).unwrap();
+    let source = faces_of(model, part);
+    let (face, (_, _, area, centre)) = faces
+        .iter()
+        .zip(&source)
+        .filter(|(_, (k, s, _, _))| *k == "cylinder" && (s[0] - 8.0).abs() < 0.05)
+        .min_by(|a, b| a.1.3.distance(near).total_cmp(&b.1.3.distance(near)))
+        .unwrap();
+    let perimeter: f64 = explore_unique(model, face, ShapeType::Edge)
+        .unwrap()
+        .iter()
+        .map(|edge| {
+            let data = model.node(edge).unwrap().data().as_edge().unwrap();
+            let Some(EdgeRepr::Curve3d { curve, range, .. }) = data.curve3d() else {
+                panic!("an edge of the round has no curve");
+            };
+            let curve = model.geometry().curve(*curve).unwrap();
+            ogeom::algo::curve_length(curve, *range, T).unwrap()
+        })
+        .sum();
+    let bounds = shape_bounds(model, face, T).unwrap();
+    let height = bounds.size().z;
+    let chord = shape_bounds(model, part, T).unwrap().diagonal() * 1e-3;
+    let band = chord * perimeter;
+    let mesh = meshed(name);
+    let mut back = Model::new();
+    let out = solid_from_mesh(&mut back, &mesh, &MeshSolidOptions::default(), T).unwrap();
+    assert!(out.closed, "{:?}", out.report);
+    assert!(check(&back, &out.shape, T).unwrap().is_valid());
+    let round = faces_of(&back, &out.shape)
+        .into_iter()
+        .filter(|(k, s, _, _)| *k == "cylinder" && (s[0] - 8.0).abs() < 0.05)
+        .min_by(|a, b| a.3.distance(*centre).total_cmp(&b.3.distance(*centre)))
+        .unwrap();
+    assert!(
+        (round.2 - area).abs() <= band,
+        "the round came back on {} mm², the source's is {area} mm², the band {band} mm²",
+        round.2
+    );
+    let shift = band / area * height / 2.0;
+    assert!(
+        round.3.distance(*centre) <= shift,
+        "the round came back centred at {:?}, the source's at {centre:?}, {shift} allowed",
+        round.3
+    );
+}
+
 #[test]
 fn nist_ftc_11() {
     comes_back("nist_ftc_11_asme1_rb.stp", true, true);
