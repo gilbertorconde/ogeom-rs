@@ -70,10 +70,19 @@ pub(crate) fn chart_of(surface: &SurfaceGeometry, p: Point) -> Option<ogeom_math
 /// when it lands convincingly *on* the surface (the same bar the denser
 /// reseed is judged against), so a guess that wandered into the wrong
 /// basin, or a first sample with no predecessor, still pays for the grid.
+///
+/// The seed comes with how far off the surface its own sample sat. A curve
+/// runs about as far off its surface at neighbouring samples, so a landing
+/// much farther off than its seed's is a projection that left the basin
+/// rather than slop: seeded on a row the patch collapses to a point, where
+/// every `u` is the same point, the projection can settle on the far end
+/// of the row and follow it, up to a hundredth of a millimetre off, while
+/// the curve stays on the patch. The grid is asked then too, and the
+/// nearer landing taken.
 fn land(
     surface: &SurfaceGeometry,
     p: Point,
-    seed: Option<ogeom_math::Point2>,
+    seed: Option<(ogeom_math::Point2, f64)>,
     tol: Tolerances,
 ) -> OgeomResult<(ogeom_math::Point2, f64)> {
     if let Some(uv) = chart_of(surface, p) {
@@ -96,14 +105,27 @@ fn land(
         }
         return Ok((uv, off));
     }
-    let near = seed.and_then(|luv| {
+    let near = seed.and_then(|(luv, _)| {
         crate::measure::project_on_surface_from(surface, p, (luv.x, luv.y), tol).ok()
     });
     if let Some(close) = near.filter(|f| f.distance <= tol.confusion() * 1e5) {
-        return Ok((
+        let seed_off = seed.map_or(0.0, |(_, off)| off);
+        let seeded = (
             ogeom_math::Point2::new(close.parameters.0, close.parameters.1),
             close.distance,
-        ));
+        );
+        if close.distance <= 2.0 * seed_off + tol.confusion() * 10.0 {
+            return Ok(seeded);
+        }
+        let grid = crate::measure::project_on_surface(surface, p, 24, tol)?;
+        return Ok(if grid.distance < close.distance {
+            (
+                ogeom_math::Point2::new(grid.parameters.0, grid.parameters.1),
+                grid.distance,
+            )
+        } else {
+            seeded
+        });
     }
     let mut projection = crate::measure::project_on_surface(surface, p, 24, tol)?;
     if projection.distance > tol.confusion() * 1e5 {
@@ -225,13 +247,13 @@ pub fn fit_projected_pcurve_aimed(
     let mut trace = Vec::with_capacity(SAMPLES + 1);
     let mut points = Vec::with_capacity(SAMPLES + 1);
     let mut offs = Vec::with_capacity(SAMPLES + 1);
-    let mut previous: Option<(Point, ogeom_math::Point2)> = None;
+    let mut previous: Option<(ogeom_math::Point2, f64)> = None;
     for i in 0..=SAMPLES {
         #[allow(clippy::cast_precision_loss)]
         let t = range.0 + (range.1 - range.0) * i as f64 / SAMPLES as f64;
         let p = curve.point_at(t, tol)?;
-        let (uv, off) = land(surface, p, previous.map(|(_, luv)| luv), tol)?;
-        previous = Some((p, uv));
+        let (uv, off) = land(surface, p, previous, tol)?;
+        previous = Some((uv, off));
         parameters.push(t);
         trace.push(uv);
         points.push(p);
@@ -460,7 +482,7 @@ pub fn fit_projected_pcurve_aimed(
             let before = trace[index - 1];
             let after = trace[index];
             let p = curve.point_at(tm, tol).ok()?;
-            let (mut uv, off) = land(surface, p, Some(before), tol).ok()?;
+            let (mut uv, off) = land(surface, p, Some((before, offs[index - 1])), tol).ok()?;
             if spans.0 > 0.0 {
                 while uv.x - before.x > spans.0 * 0.5 {
                     uv.x -= spans.0;
@@ -1272,6 +1294,118 @@ mod tests {
         retry_stalled(&cone, &[points[2], adrift], &mut honest, &mut misses, T);
         assert_eq!(honest[1], was[1]);
         assert!((misses[1] - 0.5).abs() < 1e-12);
+    }
+
+    /// A curve leaving a patch's collapsed row lands where it runs, not
+    /// along the row.
+    ///
+    /// The patch is an exchange file's corner blend, 5 by 8 controls, whose
+    /// `v = va` row is one point: every `u` there is the same point, so a
+    /// projection seeded at the curve's first sample is free to settle on
+    /// the row's far end, `u = 1`, and the next seeded from it follows that
+    /// end, each a little farther off, up to a hundredth of a millimetre
+    /// along an edge two hundredths long that stays within six microns of
+    /// the patch. The fit then follows the stray samples and misses by
+    /// several hundredths. Each sample lands within the patch's own slop,
+    /// and the fit keeps to its aim.
+    #[test]
+    fn a_curve_leaving_a_collapsed_row_lands_where_it_runs() {
+        use ogeom_geom::{BSplineSurface, LineCurve, Surface as _};
+        use ogeom_math::{ControlGrid, KnotVector};
+        let control = [
+            (36.7585627086008, -8.15287761437174, -170.229312246055),
+            (36.7585627086008, -8.15365372592377, -170.226404136478),
+            (36.7585627349717, -8.15443106794301, -170.223495652724),
+            (36.7575802782982, -8.42772587488826, -169.197142028506),
+            (36.6110026722496, -8.80135576762859, -167.819530705),
+            (36.1421429146038, -9.09936815500094, -166.201267134419),
+            (35.895354100219, -9.15268217810664, -165.605409824518),
+            (35.7600006907474, -9.15287978202741, -165.32892383147),
+            (36.7585627086008, -8.15287761437174, -170.229312246055),
+            (36.7585627086008, -8.15379682374877, -170.226489216272),
+            (36.7585197110248, -8.15473270121597, -170.223648424107),
+            (36.7600541434695, -8.48024666864179, -169.225875057058),
+            (36.5443205441611, -8.92470429834305, -167.883633619386),
+            (35.9573261927134, -9.17791858525544, -166.343622868654),
+            (35.6832745130756, -9.18151406903722, -165.790357297108),
+            (35.545797305431, -9.15223391304734, -165.538799429552),
+            (36.7585627086008, -8.15287761437174, -170.229312246055),
+            (36.7585627086008, -8.15405851211616, -170.226642487807),
+            (36.7585077461055, -8.15525051380883, -170.223911648119),
+            (36.7604913833377, -8.57146559370809, -169.275769003235),
+            (36.4788284843127, -9.14432159094795, -167.996307120188),
+            (35.705445744988, -9.45899914124501, -166.591559478412),
+            (35.3485460162848, -9.45060454973595, -166.111672455024),
+            (35.1751689670973, -9.40351333477852, -165.901939554805),
+            (36.7585627086008, -8.15287761437174, -170.229312246055),
+            (36.7585627086008, -8.15432520622477, -170.226768940431),
+            (36.7585402987761, -8.15576247189369, -170.224200892425),
+            (36.758310741642, -8.66385266796542, -169.324121855993),
+            (36.4878923867464, -9.35952172997368, -168.113768451224),
+            (35.6725653146917, -9.87073674550554, -166.74072005551),
+            (35.261702617056, -9.94268791303928, -166.251794765246),
+            (35.044276994309, -9.92847813911469, -166.030186972707),
+            (36.7585627086008, -8.15287761437174, -170.229312246055),
+            (36.7585627086008, -8.15443175899893, -170.226820070307),
+            (36.7585622595962, -8.15598857127351, -170.224327473689),
+            (36.7569069557293, -8.70327930300864, -169.344760251987),
+            (36.5048359840576, -9.45149014567684, -168.16415408115),
+            (35.6997171389487, -10.0469158337687, -166.777521297239),
+            (35.2763363262085, -10.1528776143725, -166.267031536541),
+            (35.0442769943086, -10.1528776143715, -166.030186972706),
+        ];
+        let control = control
+            .iter()
+            .map(|&(x, y, z)| Point::new(x, y, z))
+            .collect();
+        let (ua, va) = (-0.001_281_595_871_158_2, -0.000_989_051_885_757_861);
+        let patch: SurfaceGeometry = BSplineSurface::new(
+            KnotVector::new(
+                vec![ua, ua, ua, ua, 0.571_428_571_428_571, 1.0, 1.0, 1.0, 1.0],
+                3,
+            )
+            .unwrap(),
+            KnotVector::new(
+                vec![
+                    va,
+                    va,
+                    va,
+                    va,
+                    0.0,
+                    0.0,
+                    0.348_161_508_838_66,
+                    0.464_215_345_118_213,
+                    0.580_269_181_397_766,
+                    0.580_269_181_397_766,
+                    0.580_269_181_397_766,
+                    0.580_269_181_397_766,
+                ],
+                3,
+            )
+            .unwrap(),
+            &ControlGrid::new(control, 5, 8).unwrap(),
+            T,
+        )
+        .unwrap()
+        .into();
+        assert!(
+            patch
+                .point_at(ua, va, T)
+                .unwrap()
+                .distance(patch.point_at(1.0, va, T).unwrap())
+                < 1e-9,
+            "the v = va row is one point"
+        );
+        let from = patch.point_at(ua, va, T).unwrap();
+        let to = patch.point_at(0.0, 0.001_499_1, T).unwrap();
+        let edge: Curve = LineCurve::segment(from, to, T).unwrap().into();
+        let (_, error, met, worst_off, _) =
+            fit_projected_pcurve(&edge, (0.0, from.distance(to)), &patch, T).unwrap();
+        assert!(
+            worst_off < 1e-5,
+            "every sample lands on the patch: {worst_off:.3e}"
+        );
+        assert!(met && error < 1e-4, "and the fit keeps to it: {error:.3e}");
     }
 
     /// A direction is weak by what crossing it moves, not by its neighbour.
