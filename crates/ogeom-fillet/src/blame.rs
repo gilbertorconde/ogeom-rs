@@ -1,8 +1,8 @@
 //! Refusals of a blend request that name the request's edges they
 //! concern, and builds of what of a request can be built.
 
-use crate::Chamfer;
 use crate::support::Blamed;
+use crate::{Chamfer, Overflow};
 use ogeom_algo::Built;
 use ogeom_core::{OgeomError, OgeomResult, Tolerances};
 use ogeom_topo::{Model, Shape, ShapeType, TShapeId};
@@ -54,7 +54,7 @@ pub fn fillet_edges_checked(
 ) -> Result<Built, BlendRefusal> {
     // What a failed request leaves in the model is beside the given
     // solid, whose nodes the request copies before it works on them.
-    let error = match crate::fillet_edges(model, solid, edges, radius, tol) {
+    let error = match crate::fillet::rounds(model, solid, edges, radius, Overflow::default(), tol) {
         Ok(built) => return Ok(built),
         Err(error) => error,
     };
@@ -75,7 +75,7 @@ pub fn fillet_edges_checked(
     }
     let build = |model: &mut Model, set: &[usize]| {
         let picked: Vec<Shape> = set.iter().map(|&i| edges[i].clone()).collect();
-        crate::fillet_edges(model, solid, &picked, radius, tol)
+        crate::fillet::rounds(model, solid, &picked, radius, Overflow::default(), tol)
     };
     Err(first_failing_prefix(model, solid, edges, error, build))
 }
@@ -100,7 +100,15 @@ pub fn fillet_edges_corner_checked(
     if corner == crate::FilletCorner::Setback {
         return fillet_edges_checked(model, solid, edges, radius, tol);
     }
-    let error = match crate::fillet_edges_corner(model, solid, edges, radius, corner, tol) {
+    let error = match crate::fillet::rounds_corner(
+        model,
+        solid,
+        edges,
+        radius,
+        corner,
+        Overflow::default(),
+        tol,
+    ) {
         Ok(built) => return Ok(built),
         Err(error) => error,
     };
@@ -121,7 +129,15 @@ pub fn fillet_edges_corner_checked(
     }
     let build = |model: &mut Model, set: &[usize]| {
         let picked: Vec<Shape> = set.iter().map(|&i| edges[i].clone()).collect();
-        crate::fillet_edges_corner(model, solid, &picked, radius, corner, tol)
+        crate::fillet::rounds_corner(
+            model,
+            solid,
+            &picked,
+            radius,
+            corner,
+            Overflow::default(),
+            tol,
+        )
     };
     Err(first_failing_prefix(model, solid, edges, error, build))
 }
@@ -186,15 +202,33 @@ pub fn fillet_edges_corner_overflow_checked(
     overflow: crate::Overflow,
     tol: Tolerances,
 ) -> Result<Built, BlendRefusal> {
-    let error = match crate::fillet_edges_corner_overflow(
-        model, solid, edges, radius, corner, overflow, tol,
-    ) {
-        Ok(built) => return Ok(built),
-        Err(error) => error,
-    };
+    crate::BlendRequest::new()
+        .round(edges.iter().cloned(), radius)
+        .round_corner(corner)
+        .overflow(overflow)
+        .build_checked(model, solid, tol)
+}
+
+/// [`fillet_edges_corner_overflow_checked`]'s reading, which a
+/// [`BlendRequest`](crate::BlendRequest) of rounds of one radius reads
+/// checked.
+pub(crate) fn rounds_checked(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    corner: crate::FilletCorner,
+    overflow: crate::Overflow,
+    tol: Tolerances,
+) -> Result<Built, BlendRefusal> {
+    let error =
+        match crate::fillet::rounds_corner(model, solid, edges, radius, corner, overflow, tol) {
+            Ok(built) => return Ok(built),
+            Err(error) => error,
+        };
     let build = |model: &mut Model, set: &[usize]| {
         let picked: Vec<Shape> = set.iter().map(|&i| edges[i].clone()).collect();
-        crate::fillet_edges_corner_overflow(model, solid, &picked, radius, corner, overflow, tol)
+        crate::fillet::rounds_corner(model, solid, &picked, radius, corner, overflow, tol)
     };
     Err(refused_in_order(model, solid, edges, error, build))
 }
@@ -223,14 +257,33 @@ pub fn chamfer_edges_overflow_checked(
     overflow: crate::Overflow,
     tol: Tolerances,
 ) -> Result<Built, BlendRefusal> {
-    let error = match crate::chamfer_edges_overflow(model, solid, specs, corner, overflow, tol) {
+    crate::BlendRequest::bevels(specs)
+        .chamfer_corner(corner)
+        .overflow(overflow)
+        .build_checked(model, solid, tol)
+}
+
+/// [`chamfer_edges_overflow_checked`]'s reading, which a
+/// [`BlendRequest`](crate::BlendRequest) of bevels alone reads checked.
+pub(crate) fn bevels_checked(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    corner: crate::ChamferCorner,
+    overflow: crate::Overflow,
+    tol: Tolerances,
+) -> Result<Built, BlendRefusal> {
+    let bevelled = |model: &mut Model, specs: &[(Shape, Chamfer)]| {
+        crate::chamfer_overflow::bevels_overflow(model, solid, specs, corner, overflow, tol)
+    };
+    let error = match bevelled(model, specs) {
         Ok(built) => return Ok(built),
         Err(error) => error,
     };
     let edges: Vec<Shape> = specs.iter().map(|(edge, _)| edge.clone()).collect();
     let build = |model: &mut Model, set: &[usize]| {
         let picked: Vec<(Shape, Chamfer)> = set.iter().map(|&i| specs[i].clone()).collect();
-        crate::chamfer_edges_overflow(model, solid, &picked, corner, overflow, tol)
+        bevelled(model, &picked)
     };
     Err(refused_in_order(model, solid, &edges, error, build))
 }
@@ -261,12 +314,29 @@ pub fn fillet_edges_partial(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<(Built, Vec<BlendRefusal>)> {
+    crate::BlendRequest::new()
+        .round(edges.iter().cloned(), radius)
+        .build_partial(model, solid, tol)
+}
+
+/// [`fillet_edges_partial`]'s reading, which a
+/// [`BlendRequest`](crate::BlendRequest) of rounds of one radius reads in
+/// part.
+pub(crate) fn rounds_partial(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    tol: Tolerances,
+) -> OgeomResult<(Built, Vec<BlendRefusal>)> {
     let pick = |set: &[usize]| -> Vec<Shape> { set.iter().map(|&i| edges[i].clone()).collect() };
     partial(
         model,
         solid,
         edges,
-        |model, set| crate::fillet_edges(model, solid, &pick(set), radius, tol),
+        |model, set| {
+            crate::fillet::rounds(model, solid, &pick(set), radius, Overflow::default(), tol)
+        },
         |model, set| {
             if set.len() < 2 {
                 return None;
@@ -304,6 +374,17 @@ pub fn chamfer_edges_partial(
     specs: &[(Shape, Chamfer)],
     tol: Tolerances,
 ) -> OgeomResult<(Built, Vec<BlendRefusal>)> {
+    crate::BlendRequest::bevels(specs).build_partial(model, solid, tol)
+}
+
+/// [`chamfer_edges_partial`]'s reading, which a
+/// [`BlendRequest`](crate::BlendRequest) of bevels alone reads in part.
+pub(crate) fn bevels_partial(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<(Built, Vec<BlendRefusal>)> {
     let edges: Vec<Shape> = specs.iter().map(|(edge, _)| edge.clone()).collect();
     partial(
         model,
@@ -311,7 +392,7 @@ pub fn chamfer_edges_partial(
         &edges,
         |model, set| {
             let picked: Vec<(Shape, Chamfer)> = set.iter().map(|&i| specs[i].clone()).collect();
-            crate::chamfer_edges_with(model, solid, &picked, tol)
+            crate::chamfer::bevels(model, solid, &picked, tol)
         },
         |_, _| None,
     )

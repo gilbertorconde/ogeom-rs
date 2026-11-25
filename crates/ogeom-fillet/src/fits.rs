@@ -581,11 +581,9 @@ pub fn largest_fillet_radius_all(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let sizing = crate::BlendSizing::Rounds {
-        edges,
-        corner: crate::FilletCorner::Setback,
-    };
-    Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
+    crate::BlendRequest::new()
+        .round(edges.iter().cloned(), 1.0)
+        .largest(model, solid, crate::Vary::Scale, up_to, tol)
 }
 
 /// [`largest_fillet_radius_all`] for the request
@@ -607,8 +605,10 @@ pub fn largest_fillet_radius_overflow(
     overflow: crate::Overflow,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let sizing = crate::BlendSizing::RoundsOverflow { edges, overflow };
-    Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
+    crate::BlendRequest::new()
+        .round(edges.iter().cloned(), 1.0)
+        .overflow(overflow)
+        .largest(model, solid, crate::Vary::Scale, up_to, tol)
 }
 
 /// The largest radius up to `up_to` at which the bands of `edges` all sit

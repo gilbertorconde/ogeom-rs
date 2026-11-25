@@ -145,7 +145,9 @@ pub fn blend_edges_overflow(
         }
     }
     if rounds.is_empty() && asymmetric.is_empty() {
-        return crate::chamfer_edges_overflow(model, solid, &bevels, corner, overflow, tol);
+        return crate::chamfer_overflow::bevels_overflow(
+            model, solid, &bevels, corner, overflow, tol,
+        );
     }
     let sized: Vec<(Shape, f64)> = edges
         .iter()
@@ -219,7 +221,9 @@ fn blend_symmetric(
     tol: Tolerances,
 ) -> OgeomResult<Built> {
     if rounds.is_empty() {
-        return crate::chamfer_edges_overflow(model, solid, &bevels, corner, overflow, tol);
+        return crate::chamfer_overflow::bevels_overflow(
+            model, solid, &bevels, corner, overflow, tol,
+        );
     }
     if bevels.is_empty() {
         return crate::fillet_edges_with(model, solid, &rounds, tol);
@@ -228,7 +232,8 @@ fn blend_symmetric(
     bevels.sort_by_key(|(e, _)| e.node());
     // The bevels, then the rounds on what they leave (ADR 0001, section 13,
     // question 3): two features, whatever the request's order.
-    let beveled = crate::chamfer_edges_overflow(model, solid, &bevels, corner, overflow, tol)?;
+    let beveled =
+        crate::chamfer_overflow::bevels_overflow(model, solid, &bevels, corner, overflow, tol)?;
     let mut traced: Vec<(Shape, f64)> = Vec::with_capacity(rounds.len());
     for (edge, r) in &rounds {
         let now = beveled.history.trace(edge);

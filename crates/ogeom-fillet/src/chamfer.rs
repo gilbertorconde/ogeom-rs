@@ -249,11 +249,9 @@ pub fn chamfer_edges(
     distance: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    let specs: Vec<(Shape, Chamfer)> = edges
-        .iter()
-        .map(|e| (e.clone(), Chamfer::Symmetric(distance)))
-        .collect();
-    chamfer_edges_with(model, solid, &specs, tol)
+    crate::BlendRequest::new()
+        .chamfer(edges.iter().cloned(), distance)
+        .build(model, solid, tol)
 }
 
 /// Bevel several edges of a solid as one operation, each with its own
@@ -322,6 +320,18 @@ pub fn chamfer_edges(
 /// the call; and [`OgeomError::Construction`](ogeom_core::OgeomError::Construction)
 /// if no edges are given.
 pub fn chamfer_edges_with(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    crate::BlendRequest::bevels(specs).build(model, solid, tol)
+}
+
+/// [`chamfer_edges_with`]'s construction, which a
+/// [`BlendRequest`](crate::BlendRequest) of bevels alone at the default
+/// options builds.
+pub(crate) fn bevels(
     model: &mut Model,
     solid: &Shape,
     specs: &[(Shape, Chamfer)],
@@ -1922,12 +1932,9 @@ pub fn largest_chamfer_distance(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let sizing = crate::BlendSizing::Chamfer {
-        edge,
-        spec,
-        corner: crate::ChamferCorner::Facet,
-    };
-    Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
+    crate::BlendRequest::new()
+        .edge(edge.clone(), crate::limit::scaled(spec, 1.0))
+        .largest(model, solid, crate::Vary::Scale, up_to, tol)
 }
 
 /// The seat reading [`largest_chamfer_distance`] starts from: the largest

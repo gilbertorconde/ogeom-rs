@@ -428,7 +428,14 @@ fn curved_blend(
     // shared edges are the corner.
     if !shared.is_empty() {
         if closes_round(model, &shared)? {
-            return crate::fillet::fillet_edges(model, solid, &shared, radius, tol);
+            return crate::fillet::rounds(
+                model,
+                solid,
+                &shared,
+                radius,
+                crate::Overflow::default(),
+                tol,
+            );
         }
         let held = crate::sheet_curved::surfaces_of(model, [a, b])?;
         let reads = match read_sides(model, solid, a, b, radius, tol) {
@@ -459,7 +466,14 @@ fn curved_blend(
             return apply(model, solid, corner, behind, radius, tol);
         }
         crate::sheet_curved::put_back(model, held);
-        return crate::fillet::fillet_edges(model, solid, &shared, radius, tol);
+        return crate::fillet::rounds(
+            model,
+            solid,
+            &shared,
+            radius,
+            crate::Overflow::default(),
+            tol,
+        );
     }
 
     // The faces' windows, widened to read the ball, are put back where no

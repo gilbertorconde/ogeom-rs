@@ -60,6 +60,23 @@ pub fn chamfer_edges_overflow(
     overflow: Overflow,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    crate::BlendRequest::bevels(specs)
+        .chamfer_corner(corner)
+        .overflow(overflow)
+        .build(model, solid, tol)
+}
+
+/// [`chamfer_edges_overflow`]'s construction, which a
+/// [`BlendRequest`](crate::BlendRequest) of bevels alone builds under a
+/// point corner or overflow options.
+pub(crate) fn bevels_overflow(
+    model: &mut Model,
+    solid: &Shape,
+    specs: &[(Shape, Chamfer)],
+    corner: ChamferCorner,
+    overflow: Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     if specs.is_empty() {
         ogeom_bail!(Construction, "a chain of no edges bevels nothing");
     }

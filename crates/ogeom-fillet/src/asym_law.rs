@@ -65,13 +65,42 @@ pub fn fillet_edge_distances_variable(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    crate::BlendRequest::new()
+        .edge(
+            edge.clone(),
+            crate::BlendSection::DistanceLaws {
+                face: face.clone(),
+                on_face: on_face.clone(),
+                on_other: on_other.clone(),
+                profile,
+            },
+        )
+        .build(model, solid, tol)
+}
+
+/// [`fillet_edge_distances_variable`]'s construction, which
+/// [`distance_law_rounds`] builds a chain of one edge with.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fillet_edge_distances' own, with laws for the distances"
+)]
+pub(crate) fn distance_law_round(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    on_face: &RadiusLaw,
+    on_other: &RadiusLaw,
+    profile: RoundProfile,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     if let Some(built) = crate::compound::each_solid(
         model,
         solid,
         std::slice::from_ref(edge),
         |edge| edge,
         |model, part, _| {
-            fillet_edge_distances_variable(model, part, edge, face, on_face, on_other, profile, tol)
+            distance_law_round(model, part, edge, face, on_face, on_other, profile, tol)
         },
     )? {
         return Ok(built);
@@ -84,7 +113,17 @@ pub fn fillet_edge_distances_variable(
     ];
     if laws.iter().all(|law| law.level(tol)) {
         let [a, b] = [laws[0].at(0.0).0, laws[1].at(0.0).0];
-        return crate::fillet_edge_distances(model, solid, edge, face, a, b, profile, tol);
+        return crate::asym::distance_round(
+            model,
+            solid,
+            edge,
+            face,
+            a,
+            b,
+            profile,
+            crate::Overflow::default(),
+            tol,
+        );
     }
     if let RoundProfile::Conic(_) = profile {
         profile.weight(0.0)?;
@@ -181,6 +220,36 @@ pub fn fillet_edges_distances_variable(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    crate::BlendRequest::new()
+        .chain(
+            chain.iter().cloned(),
+            crate::BlendSection::DistanceLaws {
+                face: face.clone(),
+                on_face: on_face.clone(),
+                on_other: on_other.clone(),
+                profile,
+            },
+        )
+        .build(model, solid, tol)
+}
+
+/// [`fillet_edges_distances_variable`]'s construction, which a
+/// [`BlendRequest`](crate::BlendRequest) of one chain under distance laws
+/// builds.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "fillet_edge_distances_variable's own, over a chain"
+)]
+pub(crate) fn distance_law_rounds(
+    model: &mut Model,
+    solid: &Shape,
+    chain: &[Shape],
+    face: &Shape,
+    on_face: &RadiusLaw,
+    on_other: &RadiusLaw,
+    profile: RoundProfile,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     if chain.is_empty() {
         ogeom_core::ogeom_bail!(
             Construction,
@@ -202,15 +271,13 @@ pub fn fillet_edges_distances_variable(
                      edges lie on two solids of the compound"
                 );
             }
-            fillet_edges_distances_variable(model, part, own, face, on_face, on_other, profile, tol)
+            distance_law_rounds(model, part, own, face, on_face, on_other, profile, tol)
         },
     )? {
         return Ok(built);
     }
     if let [edge] = chain {
-        return fillet_edge_distances_variable(
-            model, solid, edge, face, on_face, on_other, profile, tol,
-        );
+        return distance_law_round(model, solid, edge, face, on_face, on_other, profile, tol);
     }
     if let RoundProfile::Conic(_) = profile {
         profile.weight(0.0)?;

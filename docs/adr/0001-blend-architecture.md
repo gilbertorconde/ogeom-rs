@@ -5491,6 +5491,32 @@ own body until it is removed.
 | (d) `chamfer_edges_cornered(Facet)` and `chamfer_edges_with` | becomes a wrapper | the audit: with `chamfer_edges_cornered(Facet)` routed through `chamfer_edges_with`, its ten test files (`blend_edges.rs`, `cell_guard.rs`, `chamfer_corner.rs`, `chamfer_point_and_pockets.rs`, `compound_blend.rs`, `curved_chamfer.rs`, `exact_limits.rs`, `largest_chamfer_all.rs`, `limit_chamfers.rs`, `polyhedral_chamfer.rs`, 128 tests with the ignored ones) pass |
 | (e) `fillet_edges_checked`, `fillet_edges_corner_checked`, `chamfer_edges_checked` and the in-order checked calls | stay verbatim | the note: `build_checked` is the in-order reading of amendment "checked blends under overflow" |
 
+**The wrappers.** The other edge-blend calls build their request and
+call it, and the bodies they had are the request's own. The request
+lowers to them with the arguments they took, so each wrapper gives what
+its call gave. `chamfer_edges_overflow` under the facet corner and the
+default overflow is `chamfer_edges_cornered(Facet)`, and follows (d).
+Inside the crate, the calls between bodies and the probes of the readings
+call the bodies, not the wrappers, so none of them moves to another body.
+
+Four more calls lower, for some arguments, to another body than their
+own, and stay verbatim by the rule above:
+
+| Call | Arguments the request builds elsewhere | There |
+|---|---|---|
+| `fillet_edges_with` | every radius the same; an edge asked twice at one radius | `fillet_edges_overflow`, which tries the narrow passages, blend into round and hold edge |
+| `fillet_edges_cornered` | no setback corner | `fillet_edges_overflow`; the call itself builds by the engine alone |
+| `blend_edges`, `blend_edges_overflow` | blends of one kind alone; no blends; an edge asked twice | the rounds', the bevels' or the distances' own call, with that call's refusals |
+
+The readings: `blend_limit` and `blend_seat` read each sizing through
+the request whose reading lowers to it again, at unit sizes, except two.
+`BlendSizing::RoundLinear` is `fillet_edge_variable`'s, of (c), and
+`BlendSizing::Chamfers` of one bevel under the default overflow, which a
+request reads as `BlendSizing::Chamfer` (its seat and smallest probe are
+another's), reads its own body. A request of rounds whose one radius is
+not a number is still read as rounds of one radius, so the in-order
+checked calls and the partial readings refuse it with their bodies' text.
+
 **Tests** (`tests/blend_request.rs`). For each dispatch row the request and
 the old call run on their own copies of one part (the block 20 by 20 by 10
 and its corner's three edges, and the pocketed block of amendment

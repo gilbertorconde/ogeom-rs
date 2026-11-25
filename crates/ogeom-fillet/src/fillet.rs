@@ -429,7 +429,9 @@ pub fn fillet_edges(
     radius: f64,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    fillet_edges_overflow(model, solid, edges, radius, Overflow::default(), tol)
+    crate::BlendRequest::new()
+        .round(edges.iter().cloned(), radius)
+        .build(model, solid, tol)
 }
 
 /// What a round does where it reaches geometry other than its own two
@@ -562,6 +564,22 @@ impl Overflow {
 /// As [`fillet_edges`], and [`OgeomError::Construction`], by name, where a
 /// round reaches other geometry and no behaviour that is on builds it.
 pub fn fillet_edges_overflow(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    overflow: Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    crate::BlendRequest::new()
+        .round(edges.iter().cloned(), radius)
+        .overflow(overflow)
+        .build(model, solid, tol)
+}
+
+/// [`fillet_edges_overflow`]'s construction, which a [`BlendRequest`](crate::BlendRequest)
+/// of rounds of one radius builds.
+pub(crate) fn rounds(
     model: &mut Model,
     solid: &Shape,
     edges: &[Shape],
@@ -890,15 +908,10 @@ pub fn fillet_edges_corner(
     corner: FilletCorner,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    fillet_edges_corner_overflow(
-        model,
-        solid,
-        edges,
-        radius,
-        corner,
-        Overflow::default(),
-        tol,
-    )
+    crate::BlendRequest::new()
+        .round(edges.iter().cloned(), radius)
+        .round_corner(corner)
+        .build(model, solid, tol)
 }
 
 /// [`fillet_edges_corner`], a round reaching geometry other than its own
@@ -932,8 +945,27 @@ pub fn fillet_edges_corner_overflow(
     overflow: Overflow,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
+    crate::BlendRequest::new()
+        .round(edges.iter().cloned(), radius)
+        .round_corner(corner)
+        .overflow(overflow)
+        .build(model, solid, tol)
+}
+
+/// [`fillet_edges_corner_overflow`]'s construction, which a
+/// [`BlendRequest`](crate::BlendRequest) of rounds of one radius under
+/// rolling corners builds.
+pub(crate) fn rounds_corner(
+    model: &mut Model,
+    solid: &Shape,
+    edges: &[Shape],
+    radius: f64,
+    corner: FilletCorner,
+    overflow: Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
     match corner {
-        FilletCorner::Setback => fillet_edges_overflow(model, solid, edges, radius, overflow, tol),
+        FilletCorner::Setback => rounds(model, solid, edges, radius, overflow, tol),
         FilletCorner::Rolling => {
             if let Some(built) = crate::compound::each_solid(
                 model,
@@ -1878,7 +1910,12 @@ pub fn fillet_edges_variable(
     law: &RadiusLaw,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    fillet_edges_variable_overflow(model, solid, chain, law, Overflow::default(), tol)
+    crate::BlendRequest::new()
+        .chain(
+            chain.iter().cloned(),
+            crate::BlendSection::RoundLaw(law.clone()),
+        )
+        .build(model, solid, tol)
 }
 
 /// [`fillet_edges_variable`], a round reaching geometry other than its
@@ -1907,6 +1944,26 @@ pub fn fillet_edges_variable(
 /// name, where a round reaches other geometry and no behaviour that is on
 /// builds it.
 pub fn fillet_edges_variable_overflow(
+    model: &mut Model,
+    solid: &Shape,
+    chain: &[Shape],
+    law: &RadiusLaw,
+    overflow: Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    crate::BlendRequest::new()
+        .chain(
+            chain.iter().cloned(),
+            crate::BlendSection::RoundLaw(law.clone()),
+        )
+        .overflow(overflow)
+        .build(model, solid, tol)
+}
+
+/// [`fillet_edges_variable_overflow`]'s construction, which a
+/// [`BlendRequest`](crate::BlendRequest) of one chain under a round law
+/// builds.
+pub(crate) fn law_rounds(
     model: &mut Model,
     solid: &Shape,
     chain: &[Shape],

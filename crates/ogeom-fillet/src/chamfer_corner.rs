@@ -63,7 +63,9 @@ pub fn chamfer_edges_cornered(
     corner: ChamferCorner,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    crate::chamfer_edges_overflow(model, solid, specs, corner, crate::Overflow::default(), tol)
+    crate::BlendRequest::bevels(specs)
+        .chamfer_corner(corner)
+        .build(model, solid, tol)
 }
 
 /// [`chamfer_edges_cornered`] by the engine's own construction alone: a

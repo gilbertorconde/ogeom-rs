@@ -13,7 +13,10 @@
 //! that was refused, bisected to [`LIMIT_TOLERANCE`].
 
 use crate::law::Profile;
-use crate::{Chamfer, ChamferCorner, FilletCorner, Overflow, RadiusLaw, RoundProfile};
+use crate::{
+    BlendRequest, BlendSection, Chamfer, ChamferCorner, FilletCorner, Overflow, RadiusLaw,
+    RoundProfile, Vary,
+};
 use ogeom_core::{OgeomResult, Tolerances, ogeom_bail};
 use ogeom_topo::{Model, Shape};
 
@@ -312,6 +315,21 @@ pub fn blend_limit(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<BlendLimit> {
+    match requested(sizing) {
+        Some((request, vary)) => request.limit(model, solid, vary, up_to, tol),
+        None => limit_of(model, solid, sizing, up_to, tol),
+    }
+}
+
+/// [`blend_limit`]'s reading, which a [`BlendRequest`](crate::BlendRequest)
+/// reads through the sizing it lowers to.
+pub(crate) fn limit_of(
+    model: &Model,
+    solid: &Shape,
+    sizing: &BlendSizing<'_>,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<BlendLimit> {
     read_seat(model, solid, sizing, up_to, tol, |seat, floor, builds| {
         settle(seat, up_to, floor, builds)
     })
@@ -336,7 +354,160 @@ pub fn blend_seat(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
+    match requested(sizing) {
+        Some((request, vary)) => request.seat(model, solid, vary, up_to, tol),
+        None => seat_of(model, solid, sizing, up_to, tol),
+    }
+}
+
+/// [`blend_seat`]'s reading, which a [`BlendRequest`](crate::BlendRequest)
+/// reads through the sizing it lowers to.
+pub(crate) fn seat_of(
+    model: &Model,
+    solid: &Shape,
+    sizing: &BlendSizing<'_>,
+    up_to: f64,
+    tol: Tolerances,
+) -> OgeomResult<Option<f64>> {
     read_seat(model, solid, sizing, up_to, tol, |seat, _, _| seat)
+}
+
+/// `sizing` as the request whose reading lowers to it again, at unit
+/// sizes, with what the reading varies. `None` for the two sizings no
+/// request lowers to: [`BlendSizing::RoundLinear`], whose call
+/// [`fillet_edge_variable`](crate::fillet_edge_variable) is its own
+/// construction, and [`BlendSizing::Chamfers`] of one bevel under the
+/// default overflow, which a request reads as [`BlendSizing::Chamfer`].
+fn requested(sizing: &BlendSizing<'_>) -> Option<(BlendRequest, Vary)> {
+    let law = |size: LawSize| match size {
+        LawSize::At(at) => Vary::Law(at),
+        LawSize::Scale => Vary::Scale,
+    };
+    let distances = |edge: &Shape, face: &Shape, on_face, on_other, profile| {
+        BlendRequest::new().edge(
+            edge.clone(),
+            BlendSection::RoundDistances {
+                face: face.clone(),
+                on_face,
+                on_other,
+                profile,
+            },
+        )
+    };
+    Some(match *sizing {
+        BlendSizing::Rounds { edges, corner } => (
+            BlendRequest::new()
+                .round(edges.iter().cloned(), 1.0)
+                .round_corner(corner),
+            Vary::Scale,
+        ),
+        BlendSizing::RoundsOverflow { edges, overflow } => (
+            BlendRequest::new()
+                .round(edges.iter().cloned(), 1.0)
+                .overflow(overflow),
+            Vary::Scale,
+        ),
+        BlendSizing::RoundsCornerOverflow {
+            edges,
+            corner,
+            overflow,
+        } => (
+            BlendRequest::new()
+                .round(edges.iter().cloned(), 1.0)
+                .round_corner(corner)
+                .overflow(overflow),
+            Vary::Scale,
+        ),
+        BlendSizing::RoundDistances {
+            edge,
+            face,
+            on_face,
+            on_other,
+            profile,
+        } => (
+            distances(edge, face, on_face, on_other, profile),
+            Vary::Scale,
+        ),
+        BlendSizing::RoundDistancesOverflow {
+            edge,
+            face,
+            on_face,
+            on_other,
+            profile,
+            overflow,
+        } => (
+            distances(edge, face, on_face, on_other, profile).overflow(overflow),
+            Vary::Scale,
+        ),
+        BlendSizing::Chamfer { edge, spec, corner } => (
+            BlendRequest::new()
+                .edge(edge.clone(), scaled(spec, 1.0))
+                .chamfer_corner(corner),
+            Vary::Scale,
+        ),
+        BlendSizing::Chamfers {
+            specs,
+            corner,
+            overflow,
+        } => {
+            if specs.len() == 1 && overflow == Overflow::default() {
+                return None;
+            }
+            let unit: Vec<(Shape, Chamfer)> = specs
+                .iter()
+                .map(|(edge, spec)| (edge.clone(), scaled(spec, 1.0)))
+                .collect();
+            (
+                BlendRequest::bevels(&unit)
+                    .chamfer_corner(corner)
+                    .overflow(overflow),
+                Vary::Scale,
+            )
+        }
+        BlendSizing::RoundLaw {
+            chain,
+            law: l,
+            size,
+        } => (
+            BlendRequest::new().chain(chain.iter().cloned(), BlendSection::RoundLaw(l.clone())),
+            law(size),
+        ),
+        BlendSizing::RoundLawOverflow {
+            chain,
+            law: l,
+            size,
+            overflow,
+        } => (
+            BlendRequest::new()
+                .chain(chain.iter().cloned(), BlendSection::RoundLaw(l.clone()))
+                .overflow(overflow),
+            law(size),
+        ),
+        BlendSizing::DistanceLaws {
+            edge,
+            face,
+            on_face,
+            on_other,
+            profile,
+            size,
+        } => (
+            BlendRequest::new().edge(
+                edge.clone(),
+                BlendSection::DistanceLaws {
+                    face: face.clone(),
+                    on_face: on_face.clone(),
+                    on_other: on_other.clone(),
+                    profile,
+                },
+            ),
+            match size {
+                DistanceLawSize::OnFace(at) => Vary::OnFace(at),
+                DistanceLawSize::OnOther(at) => Vary::OnOther(at),
+                DistanceLawSize::Scale => Vary::Scale,
+            },
+        ),
+        BlendSizing::RoundLinear { .. } => return None,
+    })
 }
 
 /// The probe [`read_seat`] hands on: whether the request builds at a size.
@@ -501,12 +672,9 @@ pub fn largest_law_radius(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let sizing = BlendSizing::RoundLaw {
-        chain,
-        law,
-        size: LawSize::At(at),
-    };
-    Ok(blend_limit(model, solid, &sizing, up_to, tol)?.size)
+    BlendRequest::new()
+        .chain(chain.iter().cloned(), BlendSection::RoundLaw(law.clone()))
+        .largest(model, solid, Vary::Law(at), up_to, tol)
 }
 
 /// The largest scale `k` up to `up_to` at which
@@ -526,12 +694,9 @@ pub fn largest_law_scale(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let sizing = BlendSizing::RoundLaw {
-        chain,
-        law,
-        size: LawSize::Scale,
-    };
-    Ok(blend_limit(model, solid, &sizing, up_to, tol)?.size)
+    BlendRequest::new()
+        .chain(chain.iter().cloned(), BlendSection::RoundLaw(law.clone()))
+        .largest(model, solid, Vary::Scale, up_to, tol)
 }
 
 /// The largest value up to `up_to` of the distance `size` frees (one
@@ -558,15 +723,22 @@ pub fn largest_law_distances(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let sizing = BlendSizing::DistanceLaws {
-        edge,
-        face,
-        on_face,
-        on_other,
-        profile,
-        size,
+    let vary = match size {
+        DistanceLawSize::OnFace(at) => Vary::OnFace(at),
+        DistanceLawSize::OnOther(at) => Vary::OnOther(at),
+        DistanceLawSize::Scale => Vary::Scale,
     };
-    Ok(blend_limit(model, solid, &sizing, up_to, tol)?.size)
+    BlendRequest::new()
+        .edge(
+            edge.clone(),
+            BlendSection::DistanceLaws {
+                face: face.clone(),
+                on_face: on_face.clone(),
+                on_other: on_other.clone(),
+                profile,
+            },
+        )
+        .largest(model, solid, vary, up_to, tol)
 }
 
 /// Whether `sizing`'s blend call builds at `size`, asked on a copy of the
@@ -580,30 +752,29 @@ fn probe(
 ) -> bool {
     let mut scratch = model.clone();
     match *sizing {
-        BlendSizing::Rounds { edges, corner } => {
-            crate::fillet_edges_corner(&mut scratch, solid, edges, size, corner, tol).is_ok()
-        }
-        BlendSizing::RoundsCornerOverflow {
-            edges,
-            corner,
-            overflow,
-        } => crate::fillet_edges_corner_overflow(
+        BlendSizing::Rounds { edges, corner } => crate::fillet::rounds_corner(
             &mut scratch,
             solid,
             edges,
             size,
             corner,
-            overflow,
+            Overflow::default(),
             tol,
         )
         .is_ok(),
+        BlendSizing::RoundsCornerOverflow {
+            edges,
+            corner,
+            overflow,
+        } => crate::fillet::rounds_corner(&mut scratch, solid, edges, size, corner, overflow, tol)
+            .is_ok(),
         BlendSizing::RoundDistances {
             edge,
             face,
             on_face,
             on_other,
             profile,
-        } => crate::fillet_edge_distances(
+        } => crate::asym::distance_round(
             &mut scratch,
             solid,
             edge,
@@ -611,6 +782,7 @@ fn probe(
             size * on_face,
             size * on_other,
             profile,
+            Overflow::default(),
             tol,
         )
         .is_ok(),
@@ -621,7 +793,7 @@ fn probe(
             on_other,
             profile,
             overflow,
-        } => crate::fillet_edge_distances_overflow(
+        } => crate::asym::distance_round(
             &mut scratch,
             solid,
             edge,
@@ -635,10 +807,18 @@ fn probe(
         .is_ok(),
         BlendSizing::Chamfer { edge, spec, corner } => {
             let specs = [(edge.clone(), scaled(spec, size))];
-            crate::chamfer_edges_cornered(&mut scratch, solid, &specs, corner, tol).is_ok()
+            crate::chamfer_overflow::bevels_overflow(
+                &mut scratch,
+                solid,
+                &specs,
+                corner,
+                Overflow::default(),
+                tol,
+            )
+            .is_ok()
         }
         BlendSizing::RoundsOverflow { edges, overflow } => {
-            crate::fillet_edges_overflow(&mut scratch, solid, edges, size, overflow, tol).is_ok()
+            crate::fillet::rounds(&mut scratch, solid, edges, size, overflow, tol).is_ok()
         }
         BlendSizing::Chamfers {
             specs,
@@ -649,8 +829,15 @@ fn probe(
                 .iter()
                 .map(|(edge, spec)| (edge.clone(), scaled(spec, size)))
                 .collect();
-            crate::chamfer_edges_overflow(&mut scratch, solid, &specs, corner, overflow, tol)
-                .is_ok()
+            crate::chamfer_overflow::bevels_overflow(
+                &mut scratch,
+                solid,
+                &specs,
+                corner,
+                overflow,
+                tol,
+            )
+            .is_ok()
         }
         // Read by `law_seat_reading`, which probes them itself.
         BlendSizing::RoundLaw { .. }
@@ -975,7 +1162,7 @@ fn law_seat_reading<R>(
             let builds = |v: f64| {
                 let [a, b] = at(v);
                 let mut scratch = model.clone();
-                crate::fillet_edge_distances_variable(
+                crate::asym_law::distance_law_round(
                     &mut scratch,
                     solid,
                     edge,
@@ -1028,8 +1215,7 @@ fn round_law_reading<R>(
     let seat = round_law_seat(model, solid, chain, closed, &laws, &at, up_to, tol);
     let builds = |v: f64| {
         let mut scratch = model.clone();
-        crate::fillet_edges_variable_overflow(&mut scratch, solid, chain, &at(v), overflow, tol)
-            .is_ok()
+        crate::fillet::law_rounds(&mut scratch, solid, chain, &at(v), overflow, tol).is_ok()
     };
     then(seat, law_floor(&laws, conf), &mut counted(builds))
 }

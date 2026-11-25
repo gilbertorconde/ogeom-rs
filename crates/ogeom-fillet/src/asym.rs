@@ -186,17 +186,17 @@ pub fn fillet_edge_distances(
     profile: RoundProfile,
     tol: Tolerances,
 ) -> OgeomResult<Built> {
-    fillet_edge_distances_overflow(
-        model,
-        solid,
-        edge,
-        face,
-        on_face,
-        on_other,
-        profile,
-        crate::Overflow::default(),
-        tol,
-    )
+    crate::BlendRequest::new()
+        .edge(
+            edge.clone(),
+            crate::BlendSection::RoundDistances {
+                face: face.clone(),
+                on_face,
+                on_other,
+                profile,
+            },
+        )
+        .build(model, solid, tol)
 }
 
 /// [`fillet_edge_distances`], a round reaching geometry other than its own
@@ -227,6 +227,38 @@ pub fn fillet_edge_distances(
     reason = "the chamfer's distances' own, the profile and the overflow"
 )]
 pub fn fillet_edge_distances_overflow(
+    model: &mut Model,
+    solid: &Shape,
+    edge: &Shape,
+    face: &Shape,
+    on_face: f64,
+    on_other: f64,
+    profile: RoundProfile,
+    overflow: crate::Overflow,
+    tol: Tolerances,
+) -> OgeomResult<Built> {
+    crate::BlendRequest::new()
+        .edge(
+            edge.clone(),
+            crate::BlendSection::RoundDistances {
+                face: face.clone(),
+                on_face,
+                on_other,
+                profile,
+            },
+        )
+        .overflow(overflow)
+        .build(model, solid, tol)
+}
+
+/// [`fillet_edge_distances_overflow`]'s construction, which a
+/// [`BlendRequest`](crate::BlendRequest) of one round of two distances
+/// alone builds.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the chamfer's distances' own, the profile and the overflow"
+)]
+pub(crate) fn distance_round(
     model: &mut Model,
     solid: &Shape,
     edge: &Shape,
@@ -882,14 +914,17 @@ pub fn largest_fillet_distances(
     up_to: f64,
     tol: Tolerances,
 ) -> OgeomResult<Option<f64>> {
-    let sizing = crate::BlendSizing::RoundDistances {
-        edge,
-        face,
-        on_face,
-        on_other,
-        profile: RoundProfile::Elliptical,
-    };
-    Ok(crate::blend_limit(model, solid, &sizing, up_to, tol)?.size)
+    crate::BlendRequest::new()
+        .edge(
+            edge.clone(),
+            crate::BlendSection::RoundDistances {
+                face: face.clone(),
+                on_face,
+                on_other,
+                profile: RoundProfile::Elliptical,
+            },
+        )
+        .largest(model, solid, crate::Vary::Scale, up_to, tol)
 }
 
 /// The seat reading [`largest_fillet_distances`] starts from: the largest
