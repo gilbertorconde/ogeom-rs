@@ -51,8 +51,10 @@ use ogeom_topo::Shape;
 pub use mesh::to_mesh;
 #[doc(hidden)]
 pub use mesh::{Pseudonormals, to_mesh_with};
+pub(crate) use shape::Passed;
+#[doc(hidden)]
+pub use shape::Target;
 pub use shape::to_shape;
-pub(crate) use shape::{Passed, Target};
 
 #[cfg(doc)]
 use ogeom_mesh::Bvh;

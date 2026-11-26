@@ -46,6 +46,7 @@ not return a guessed result.
 | `ogeom-geom` | curves and surfaces |
 | `ogeom-topo` | the B-rep data model |
 | `ogeom-algo` | construction, measurement, classification, mesh to solid |
+| `ogeom-fit` | fitting points, meshes and curve networks; registration |
 | `ogeom-mesh` | tessellation |
 | `ogeom-intersect` | curve and surface intersection |
 | `ogeom-bool` | booleans and face removal |

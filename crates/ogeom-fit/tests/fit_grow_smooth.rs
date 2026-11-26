@@ -13,9 +13,9 @@
 use core::f64::consts::{FRAC_PI_2, TAU};
 use std::collections::{BTreeMap, BTreeSet};
 
-use ogeom_algo::Cutoff;
-use ogeom_algo::fit::{GrowOptions, GrownRegion, grow_smooth};
 use ogeom_core::{OgeomError, Tolerances};
+use ogeom_fit::Cutoff;
+use ogeom_fit::fit::{GrowOptions, GrownRegion, grow_smooth};
 use ogeom_math::{Axis, Direction, Point, Transform, Vector};
 use ogeom_mesh::Bvh;
 use ogeom_topo::Triangulation;

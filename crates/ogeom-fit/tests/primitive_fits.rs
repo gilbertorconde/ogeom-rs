@@ -10,9 +10,9 @@
     reason = "test code"
 )]
 
-use ogeom_algo::Cutoff;
-use ogeom_algo::fit::{self, Fit, FitFixed, FitOptions, Side};
 use ogeom_core::{OgeomError, Tolerances};
+use ogeom_fit::Cutoff;
+use ogeom_fit::fit::{self, Fit, FitFixed, FitOptions, Side};
 use ogeom_math::{Axis, Direction, Frame, Point, Point2, Vector, Vector2};
 
 const T: Tolerances = Tolerances::millimetres();

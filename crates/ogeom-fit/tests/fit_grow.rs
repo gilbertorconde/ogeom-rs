@@ -14,9 +14,9 @@
 use core::f64::consts::TAU;
 use std::collections::BTreeMap;
 
-use ogeom_algo::Cutoff;
-use ogeom_algo::fit::{AnyFit, Crease, FitKind, GrowOptions, Grown, Side, grow};
 use ogeom_core::{OgeomError, Tolerances};
+use ogeom_fit::Cutoff;
+use ogeom_fit::fit::{AnyFit, Crease, FitKind, GrowOptions, Grown, Side, grow};
 use ogeom_math::{Axis, Direction, Point, Transform, Vector};
 use ogeom_mesh::Bvh;
 use ogeom_topo::Triangulation;

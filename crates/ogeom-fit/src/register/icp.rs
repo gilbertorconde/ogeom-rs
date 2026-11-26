@@ -8,7 +8,7 @@ use ogeom_mesh::{Bvh, Deflection};
 use ogeom_topo::{Model, Shape, Triangulation};
 
 use super::{FreeMotion, Icp, Registration, Starts, is_finite, orientation, rigid};
-use crate::distance::{DistanceOptions, Pseudonormals, Target, to_mesh_with};
+use ogeom_algo::distance::{DistanceOptions, Pseudonormals, Target, to_mesh_with};
 
 /// Register `source` onto the mesh `target` was built over: the rigid
 /// transform carrying the points onto it, from each of [`Icp::starts`],
@@ -43,7 +43,7 @@ pub fn icp(
 /// or at a vertex of it, where the foot leaves every face), and its normal
 /// the face's there, or at an edge or a vertex the unit sum of the normals
 /// of the faces holding it. The nearest points are
-/// [`to_shape`](crate::distance::to_shape)'s, unsigned, so the residuals,
+/// [`to_shape`](ogeom_algo::distance::to_shape)'s, unsigned, so the residuals,
 /// the score and the pose answer to the surfaces themselves and a fit
 /// converges below any tessellation's chord.
 ///
@@ -61,7 +61,7 @@ pub fn icp(
 /// As [`icp`](fn@icp), with
 /// [`OgeomError::Domain`](ogeom_core::OgeomError::Domain) for a shape with
 /// no vertex, edge or face; as
-/// [`PointDistance::of`](crate::PointDistance::of) for the shape, and as
+/// [`PointDistance::of`](ogeom_algo::PointDistance::of) for the shape, and as
 /// the projections report; and as
 /// [`triangulate`](fn@ogeom_mesh::triangulate) for the principal axes.
 pub fn icp_onto_shape(

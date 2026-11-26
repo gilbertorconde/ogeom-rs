@@ -179,7 +179,7 @@ the skill before the task it covers.
 
 ## Releasing
 
-The fifteen library crates under `crates/` are published together, at one
+The sixteen library crates under `crates/` are published together, at one
 version, from `[workspace.package]`. The three crates under `tools/` have
 `publish = false`; they exist only for this repository.
 
@@ -193,7 +193,7 @@ cargo publish --workspace             # the same, for real
 ```
 
 Cargo works out the order from the dependency graph, so one command publishes
-all fifteen. Know these three points before changing the arrangement:
+all sixteen. Know these three points before changing the arrangement:
 
 - **Versions move together.** Every crate inherits `version.workspace`, and the
   internal requirements in `[workspace.dependencies]` are pinned to the same

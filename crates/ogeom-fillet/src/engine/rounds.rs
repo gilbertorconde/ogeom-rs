@@ -3506,7 +3506,7 @@ pub(super) fn within_face(planar: &Planar, fi: usize, p: Point, reach: f64) -> b
 }
 
 /// The corner patch `face` held within the convex `region` (every one of
-/// its half-spaces a plane's) by its net ([`ogeom_algo::net_held_within`]):
+/// its half-spaces a plane's) by its net ([`ogeom_fit::net_held_within`]):
 /// the net's two outermost rows each way kept, as they carry the patch's
 /// sides and its tangency across them, every other point past a plane
 /// moved to the region's nearest point. `Ok(true)` where the net is held,
@@ -3537,7 +3537,7 @@ fn held_within(
     let Some(ogeom_geom::SurfaceGeometry::BSpline(surface)) = model.geometry().surface(id) else {
         return Ok(false);
     };
-    let Ok(held) = ogeom_algo::net_held_within(surface, &planes, 2, fit)? else {
+    let Ok(held) = ogeom_fit::net_held_within(surface, &planes, 2, fit)? else {
         return Ok(false);
     };
     if let Some(slot) = model.geometry_mut().surface_mut(id) {
