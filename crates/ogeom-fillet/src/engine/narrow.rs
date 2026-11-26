@@ -23,8 +23,9 @@
 //! than the radius, each band then crossing the wall it faces. Pieces are
 //! kept only where nothing else of the solid stands in their room, a
 //! section entering the solid through a wall never comes out into air
-//! again, the fuses add no more than the pieces hold, and the result is
-//! valid.
+//! again but through a thin rib's far wall whose own band, parallel and
+//! spanning that wall, holds all that comes out, the fuses add no more
+//! than the pieces hold, and the result is valid.
 
 use core::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -63,6 +64,8 @@ pub(crate) enum Needs {
 #[derive(Debug, Clone)]
 struct Band {
     edge: Id,
+    /// The wall face it rounds against.
+    wall: usize,
     start: Point,
     along: Vector,
     len: f64,
@@ -511,6 +514,7 @@ pub(crate) fn reach(
         }
         let band = Band {
             edge: ids[k],
+            wall: walls[k],
             start: pa - along * ext[0],
             along,
             len: pa.distance(pb) + ext[0] + ext[1],
@@ -696,32 +700,39 @@ fn clear(
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let margin = narrow.radius * 1e-3 + tol.confusion() * 10.0;
-    // Each piece's room, the faces it may reach, and the directions its
-    // sections run from the wall into the air.
-    let mut rooms: Vec<(Aabb, &[usize], Vec<Vector>)> = Vec::new();
+    // Each piece's room, the faces it may reach, the directions its
+    // sections run from the wall into the air, and a pivot's vertex.
+    type Room<'a> = (Aabb, &'a [usize], Vec<Vector>, Option<Point>);
+    let mut rooms: Vec<Room<'_>> = Vec::new();
     for band in &narrow.bands {
         let Some(room) = band.room(narrow.up, narrow.radius, margin) else {
             return Ok(false);
         };
-        rooms.push((room, &band.reaches, vec![band.inward]));
+        rooms.push((room, &band.reaches, vec![band.inward], None));
     }
     for pivot in &narrow.pivots {
         let Some(room) = pivot.room(narrow.radius, margin) else {
             return Ok(false);
         };
-        rooms.push((room, &pivot.reaches, vec![pivot.from, pivot.to]));
+        rooms.push((
+            room,
+            &pivot.reaches,
+            vec![pivot.from, pivot.to],
+            Some(pivot.at),
+        ));
     }
-    let meets = |b: &Aabb| rooms.iter().any(|(r, _, _)| r.intersects(b));
+    let meets = |b: &Aabb| rooms.iter().any(|(r, _, _, _)| r.intersects(b));
     for (fi, face) in curved.faces.iter().enumerate() {
         if ours.contains(&fi) {
-            for (room, reaches, rays) in &rooms {
+            for (room, reaches, rays, pivot) in &rooms {
                 if reaches.contains(&fi) || !stands_in(model, curved, fi, room, tol)? {
                     continue;
                 }
                 // Another wall of the passage in the room: a section that
                 // passes into the solid through a wall facing it must not
                 // come out into air again, so no such wall may face the
-                // way the section runs.
+                // way the section runs, unless that wall's own band holds
+                // all that comes out (see `covers`).
                 let SurfaceGeometry::Plane(plane) = &face.surface else {
                     return Ok(false);
                 };
@@ -729,8 +740,23 @@ fn clear(
                 let Some(n) = outward(curved, fi, o) else {
                     return Ok(false);
                 };
-                if rays.iter().any(|d| n.dot(*d) > tol.angular()) {
-                    return Ok(false);
+                if let Some(at) = pivot {
+                    // A wall square to the floor wholly behind the pivot's
+                    // vertex, facing neither of its sections' ends away:
+                    // the turned fill lies on its air side, and no section
+                    // crosses it.
+                    let behind = n.dot(narrow.up).abs() <= tol.angular()
+                        && rays.iter().all(|d| n.dot(*d) >= -tol.angular())
+                        && n.dot(*at - o) > tol.angular().mul_add(narrow.radius, tol.confusion());
+                    if !behind && rays.iter().any(|d| n.dot(*d) > tol.angular()) {
+                        return Ok(false);
+                    }
+                    continue;
+                }
+                for d in rays {
+                    if n.dot(*d) > tol.angular() && !covers(model, curved, narrow, fi, *d, tol)? {
+                        return Ok(false);
+                    }
                 }
             }
             continue;
@@ -758,6 +784,44 @@ fn clear(
         }
     }
     Ok(true)
+}
+
+/// Whether a band whose sections run along `d` may come out into air
+/// through wall face `fi` (a thin rib's far side): `fi` is the wall of
+/// another band facing the same way, uncut, whose run spans the whole
+/// face. A point that comes out lies nearer that wall's plane than its own
+/// and over that band's run, so that band's section stands taller over it
+/// and the union already holds it.
+fn covers(
+    model: &Model,
+    curved: &Curved,
+    narrow: &Narrow,
+    fi: usize,
+    d: Vector,
+    tol: Tolerances,
+) -> OgeomResult<bool> {
+    // The face's box is padded by its vertices' and edges' tolerances.
+    let slack = tol.confusion() * 10.0;
+    let Some(other) = narrow.bands.iter().find(|b| b.wall == fi) else {
+        return Ok(false);
+    };
+    if other.inward.dot(d) < 1.0 - tol.angular() || !other.trims.is_empty() {
+        return Ok(false);
+    }
+    let bounds = ogeom_algo::shape_bounds(model, &curved.faces[fi].shape, tol)?;
+    let (Some(lo), Some(hi)) = (bounds.low(), bounds.high()) else {
+        return Ok(false);
+    };
+    let spans = (0..8).all(|i| {
+        let p = Point::new(
+            if i & 1 == 0 { lo.x } else { hi.x },
+            if i & 2 == 0 { lo.y } else { hi.y },
+            if i & 4 == 0 { lo.z } else { hi.z },
+        );
+        let t = (p - other.start).dot(other.along);
+        t >= -slack && t <= other.len + slack
+    });
+    Ok(spans)
 }
 
 /// The band's fill: its spandrel (the region between the wall, the floor

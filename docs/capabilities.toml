@@ -2036,8 +2036,10 @@ elliptic corner face; partial face \
 also takes walls facing each other closer than twice the radius over part \
 of one's length only (a pocket narrow up to a step). Walls leaning from \
 square to the floor are built by the engine as the same union. A band \
-that would cross a thin wall into air beyond, walls lower than the \
-radius, a curved floor, an elliptic corner whose radius of curvature \
+may cross a thin rib into the air behind it where the rib's far wall is \
+parallel to the band's wall and has its own band spanning it, which then \
+holds all that comes out. A band that would cross a thin wall into air \
+beyond otherwise, walls lower than the radius, a curved floor, an elliptic corner whose radius of curvature \
 reaches the radius somewhere, or a corner surface other than a circular \
 or elliptic cylinder go on to the engine, which refuses them by name. A passage that the strategies \
 switched on do not take is refused by name. The other round \
@@ -2158,7 +2160,10 @@ tests = [
     "crates/ogeom-fillet/tests/narrow_passage.rs::an_elliptic_corner_needs_whole_face",
     "crates/ogeom-fillet/tests/narrow_passage.rs::an_elliptic_corner_looser_than_the_radius_is_refused_by_name",
     "crates/ogeom-fillet/tests/narrow_passage.rs::the_ellipse_reference_reads_a_circle_as_the_circle_s",
-    "crates/ogeom-fillet/tests/narrow_passage.rs::a_band_that_would_cross_a_thin_rib_into_air_is_refused_by_name",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_band_crossing_a_thin_rib_rounds_through_it",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::the_rib_reference_holds_its_pieces",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_rib_whose_far_side_is_not_rounded_is_refused_by_name",
+    "crates/ogeom-fillet/tests/narrow_passage.rs::a_rib_whose_far_side_leans_is_refused_by_name",
     "crates/ogeom-fillet/tests/narrow_passage.rs::a_slot_with_a_curved_floor_is_refused_by_name",
     "crates/ogeom-fillet/tests/narrow_passage.rs::a_slot_exactly_twice_the_radius_wide_answers_in_time",
     "crates/ogeom-fillet/tests/narrow_passage.rs::one_round_of_a_slot_twice_the_radius_wide_answers_in_time",
