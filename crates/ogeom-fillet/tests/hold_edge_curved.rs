@@ -936,20 +936,3 @@ fn a_cone_beside_the_edge_goes_on_to_trim_through() {
     let edge = front_edge(&m, &s);
     as_with_hold_edge_off(&mut m, &s, &edge);
 }
-
-/// A held edge on a curved face is not held: a bore into the drum's front
-/// whose rim the band's contact on the drum runs past. The rim is not a
-/// curve in a plane, so no ball rests on it; the request goes on to trim
-/// through, as with hold edge off.
-#[test]
-fn a_rim_on_the_drum_goes_on_to_trim_through() {
-    let mut m = Model::new();
-    let s = drum(&mut m, false);
-    let bore = Frame::new(Point::new(15.0, -5.0, -4.5), Direction::Y, Direction::X, T).unwrap();
-    let cutter = ogeom_algo::make_cylinder(&mut m, bore, 2.0, 10.0, T)
-        .unwrap()
-        .shape;
-    let s = ogeom_bool::cut(&mut m, &s, &cutter, T).unwrap().shape;
-    let edge = front_edge(&m, &s);
-    as_with_hold_edge_off(&mut m, &s, &edge);
-}

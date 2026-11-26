@@ -10,9 +10,14 @@
 //! Built for a straight edge, or a chain of edges along one line, between
 //! a plane `a` and a plane or a cylinder `b` whose axis runs along the
 //! edge, the held edges any curves lying in `a`'s plane, the round ending
-//! on end faces within 60 degrees of square to its edge. On a cylinder the
-//! band's centres still lie on a line, and
-//! off the band a ball's centre rises round the axis on `b`'s offset. Each
+//! on end faces within 60 degrees of square to its edge; or between a
+//! drum `a` (a cylinder whose axis runs along the edge, the solid inside
+//! it) and a plane `b`, the held edges any curves on the drum but circles,
+//! each held stretch short of the band's ends, the end faces square to the
+//! edge, no foot on a vertex and none jumping. On a cylinder the band's
+//! centres still lie on a line, and off the band a ball's centre rises
+//! round the axis on `b`'s offset, or beside a drum `a` runs along the
+//! plane's offset toward the drum. Each
 //! ball's arc runs from its contact on `b` to its foot, on its
 //! characteristic circle. Where the seat changes the ball touches both
 //! seats at once and the two offsets are tangent, so neighbouring pieces
@@ -66,11 +71,16 @@ const READINGS: usize = 1024;
 
 /// The curve of a sharp edge of `a`: a line through `at` along `along`,
 /// the circle of `radius` about `centre` in the plane square to `normal`,
-/// its angle measured from `x` toward `y`, or any other curve in `a`'s
-/// plane over the range the edge covers, read at `samples` for the nearest
-/// point's start, `closed` where the edge is the whole curve. An open
-/// curve of the third kind is carried on past each end along its tangent
-/// there, its parameter growing at the rate it has at that end.
+/// its angle measured from `x` toward `y`, or any other curve on `a` over
+/// the range the edge covers, read at `samples` for the nearest point's
+/// start, `closed` where the edge is the whole curve. An open curve of the
+/// third kind is carried on past each end along its tangent there, its
+/// parameter growing at the rate it has at that end. On a drum `a` (its
+/// axis through `drum.0` along `drum.1`, of radius `drum.2`) the curve is
+/// read projected onto the drum along its radii: a curve where two curved
+/// faces meet is fitted, off the drum by up to its tolerance, and its
+/// projection keeps the feet on the drum, so the band's contact is the
+/// foot where it crosses the edge.
 #[derive(Debug, Clone)]
 enum Cliff {
     Line {
@@ -89,6 +99,7 @@ enum Cliff {
         range: (f64, f64),
         samples: Vec<(f64, Point)>,
         closed: bool,
+        drum: Option<(Point, Vector, f64)>,
         tol: Tolerances,
     },
 }
@@ -132,14 +143,40 @@ impl Cliff {
     /// The point at `t` of a curve of the third kind, its first and second
     /// derivatives.
     fn general_at(&self, t: f64) -> Option<(Point, Vector, Vector)> {
-        let Self::General { curve, tol, .. } = self else {
+        let Self::General {
+            curve, drum, tol, ..
+        } = self
+        else {
             return None;
         };
         let d = curve.derivatives_at(t, 2, *tol).ok()?;
         let [p, d1, d2] = d[..] else {
             return None;
         };
-        Some((Point::new(p.x, p.y, p.z), d1, d2))
+        let p = Point::new(p.x, p.y, p.z);
+        let Some((axis, e, radius)) = *drum else {
+            return Some((p, d1, d2));
+        };
+        // `p` as its height along the axis and its radial vector, the
+        // radial vector's length and direction differentiated in turn.
+        let q = p - axis;
+        let (s1, s2) = (d1.dot(e), d2.dot(e));
+        let r = q - e * q.dot(e);
+        let (r1, r2) = (d1 - e * s1, d2 - e * s2);
+        let m = r.magnitude();
+        if m <= 0.0 {
+            return None;
+        }
+        let u = r / m;
+        let m1 = u.dot(r1);
+        let u1 = (r1 - u * m1) / m;
+        let m2 = u1.dot(r1) + u.dot(r2);
+        let u2 = (r2 - u1 * (2.0 * m1) - u * m2) / m;
+        Some((
+            axis + e * q.dot(e) + u * radius,
+            e * s1 + u1 * radius,
+            e * s2 + u2 * radius,
+        ))
     }
 
     /// The end `k` of an open curve of the third kind: its point, its unit
@@ -376,9 +413,9 @@ struct Jump {
     sweep: f64,
 }
 
-/// The face `b` the ball touches throughout: a plane, or a cylinder whose
-/// axis runs along the edge, through `axis`, of `radius`, `sense` 1 where
-/// the solid lies inside it and -1 where it lies outside. Either way the
+/// A face beside the edge: a plane, or a cylinder whose axis runs along the
+/// edge, through `axis`, of `radius`, `sense` 1 where the solid lies inside
+/// it and -1 where it lies outside. With one of the two faces a plane the
 /// band's centres lie on a line along the edge.
 #[derive(Debug, Clone, Copy)]
 enum Front {
@@ -409,13 +446,16 @@ pub(crate) struct Hold {
     origin: Point,
     along: Vector,
     len: f64,
-    /// The outward normals of `a` and of `b` at the edge, and `b` itself.
+    /// The outward normals of `a` and of `b` at the edge, and the two
+    /// faces' kinds: `a` a plane, or a cylinder the solid lies inside where
+    /// `b` is a plane.
     na: Vector,
     nb: Vector,
+    a_kind: Front,
     front: Front,
     /// The band's centre at the edge's start.
     centre: Point,
-    /// In `a`, square to the edge, pointing from the edge into `a`.
+    /// Tangent to `a` at the edge, square to it, pointing into `a`.
     across: Vector,
     radius: f64,
     rims: Vec<Rim>,
@@ -451,8 +491,19 @@ impl Hold {
 
     /// The outward normal of `b` at the point of it nearest `p`.
     fn nb_at(&self, p: Point) -> Vector {
-        match self.front {
-            Front::Plane => self.nb,
+        self.normal_on(self.front, self.nb, p)
+    }
+
+    /// The outward normal of `a` at the point of it nearest `p`.
+    fn na_at(&self, p: Point) -> Vector {
+        self.normal_on(self.a_kind, self.na, p)
+    }
+
+    /// The outward normal of the face of `kind` at the point of it nearest
+    /// `p`, `flat` on a plane.
+    fn normal_on(&self, kind: Front, flat: Vector, p: Point) -> Vector {
+        match kind {
+            Front::Plane => flat,
             Front::Cylinder { axis, sense, .. } => {
                 let q = p - axis;
                 let radial = q - self.along * q.dot(self.along);
@@ -461,10 +512,50 @@ impl Hold {
         }
     }
 
+    /// The point of `a`'s surface nearest `p`: its foot on the plane, or on
+    /// the cylinder along the radius through it.
+    fn on_a(&self, p: Point) -> Point {
+        match self.a_kind {
+            Front::Plane => p - self.na * (p - self.origin).dot(self.na),
+            Front::Cylinder { axis, radius, .. } => {
+                let hub = axis + self.along * (p - axis).dot(self.along);
+                let radial = p - hub;
+                hub + radial * (radius / radial.magnitude())
+            }
+        }
+    }
+
+    /// Where `p` on `a` lies: how far along the edge, and how far into `a`
+    /// from the edge, along the plane or round the cylinder's axis.
+    fn a_coords(&self, p: Point) -> (f64, f64) {
+        let q = p - self.origin;
+        let x = q.dot(self.along);
+        match self.a_kind {
+            Front::Plane => (x, q.dot(self.across)),
+            Front::Cylinder { axis, radius, .. } => {
+                let w = p - axis;
+                let radial = w - self.along * w.dot(self.along);
+                (
+                    x,
+                    radial.dot(self.across).atan2(radial.dot(self.na)) * radius,
+                )
+            }
+        }
+    }
+
     /// The curve on `b` from `from` to `to`, both on it in one plane square
     /// to the edge: a segment on a plane, an arc about a cylinder's axis.
     fn across_b(&self, from: Point, to: Point, tol: Tolerances) -> OgeomResult<Arc> {
-        match self.front {
+        self.across_on(self.front, from, to, tol)
+    }
+
+    /// The curve on `a` from `from` to `to`, as [`Self::across_b`] on `b`.
+    fn across_a(&self, from: Point, to: Point, tol: Tolerances) -> OgeomResult<Arc> {
+        self.across_on(self.a_kind, from, to, tol)
+    }
+
+    fn across_on(&self, kind: Front, from: Point, to: Point, tol: Tolerances) -> OgeomResult<Arc> {
+        match kind {
             Front::Plane => segment(from, to, tol),
             Front::Cylinder { axis, radius, .. } => {
                 let hub = axis + self.along * (from - axis).dot(self.along);
@@ -481,7 +572,16 @@ impl Hold {
     /// Points along the curve on `b` from `from` to `to`, as
     /// [`Self::across_b`] runs.
     fn across_b_points(&self, from: Point, to: Point) -> Vec<Point> {
-        match self.front {
+        self.across_points(self.front, from, to)
+    }
+
+    /// Points on `a` between `from` and `to`, as [`Self::across_b_points`].
+    fn across_a_points(&self, from: Point, to: Point) -> Vec<Point> {
+        self.across_points(self.a_kind, from, to)
+    }
+
+    fn across_points(&self, kind: Front, from: Point, to: Point) -> Vec<Point> {
+        match kind {
             Front::Plane => vec![from, to],
             Front::Cylinder { axis, radius, .. } => {
                 let hub = axis + self.along * (from - axis).dot(self.along);
@@ -497,16 +597,16 @@ impl Hold {
     }
 
     /// The point `s` along the path of the centres touching `b` that rises
-    /// from the band's centre `c` toward `a`'s plane, and how far that path
-    /// runs before it reaches the plane or turns back from it: a line on a
-    /// plane's offset, an arc about a cylinder's axis.
+    /// from the band's centre `c` toward `a`, and how far that path runs
+    /// before it reaches `a` or turns back from it: a line on a plane's
+    /// offset, an arc about a cylinder's axis.
     fn rise(&self, c: Point) -> Option<(impl Fn(f64) -> Point, f64)> {
         let (along, na) = (self.along, self.na);
         let height = move |p: Point| (p - self.origin).dot(na);
         let (step, foot, v0, w0) = match self.front {
             Front::Plane => {
                 let g = along.cross(self.nb);
-                let g = if g.dot(na) < 0.0 { -g } else { g };
+                let g = if g.dot(self.on_a(c) - c) < 0.0 { -g } else { g };
                 (Some(g), c, Vector::ZERO, g)
             }
             Front::Cylinder { axis, .. } => {
@@ -521,9 +621,21 @@ impl Hold {
             Some(g) => foot + g * s,
             None => foot + v0 * s.cos() + w0 * s.sin(),
         };
-        let reach = match step {
-            Some(g) => -height(c) / g.dot(na),
-            None => {
+        let reach = match (step, self.a_kind) {
+            (Some(g), Front::Plane) => -height(c) / g.dot(na),
+            // Where the line leaves the cylinder `a`, the solid inside it.
+            (Some(g), Front::Cylinder { axis, radius, .. }) => {
+                let q = c - axis;
+                let d = q - along * q.dot(along);
+                let half = d.dot(g);
+                let disc = half * half - (d.dot(d) - radius * radius);
+                if disc <= 0.0 {
+                    return None;
+                }
+                -half + disc.sqrt()
+            }
+            (None, Front::Cylinder { .. }) => return None,
+            (None, Front::Plane) => {
                 // The arc's highest point, or where it reaches the plane
                 // before that.
                 let top = w0.dot(na).atan2(v0.dot(na));
@@ -542,12 +654,12 @@ impl Hold {
 
     /// How far into `a` the band's contact lies from the edge.
     fn contact_depth(&self) -> f64 {
-        (self.band(0.0) + self.na * self.radius - self.origin).dot(self.across)
+        self.a_coords(self.on_a(self.band(0.0))).1
     }
 
-    /// Whether the point `x` along the edge and `y` into `a` lies on `a`:
-    /// whether the walk to it from the edge crosses the sharp edges of `a`
-    /// an even number of times.
+    /// Whether the point `x` along the edge and `y` into `a` ([`Self::a_coords`])
+    /// lies on `a`: whether the walk to it from the edge, square to the
+    /// edge, crosses the sharp edges of `a` an even number of times.
     fn inside_at(&self, x: f64, y: f64) -> bool {
         let start = self.contact_depth() * 1e-9;
         if y <= start {
@@ -564,11 +676,7 @@ impl Hold {
             if px * qx >= 0.0 {
                 return false;
             }
-            let (py, qy) = (
-                (p - self.origin).dot(self.across),
-                (q - self.origin).dot(self.across),
-            );
-            let cy = py + (qy - py) * px / (px - qx);
+            let cy = self.a_coords(p + (q - p) * (px / (px - qx))).1;
             cy > start && cy < y
         };
         let mut crossings = 0;
@@ -614,7 +722,7 @@ impl Hold {
                         let Some((p, _, _)) = rim.cliff.general_at(t) else {
                             continue;
                         };
-                        let cy = (p - self.origin).dot(self.across);
+                        let cy = self.a_coords(p).1;
                         if cy > start && cy < y {
                             crossings += 1;
                         }
@@ -658,10 +766,9 @@ impl Hold {
     /// The distance from `p` to its seat, the seat's nearest point and the
     /// seat: the one given, or the nearest of `a`'s region.
     fn support(&self, p: Point, seat: Option<Seat>) -> Option<(f64, Point, Seat)> {
-        let on_plane = |p: Point| p - self.na * (p - self.origin).dot(self.na);
         match seat {
             Some(Seat::Face) => {
-                let f = on_plane(p);
+                let f = self.on_a(p);
                 Some((p.distance(f), f, Seat::Face))
             }
             Some(Seat::Rim(i)) => {
@@ -673,9 +780,9 @@ impl Hold {
                 Some((p.distance(f), f, Seat::Corner(k)))
             }
             None => {
-                let q = p - self.origin;
-                if self.inside_at(q.dot(self.along), q.dot(self.across)) {
-                    let f = on_plane(p);
+                let f = self.on_a(p);
+                let (x, y) = self.a_coords(f);
+                if self.inside_at(x, y) {
                     return Some((p.distance(f), f, Seat::Face));
                 }
                 let mut best: Option<(f64, Point, Seat)> = None;
@@ -709,14 +816,20 @@ impl Hold {
         let band = Ball {
             centre: c,
             on_b: c + self.nb_at(c) * r,
-            on_a: c + self.na * r,
+            on_a: self.on_a(c),
         };
         if seat == Some(Seat::Face) || (seat.is_none() && self.inside_at(x, self.contact_depth())) {
             return Some((band, Seat::Face));
         }
         let (path, reach) = self.rise(c)?;
         let f = |s: f64| self.support(path(s), seat).map(|(d, _, _)| d - r);
-        let s = root(f, 0.0, reach)?;
+        // A held edge lies on `a`, at least the radius from the band's
+        // centre; where rounding puts it nearer, the ball is the band's.
+        let s = if f(0.0)? <= 0.0 {
+            0.0
+        } else {
+            root(f, 0.0, reach)?
+        };
         let centre = path(s);
         let (_, foot, found) = self.support(centre, seat)?;
         Some((
@@ -874,7 +987,7 @@ impl Hold {
             fits &= match (before, pieces[k].seat) {
                 // The band's contact crosses the edge there.
                 (Seat::Face, Seat::Rim(i)) | (Seat::Rim(i), Seat::Face) => {
-                    let contact = self.band(x) + self.na * self.radius;
+                    let contact = self.on_a(self.band(x));
                     self.rims[i]
                         .cliff
                         .foot(contact)
@@ -928,6 +1041,10 @@ impl Hold {
     /// so the ball's surface between its two arcs (the lune facing the way
     /// the path turns from) is the round there. `None` for any other change.
     fn jump(&self, x: f64, i: usize, j: usize) -> Option<Jump> {
+        // The arc between the feet lies in `a`'s plane.
+        if !matches!(self.a_kind, Front::Plane) {
+            return None;
+        }
         let r = self.radius;
         let near = r * 1e-6;
         let (bi, _) = self.ball(x, Some(Seat::Rim(i)))?;
@@ -1322,20 +1439,45 @@ fn root(f: impl Fn(f64) -> Option<f64>, lo: f64, hi: f64) -> Option<f64> {
     Some((a * fb - b * fa) / (fb - fa))
 }
 
-/// The curve of the edge `held` of the plane with normal `plane_normal`,
-/// where it lies in that plane, over the range the edge covers.
-fn cliff_of(curved: &Curved, held: Id, plane_normal: Vector, tol: Tolerances) -> Option<Cliff> {
+/// The curve of the edge `held` of `a`, where it lies on `a`, over the
+/// range the edge covers: on a plane of normal `plane_normal` a line, a
+/// circle or any other curve in it; on a cylinder `a` whose axis runs
+/// along `along`, a ruling or any curve but a circle, within `reach` (the
+/// edge's own tolerance: a curve where two curved faces meet is fitted).
+fn cliff_of(
+    curved: &Curved,
+    held: Id,
+    (a_kind, plane_normal, along): (Front, Vector, Vector),
+    reach: f64,
+    tol: Tolerances,
+) -> Option<Cliff> {
     let eps = tol.angular();
     let edge = &curved.edges[&held];
+    // Whether a point of the curve lies on `a`: in the plane through `first`,
+    // or on the cylinder.
+    let on_a = |p: Point, first: Point| match a_kind {
+        Front::Plane => (p - first).dot(plane_normal).abs() <= tol.confusion(),
+        Front::Cylinder { axis, radius, .. } => {
+            let q = p - axis;
+            ((q - along * q.dot(along)).magnitude() - radius).abs() <= reach.max(tol.confusion())
+        }
+    };
     match &edge.curve {
         Curve::Line(line) => {
             let axis = line.axis();
-            let along = axis.direction.vector();
-            (along.dot(plane_normal).abs() <= eps).then_some(Cliff::Line {
+            let dir = axis.direction.vector();
+            let lies = match a_kind {
+                Front::Plane => dir.dot(plane_normal).abs() <= eps,
+                Front::Cylinder { .. } => {
+                    dir.cross(along).magnitude() <= eps && on_a(axis.location, axis.location)
+                }
+            };
+            lies.then_some(Cliff::Line {
                 at: axis.location,
-                along,
+                along: dir,
             })
         }
+        Curve::Circle(_) if !matches!(a_kind, Front::Plane) => None,
         Curve::Circle(c) => {
             let circle = c.circle();
             let frame = circle.frame();
@@ -1363,16 +1505,29 @@ fn cliff_of(curved: &Curved, held: Id, plane_normal: Vector, tol: Tolerances) ->
                 samples.push((t, curve.point_at(t, tol).ok()?));
             }
             let first = samples[0].1;
-            samples
+            if !samples.iter().all(|(_, p)| on_a(*p, first)) {
+                return None;
+            }
+            let drum = match a_kind {
+                Front::Plane => None,
+                Front::Cylinder { axis, radius, .. } => Some((axis, along, radius)),
+            };
+            let mut cliff = Cliff::General {
+                curve: curve.clone(),
+                range: (lo, hi),
+                samples: Vec::new(),
+                closed: edge.ends.0 == edge.ends.1,
+                drum,
+                tol,
+            };
+            let projected = samples
                 .iter()
-                .all(|(_, p)| (*p - first).dot(plane_normal).abs() <= tol.confusion())
-                .then(|| Cliff::General {
-                    curve: curve.clone(),
-                    range: (lo, hi),
-                    samples,
-                    closed: edge.ends.0 == edge.ends.1,
-                    tol,
-                })
+                .map(|(t, _)| cliff.general_at(*t).map(|(p, _, _)| (*t, p)))
+                .collect::<Option<Vec<_>>>()?;
+            if let Cliff::General { samples, .. } = &mut cliff {
+                *samples = projected;
+            }
+            Some(cliff)
         }
     }
 }
@@ -1393,9 +1548,10 @@ fn touches(curved: &Curved, fi: usize, v: Id) -> bool {
     })
 }
 
-/// The sharp edges of the faces of `a`'s plane near the band, as rims,
-/// and the vertices where two of them meet, as corners; `None` where an
-/// edge of theirs within reach of the band does not lie in that plane. The round's own edges, the seams between those faces and
+/// The sharp edges of the faces of `a` near the band, as rims, and the
+/// vertices where two of them meet, as corners; `None` where an edge of
+/// theirs within reach of the band does not lie on `a` as [`cliff_of`]
+/// reads it. The round's own edges, the seams between those faces and
 /// their edges on an end face are not rims.
 #[allow(clippy::too_many_arguments, reason = "the band's reading, passed on")]
 fn rims_of(
@@ -1404,7 +1560,7 @@ fn rims_of(
     skip: &[Id],
     a: &[usize],
     ends: [usize; 2],
-    na: Vector,
+    (a_kind, na, along): (Front, Vector, Vector),
     room: &Aabb,
     tol: Tolerances,
 ) -> OgeomResult<Option<(Vec<Rim>, Vec<Corner>)>> {
@@ -1423,7 +1579,10 @@ fn rims_of(
         if between.iter().any(|f| ends.contains(f)) || between.iter().all(|f| a.contains(f)) {
             continue;
         }
-        let Some(cliff) = cliff_of(curved, *e, na, tol) else {
+        let reach = model
+            .tolerance_of(&curved.edges[e].shape)?
+            .map_or(0.0, ogeom_core::Tolerance::get);
+        let Some(cliff) = cliff_of(curved, *e, (a_kind, na, along), reach, tol) else {
             let edge = &curved.edges[e];
             if ogeom_algo::shape_bounds(model, &edge.shape, tol)?.intersects(room) {
                 return Ok(None);
@@ -1594,10 +1753,11 @@ fn band_centre(
 
 /// `edges` read as one straight round of `radius` between a plane and a
 /// plane or a cylinder along the edge, whose contact on the plane runs
-/// past sharp edges of it, held as hold edge holds them; `None` for any
-/// other request, or where anything else of the solid stands within its
-/// reach. The edges may be a chain along one line, each between faces of
-/// the same two surfaces.
+/// past sharp edges of it, or between a drum along the edge and a plane,
+/// whose contact on the drum runs past sharp edges of it, held as hold edge
+/// holds them; `None` for any other request, or where anything else of the
+/// solid stands within its reach. The edges may be a chain along one line,
+/// each between faces of the same two surfaces.
 ///
 /// # Errors
 ///
@@ -1754,12 +1914,22 @@ pub(crate) fn reach(
     let mut found: Vec<Hold> = Vec::new();
     for (sa, na, nb) in [(0, n0, n1), (1, n1, n0)] {
         let (a_faces, b_faces) = (sides[sa].clone(), sides[1 - sa].clone());
-        let (Some(Front::Plane), Some(front)) = (front_of(&a_faces), front_of(&b_faces)) else {
+        let (Some(a_kind), Some(front)) = (front_of(&a_faces), front_of(&b_faces)) else {
             continue;
         };
-        let Some(centre) = band_centre(p0, along, na, nb, front, radius, eps) else {
+        let centre = match (a_kind, front) {
+            (Front::Plane, _) => band_centre(p0, along, na, nb, front, radius, eps),
+            // A drum `a` the solid lies inside, beside a plane `b`: the
+            // offsets meet in a line, as with the two the other way round.
+            (Front::Cylinder { sense, .. }, Front::Plane) if sense > 0.0 => {
+                band_centre(p0, along, nb, na, a_kind, radius, eps)
+            }
+            _ => None,
+        };
+        let Some(centre) = centre else {
             continue;
         };
+        let curved_a = !matches!(a_kind, Front::Plane);
         // On a cylinder an end face leaning over the band cuts `b` in an
         // ellipse: the round runs on past it, cut by the boolean.
         let leaning = [
@@ -1767,15 +1937,23 @@ pub(crate) fn reach(
             end_normals[1].dot(along) < 1.0 - ang,
         ];
         let forced = leaning.map(|l| l && matches!(front, Front::Cylinder { .. }));
-        let across = {
-            let v = along.cross(na);
-            let contact = centre + na * radius - p0;
-            if contact.dot(v) < 0.0 { -v } else { v }
-        };
+        // A leaning end face cuts a drum `a` in an ellipse.
+        if curved_a && leaning.iter().any(|l| *l) {
+            continue;
+        }
         // The room the band's balls take up, with a radius to spare.
         let spare = Vector::new(radius, radius, radius) * 2.0;
         let room = Aabb::of_points(&[p0 - spare, p0 + spare, p1 - spare, p1 + spare]);
-        let Some((rims, corners)) = rims_of(model, &curved, &ids, &a_faces, ends, na, &room, tol)?
+        let Some((rims, corners)) = rims_of(
+            model,
+            &curved,
+            &ids,
+            &a_faces,
+            ends,
+            (a_kind, na, along),
+            &room,
+            tol,
+        )?
         else {
             continue;
         };
@@ -1793,9 +1971,10 @@ pub(crate) fn reach(
             len,
             na,
             nb,
+            a_kind,
             front,
             centre,
-            across,
+            across: Vector::ZERO,
             radius,
             rims,
             corners,
@@ -1804,9 +1983,25 @@ pub(crate) fn reach(
             ends_at: [None; 2],
             real: (0.0, len),
         };
+        hold.across = {
+            let v = along.cross(na);
+            let contact = hold.on_a(centre) - p0;
+            if contact.dot(v) < 0.0 { -v } else { v }
+        };
         let Some(pieces) = hold.read_pieces() else {
             continue;
         };
+        // On a drum `a` the ball rests on the band and on held edges, each
+        // stretch short of the band's ends: a vertex seat, and a stretch
+        // reaching an end face, are not read there.
+        let ends_band = |p: Option<&Piece>| p.is_some_and(|p| p.seat == Seat::Face);
+        if curved_a
+            && (pieces.iter().any(|p| matches!(p.seat, Seat::Corner(_)))
+                || !ends_band(pieces.first())
+                || !ends_band(pieces.last()))
+        {
+            continue;
+        }
         let (Some(first), Some(last)) = (pieces.first(), pieces.last()) else {
             continue;
         };
@@ -1823,6 +2018,9 @@ pub(crate) fn reach(
         let Some(hold) = hold.run_on(forced) else {
             continue;
         };
+        if curved_a && hold.ends_at.iter().any(Option::is_some) {
+            continue;
+        }
         found.push(hold);
     }
     let [hold] = &found[..] else {
@@ -1880,6 +2078,7 @@ fn clear(model: &Model, hold: &Hold, tol: Tolerances) -> OgeomResult<bool> {
         points.push(ball.on_a);
         // A cylinder bulges between the edge and the contact on it.
         points.extend(hold.across_b_points(hold.on_edge(x), ball.on_b));
+        points.extend(hold.across_a_points(hold.on_edge(x), ball.on_a));
     }
     // An end face leaning over the band carries the round past the edge's
     // end.
@@ -2428,7 +2627,7 @@ fn tool(
     );
     let a_start = push(
         (e0, at_a[0].1),
-        segment(points[e0], points[at_a[0].1], tol)?,
+        hold.across_a(points[e0], points[at_a[0].1], tol)?,
     );
     let b_end = push(
         (e1, at_b[last]),
@@ -2436,7 +2635,7 @@ fn tool(
     );
     let a_end = push(
         (e1, at_a[last].0),
-        segment(points[e1], points[at_a[last].0], tol)?,
+        hold.across_a(points[e1], points[at_a[last].0], tol)?,
     );
     // The section at each break, the piece before's and the piece after's:
     // the band's arc, the arc of the ball two pieces share, or a fitted
@@ -2561,7 +2760,7 @@ fn tool(
             ]
             .concat(),
             at: on_mid + (ma - on_mid) * 0.5,
-            out: hold.na,
+            out: hold.na_at(on_mid + (ma - on_mid) * 0.5),
         },
     ];
     for (k, end) in [(0, hold.ends[0]), (last, hold.ends[1])] {
@@ -2734,7 +2933,7 @@ fn kept(model: &Model, shape: &Shape, hold: &Hold, tol: Tolerances) -> OgeomResu
         }
         for (i, rim) in hold.rims.iter().enumerate() {
             let on = samples.iter().all(|p| {
-                (*p - hold.origin).dot(hold.na).abs() <= near
+                p.distance(hold.on_a(*p)) <= near
                     && rim.cliff.foot(*p).is_some_and(|f| f.distance(*p) <= near)
             });
             if on {

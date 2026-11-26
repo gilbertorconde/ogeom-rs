@@ -1,0 +1,5 @@
+- **Added: hold edge keeps a held edge on a drum** (#1237).
+  - A round of a straight edge between a drum (a cylinder whose axis runs along the edge, the solid inside it) and a plane holds a sharp edge on the drum that its contact runs past, such as a bore's rim: the ball touches the plane and rests on the edge's nearest point. It used to go on to trim through.
+  - A fitted held edge is read projected onto the drum, within its own tolerance.
+  - A part 30 long under a drum r 10, front top edge r 4, a bore r 2 into the drum beside it: cut away 31.532301962 against a reference of 31.532301965 (bound 3.2e-12), joins within 4.8e-7 rad.
+  - Still not held on the drum, going on to trim through: a vertex seat, a foot jumping between edges, a circle across the drum, a stretch reaching an end face, a leaning end face, a cylinder on the other side and a concave drum. The rule is in ADR 0001, part "Hold edge, a held edge on a drum".
