@@ -39,7 +39,7 @@ use ogeom_core::Tolerances;
 use ogeom_geom::{Surface as _, SurfaceGeometry};
 use ogeom_math::{KnotVector, Point, Vector};
 
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 /// A verified patch.
 #[derive(Debug, Clone)]
@@ -249,9 +249,10 @@ pub(crate) fn fit_patch(region: &Region, flat: f64, tol: Tolerances) -> Result<P
         let m = n.magnitude();
         *n = if m > 0.0 { *n / m } else { Vector::Z };
     }
-    let near = crate::recognize::recognize_points(&local.points, &vertex_normals, flat * NEAR, tol)
-        .ok()
-        .flatten();
+    let near =
+        ogeom_fit::recognize::recognize_points(&local.points, &vertex_normals, flat * NEAR, tol)
+            .ok()
+            .flatten();
     if let Some(found) = near
         && let Some(chart) = canonical_chart(&found.surface, &local, tol)
         && let Some((surface, deviation)) = fitted(&local, &normals, chart, flat, tol)
@@ -777,7 +778,7 @@ fn fitted(
         let geometry = SurfaceGeometry::BSpline(fit.curve);
         let mut distances = Vec::with_capacity(points.len());
         for (p, at) in points.iter().zip(parameters.iter_mut()) {
-            match crate::measure::project_on_surface_from(&geometry, *p, *at, tol) {
+            match ogeom_algo::measure::project_on_surface_from(&geometry, *p, *at, tol) {
                 Ok(foot) => {
                     *at = foot.parameters;
                     distances.push(foot.distance);
@@ -850,7 +851,7 @@ fn verified(
     tol: Tolerances,
 ) -> Option<f64> {
     let foot = |p: Point, at: (f64, f64)| {
-        crate::measure::project_on_surface_from(surface, p, at, tol).ok()
+        ogeom_algo::measure::project_on_surface_from(surface, p, at, tol).ok()
     };
     // Every vertex, at its foot.
     let mut deviation = 0.0_f64;
@@ -984,7 +985,7 @@ mod tests {
 
     /// The patch's worst distance from the points.
     fn worst(patch: &Patch, points: &[Point]) -> f64 {
-        let shape = crate::recognize::SweptShape::new(patch.surface.clone(), T);
+        let shape = ogeom_fit::recognize::SweptShape::new(patch.surface.clone(), T);
         points
             .iter()
             .map(|p| shape.foot(*p).map_or(f64::INFINITY, |f| f.distance))

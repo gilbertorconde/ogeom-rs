@@ -16,7 +16,7 @@ use super::segment::{axis_frame, chart, evaluate, unit_normal, unwrapped, walk_e
 use super::snap::projected_image;
 use super::weld::{Half, from_to};
 use super::{Carrier, Curved, Fan, Groups, Layout};
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 /// Builds the planned vertices, edges and faces.
 pub(super) struct Builder<'a> {
@@ -247,7 +247,7 @@ impl Builder<'_> {
             } else {
                 return Ok(None);
             };
-            crate::build::attach_pcurve(
+            ogeom_algo::build::attach_pcurve(
                 self.model,
                 &edges[edge],
                 pcurve,
@@ -282,7 +282,7 @@ impl Builder<'_> {
                 let pole = self
                     .model
                     .add_edge(data, &[vertex.clone(), vertex.clone()])?;
-                crate::build::attach_pcurve(
+                ogeom_algo::build::attach_pcurve(
                     self.model,
                     &pole,
                     ogeom_geom::Line2d::segment(p, q, self.tol)?.into(),
@@ -416,7 +416,7 @@ impl Builder<'_> {
                 self.tol,
             )?
             .into();
-            crate::build::attach_pcurve(
+            ogeom_algo::build::attach_pcurve(
                 self.model,
                 &edges[edge],
                 pcurve,
@@ -442,7 +442,7 @@ impl Builder<'_> {
                 let pole = self
                     .model
                     .add_edge(data, &[vertex.clone(), vertex.clone()])?;
-                crate::build::attach_pcurve(
+                ogeom_algo::build::attach_pcurve(
                     self.model,
                     &pole,
                     ogeom_geom::Line2d::segment(p, q, self.tol)?.into(),
@@ -491,7 +491,7 @@ impl Builder<'_> {
                     let Some(pcurve) = self.plane_image(plane, &geometry, spec)? else {
                         ogeom_bail!(Construction, "an edge has no image in its face's plane");
                     };
-                    crate::build::attach_pcurve(
+                    ogeom_algo::build::attach_pcurve(
                         self.model,
                         &edges[edge],
                         pcurve,
@@ -524,7 +524,7 @@ impl Builder<'_> {
         spec: &EdgeSpec,
     ) -> OgeomResult<Option<PlanarCurve>> {
         if let Some(pcurve) = ogeom_intersect::exact_pcurve_of(&spec.curve, geometry, self.tol)
-            && crate::pcurve_gap::pcurve_gap(
+            && ogeom_algo::pcurve_gap::pcurve_gap(
                 (&spec.curve, spec.range),
                 (&pcurve, spec.range),
                 geometry,
@@ -606,7 +606,7 @@ impl Builder<'_> {
                         &edges[edge],
                         Tolerance::new(deviation.max(self.tol.confusion()))?,
                     )?;
-                    crate::build::attach_pcurve(
+                    ogeom_algo::build::attach_pcurve(
                         self.model,
                         &edges[edge],
                         pcurve,
@@ -631,7 +631,7 @@ impl Builder<'_> {
         wires.sort_by(|a, b| b.0.total_cmp(&a.0));
         let wires: Vec<Shape> = wires.into_iter().map(|(_, w)| w).collect();
         // Fitted images answer on whichever branch their projection chose.
-        crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
+        ogeom_algo::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
         let mut data = FaceData::new(surface, Location::identity());
         data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
         let face = self.model.add_face(data, &wires)?;
@@ -679,7 +679,7 @@ impl Builder<'_> {
                     &edges[edge],
                     Tolerance::new(deviation.max(self.tol.confusion()))?,
                 )?;
-                crate::build::attach_pcurve(
+                ogeom_algo::build::attach_pcurve(
                     self.model,
                     &edges[edge],
                     pcurve,
@@ -783,7 +783,7 @@ impl Builder<'_> {
             self.tol,
         )?;
         let (forward, back) = if outward { (far, near) } else { (near, far) };
-        crate::build::attach_seam(
+        ogeom_algo::build::attach_seam(
             self.model,
             &seam,
             forward,
@@ -821,7 +821,7 @@ impl Builder<'_> {
             let list = if outward { list } else { walked_back(&list) };
             wires.push(self.model.add_wire(&list)?);
         }
-        crate::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
+        ogeom_algo::build::chain_wire_branches(self.model, surface, &wires, self.tol)?;
         let mut data = FaceData::new(surface, Location::identity());
         data.tolerance = Tolerance::new(curved.deviation.max(self.tol.confusion()))?;
         let face = self.model.add_face(data, &wires)?;
@@ -913,7 +913,7 @@ impl Builder<'_> {
                 ((a, at), (b, at))
             };
             let pcurve = linear(from, to, (0.0, tau), self.tol)?;
-            crate::build::attach_pcurve(
+            ogeom_algo::build::attach_pcurve(
                 self.model,
                 &edges[edge],
                 pcurve,
@@ -998,7 +998,7 @@ impl Builder<'_> {
                 linear((seam_u, v_low), (seam_u, v_high), seam_range, self.tol)?,
             )
         };
-        crate::build::attach_seam(
+        ogeom_algo::build::attach_seam(
             self.model,
             &seam,
             forward,

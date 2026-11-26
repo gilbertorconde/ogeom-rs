@@ -94,7 +94,7 @@ pub(crate) fn fit_extrusion(
     let mut deviation = 0.0_f64;
     for (p, h) in points.iter().zip(&heights) {
         let shadow = *p - a * *h;
-        let foot = crate::project_on_curve(&curve, shadow, 64, tol).ok()?;
+        let foot = ogeom_algo::project_on_curve(&curve, shadow, 64, tol).ok()?;
         deviation = deviation.max(foot.distance);
         if deviation > tolerance {
             return None;
@@ -118,7 +118,7 @@ pub(crate) fn fit_revolution(
     if points.len() < PROFILE_POINTS || points.len() != normals.len() {
         return None;
     }
-    let (through, axis) = crate::recognize::revolution_axis(points, normals, tol)?;
+    let (through, axis) = ogeom_fit::recognize::revolution_axis(points, normals, tol)?;
     let (through, axis) = refined_axis(points, through, axis, tol);
     let (through, axis) =
         settled_axis(points, through, axis, tolerance, tol).unwrap_or((through, axis));
@@ -157,7 +157,7 @@ pub(crate) fn fit_revolution(
     .ok()?;
     let mut deviation = 0.0_f64;
     for &(r, h) in &profile {
-        let foot = crate::project_on_curve(&curve, lift((r, h)), 64, tol).ok()?;
+        let foot = ogeom_algo::project_on_curve(&curve, lift((r, h)), 64, tol).ok()?;
         deviation = deviation.max(foot.distance);
         if deviation > tolerance {
             return None;
@@ -422,7 +422,7 @@ fn settled_axis(
         let mut ata = nalgebra::DMatrix::<f64>::zeros(unknowns, unknowns);
         let mut atb = nalgebra::DVector::<f64>::zeros(unknowns);
         for &(r, h, angle) in &polar {
-            let foot = crate::project_on_curve(&curve, Point::new(r, h, 0.0), 64, tol).ok()?;
+            let foot = ogeom_algo::project_on_curve(&curve, Point::new(r, h, 0.0), 64, tol).ok()?;
             let tangent = ogeom_geom::Curve3d::d1_at(&curve, foot.parameter, tol).ok()?;
             let length = tangent.magnitude();
             if length <= 0.0 {

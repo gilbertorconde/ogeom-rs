@@ -10,7 +10,7 @@ use ogeom_topo::Shape;
 use super::segment::{chart, periodic, unwrapped};
 use super::weld::{Half, from_to};
 use super::{Curved, Stop};
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 /// Where a rim's entry starts: the entry, its vertex, and where that
 /// stands.

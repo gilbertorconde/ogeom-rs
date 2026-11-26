@@ -12,7 +12,7 @@ use ogeom_topo::{Model, Shape};
 use super::planner::{EdgeSpec, Planner};
 use super::snap::{Images, Snapped, image_on};
 use super::{Carrier, Curved};
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 /// Faces' areas kept across the builds of one conversion, by the face's
 /// content and the deflection (see [`ogeom_topo::face_content`]): a face's
@@ -24,7 +24,7 @@ pub(super) struct AreaCache {
 }
 
 impl AreaCache {
-    /// The area of `face` as [`crate::surface_properties`] measures it at
+    /// The area of `face` as [`ogeom_algo::surface_properties`] measures it at
     /// `deflection`.
     pub(super) fn area(
         &self,
@@ -33,7 +33,8 @@ impl AreaCache {
         deflection: ogeom_mesh::Deflection,
         tol: Tolerances,
     ) -> OgeomResult<f64> {
-        let measure = || crate::surface_properties(model, face, deflection, tol).map(|m| m.mass);
+        let measure =
+            || ogeom_algo::surface_properties(model, face, deflection, tol).map(|m| m.mass);
         let Some(mut key) = ogeom_topo::face_content(model, face) else {
             return measure();
         };

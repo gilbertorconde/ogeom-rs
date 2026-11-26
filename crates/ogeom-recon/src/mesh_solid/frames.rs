@@ -12,7 +12,7 @@ use super::segment::{angular_spread, axis_frame, chart, on_frame, periodic};
 use super::snap::plane_through;
 use super::weld::Adjacency;
 use super::{Carrier, Curved, Groups};
-use crate::recognize::{Canonical, worst_deviation};
+use ogeom_fit::recognize::{Canonical, worst_deviation};
 
 /// A region's boundary, walked into loops of mesh vertices: each border
 /// half-edge leads to the one leaving its end. `None` where a vertex has
@@ -559,7 +559,7 @@ fn onto_axis(curved: &mut Curved, points: &[Point], frame: Frame, flat: f64, tol
         curved.deviation = deviation;
     } else if matches!(curved.shape, Canonical::Cylinder(_) | Canonical::Cone(_))
         && let Some(refitted) =
-            crate::recognize::ruled_about(&pts, frame.origin(), frame.z(), flat, tol)
+            ogeom_fit::recognize::ruled_about(&pts, frame.origin(), frame.z(), flat, tol)
         && let Some(refitted) = on_frame(&refitted, frame, tol)
     {
         // The fit's own axis stood a few slops off this one, and its

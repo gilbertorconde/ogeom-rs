@@ -18,7 +18,7 @@ use super::rounds::{faceted_rounds, plane_normals, tangent_blends, tangent_round
 use super::snap::plane_through;
 use super::weld::{Adjacency, Half};
 use super::{Carrier, Curved, Groups, MeshSolidOptions, Narrower, PatchRefusals};
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 /// The plane of a triangle, its normal by the winding, its `x` axis along
 /// the first side. The triangle has area, so both are defined.

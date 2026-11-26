@@ -41,7 +41,6 @@ per module. Each verdict cites the symbols and tests that back it, and
 - **algo.sewing**: Sewing faces into shells along coincident edges, or across a gap asked for, with spatial acceleration · `covered`
 - **algo.shape-distance**: Distance, proximity and overlap between whole shapes, and self-intersection · `covered`
 - **algo.signed-distance**: Signed distances from many points to a mesh or a shape's own faces, facing-aware · `covered`
-- **algo.solid-from-mesh**: A solid from a triangle mesh: coplanar triangles merged into planar faces, curved regions recognized as cylinders, cones, spheres and tori · `covered`
 - **algo.spatial-acceleration**: Generic bounding-volume hierarchies · `divergent`
   - *reasoning:* No generic BVH container library: the kernel's standing indexes are keyed on what a caller asks of a mesh or a cloud (mesh.spatial-index), and the acceleration structures inside its algorithms (sewing's cell filter, the classifier's bounds, the distance walk's pruning) stay internal to them, sized and keyed for their one question. Picking, outside the kernel (outside/crates/ogeom-select), builds on mesh.spatial-index's triangle hierarchy.
 - **algo.surface-sheet**: Laying a flat sketch onto a curved face: geodesic polar coordinates, curves carried with pcurves · `partial`
@@ -54,7 +53,6 @@ per module. Each verdict cites the symbols and tests that back it, and
 
 - **bool.booleans**: The boolean operations: cut, fuse, common, section and split, exact and fuzzy, with argument checking · `covered`
 - **bool.cells**: The cells builder: arbitrary take/remove over the fused arrangement · `covered`
-- **bool.cut-by-mesh-region**: Cutting a solid by a break surface marked on a mesh: the break extended over its average plane clear of the solid, holes closed, thickened into a slab and cut away, one side kept, the solid's faces left on their own surfaces · `covered`
 - **bool.defeaturing**: Removing a set of faces from a solid by extending and re-intersecting its neighbours · `partial`
   - *restriction:* Inner-loop features (bores, bosses, pockets whose rim is a
 surviving face's inner wire) remove in full generality: wire surgery, no
@@ -346,6 +344,11 @@ than a plane or a B-spline over its patch's parameters.
   - *restriction:* Threads are cut on cylindrical faces only; a tapered (pipe) thread on a cone is refused. The section is a symmetric trapezoid (crest, root, depth and one flank angle closing one pitch), so rounded roots and buttress forms are not built. A thread longer than its face is refused rather than run on into the neighbouring faces.
 - **offset.wire-offset**: Offsetting planar wires, with the join styles · `covered`
 
+### ogeom-recon
+
+- **algo.solid-from-mesh**: A solid from a triangle mesh: coplanar triangles merged into planar faces, curved regions recognized as cylinders, cones, spheres and tori · `covered`
+- **bool.cut-by-mesh-region**: Cutting a solid by a break surface marked on a mesh: the break extended over its average plane clear of the solid, holes closed, thickened into a slab and cut away, one side kept, the solid's faces left on their own surfaces · `covered`
+
 ### ogeom-topo
 
 - **topo.data-model**: The B-rep data model: shapes as (node, location, orientation) handles into shared arenas · `covered`
@@ -355,4 +358,4 @@ than a plane or a B-spline over its patch's parameters.
 - **topo.traversal**: Exploring a shape: filtered descent, unique enumeration, ancestry maps · `covered`
 - **topo.triangulation-store**: Triangulations as first-class model data: triangles, polygons on them, surface parameters and normals per triangle corner · `covered`
 
-<!-- ledger-checksum: 7a83fbe0e483a220 -->
+<!-- ledger-checksum: 27a93924fd15a3db -->

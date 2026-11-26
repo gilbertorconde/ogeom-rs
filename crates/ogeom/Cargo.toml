@@ -40,6 +40,7 @@ ogeom-fit.workspace = true
 ogeom-mesh.workspace = true
 ogeom-intersect.workspace = true
 ogeom-bool.workspace = true
+ogeom-recon.workspace = true
 ogeom-heal.workspace = true
 ogeom-fillet.workspace = true
 ogeom-offset.workspace = true
@@ -56,6 +57,7 @@ web = ["ogeom-core/web"]
 approx.workspace = true
 ogeom-algo = { workspace = true, features = ["test-hooks"] }
 ogeom-bool = { workspace = true, features = ["test-hooks"] }
+ogeom-recon = { workspace = true, features = ["test-hooks"] }
 proptest.workspace = true
 stats_alloc.workspace = true
 

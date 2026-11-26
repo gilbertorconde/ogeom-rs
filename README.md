@@ -45,11 +45,12 @@ not return a guessed result.
 | `ogeom-math` | points, vectors, transforms, B-spline basis, solvers |
 | `ogeom-geom` | curves and surfaces |
 | `ogeom-topo` | the B-rep data model |
-| `ogeom-algo` | construction, measurement, classification, mesh to solid |
-| `ogeom-fit` | fitting points, meshes and curve networks; registration |
+| `ogeom-algo` | construction, measurement, classification |
+| `ogeom-fit` | fitting points, meshes and curve networks; recognition; registration |
 | `ogeom-mesh` | tessellation |
 | `ogeom-intersect` | curve and surface intersection |
 | `ogeom-bool` | booleans and face removal |
+| `ogeom-recon` | mesh to solid |
 | `ogeom-heal` | healing and simplification |
 | `ogeom-fillet` | fillets and chamfers |
 | `ogeom-offset` | offsets, shells, sweeps, lofts, drafts |

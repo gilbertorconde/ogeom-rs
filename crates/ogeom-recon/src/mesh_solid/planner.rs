@@ -25,7 +25,7 @@ use super::segment::{
 use super::snap::{Images, Snapped, surface_of};
 use super::weld::{Adjacency, Half, from_to, next};
 use super::{Carrier, Curved, Fan, Groups, Layout, Stop, Thread};
-use crate::recognize::Canonical;
+use ogeom_fit::recognize::Canonical;
 
 /// A vertex as built: a mesh vertex, or a point the construction placed,
 /// where a closed circle is bounded.
