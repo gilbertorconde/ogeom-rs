@@ -169,7 +169,7 @@ pub fn fillet_corner_2d(
             let found = ogeom_intersect::intersect_curves_2d(
                 &la,
                 &lb,
-                ogeom_intersect::CurveCurveOptions::default(),
+                ogeom_intersect::CurveCurveOptions::for_tolerances(tol),
                 tol,
             )?;
             for crossing in &found.crossings {

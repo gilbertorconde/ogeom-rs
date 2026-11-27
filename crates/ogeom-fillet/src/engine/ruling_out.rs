@@ -429,7 +429,7 @@ pub(crate) fn cut_back(
         }
     }
     let met = p - n * hi;
-    let deflection = ogeom_mesh::Deflection::default();
+    let deflection = ogeom_mesh::Deflection::for_tolerances(tol);
     for (f, face) in curved.faces.iter().enumerate() {
         if !matches!(
             face.surface,

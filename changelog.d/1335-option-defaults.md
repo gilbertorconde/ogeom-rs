@@ -1,0 +1,4 @@
+- **Added: option defaults for a model's unit** (#1335).
+  - `IntersectOptions::for_tolerances`, `Marching::for_tolerances`, `CurveCurveOptions::for_tolerances`, `CurveSurfaceOptions::for_tolerances` and `Deflection::for_tolerances` give the defaults in the unit of the `Tolerances` passed: a fitted-curve tolerance of 1e-6 mm, a marching chord of 1e-4 mm, a gap of the confusion distance and a tessellation chord of 0.1 mm.
+  - `Default` is unchanged and is documented as the millimetre value: `for_tolerances(Tolerances::millimetres())`, bit for bit.
+  - The library's own calls that have the model's tolerances now use them: `section_face`, `remove_faces`, and calls in the fillets, offsets, algorithms, hidden lines and the STEP reader. Models in millimetres give the same results. A tilted section of a torus now gives the same curve in micrometres, inches and metres as in millimetres; before, micrometres ran out of points and inches split the curve in two.

@@ -116,17 +116,30 @@ pub struct Marching {
     pub max_points: usize,
 }
 
+/// The settings for a model in millimetres: [`Marching::for_tolerances`]
+/// at one millimetre per unit, a chord of `1e-4`. A model in another unit
+/// wants `for_tolerances` with its own tolerances.
 impl Default for Marching {
     fn default() -> Self {
-        Self {
-            chord: 1e-4,
-            grid: 24,
-            max_points: 20_000,
-        }
+        Self::for_tolerances(Tolerances::millimetres())
     }
 }
 
 impl Marching {
+    /// The default settings for a model in `tol`'s unit: a chord of a ten
+    /// thousandth of a millimetre (`1e-4 / tol.scale()` model units), a grid
+    /// of 24 and at most 20 000 points a branch.
+    ///
+    /// At one millimetre per unit it is [`Marching::default`], bit for bit.
+    #[must_use]
+    pub fn for_tolerances(tol: Tolerances) -> Self {
+        Self {
+            chord: 1e-4 / tol.scale(),
+            grid: 24,
+            max_points: 20_000,
+        }
+    }
+
     /// Check the settings are usable.
     ///
     /// # Errors

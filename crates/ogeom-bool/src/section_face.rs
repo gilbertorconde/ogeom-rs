@@ -94,7 +94,7 @@ pub fn section_face(
             &cutter,
             IntersectOptions {
                 tolerance: tol.confusion() * 0.5,
-                ..IntersectOptions::default()
+                ..IntersectOptions::for_tolerances(tol)
             },
             tol,
         )?;
@@ -236,7 +236,7 @@ fn on_face(
     let mut cuts = vec![lo, hi];
     let options = CurveCurveOptions {
         gap: tol.confusion() * 10.0,
-        ..CurveCurveOptions::default()
+        ..CurveCurveOptions::for_tolerances(tol)
     };
     for edge in boundary {
         let found = ogeom_intersect::intersect_curves(curve, edge, options, tol)?;
@@ -256,11 +256,12 @@ fn on_face(
             continue;
         }
         let middle = curve.point_at(f64::midpoint(a, b), tol)?;
-        let on_boundary = match classify_on_face(model, face, middle, Deflection::default(), tol)? {
-            Containment::In => false,
-            Containment::On => true,
-            Containment::Out => continue,
-        };
+        let on_boundary =
+            match classify_on_face(model, face, middle, Deflection::for_tolerances(tol), tol)? {
+                Containment::In => false,
+                Containment::On => true,
+                Containment::Out => continue,
+            };
         // Stretches that meet end to end on the face, both inside it or
         // both on its boundary, are one edge.
         match kept.last_mut() {

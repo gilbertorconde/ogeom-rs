@@ -389,7 +389,7 @@ pub fn certify_face_within(
     let chord = fit / 4.0;
     let deflection = ogeom_mesh::Deflection {
         chord,
-        ..ogeom_mesh::Deflection::default()
+        ..ogeom_mesh::Deflection::for_tolerances(tol)
     };
     let Some(rings) = ogeom_mesh::face_boundary_in_chart_met(model, face, deflection, tol)? else {
         // A trim drawn short of its chord says nothing the proof can use.

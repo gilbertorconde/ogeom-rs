@@ -356,7 +356,7 @@ fn face_extremes(
         points.extend(extremes.iter().flatten().map(|e| e.0));
         return Ok(());
     }
-    let mesh = ogeom_mesh::triangulate_face(model, face, Deflection::default(), tol)?;
+    let mesh = ogeom_mesh::triangulate_face(model, face, Deflection::for_tolerances(tol), tol)?;
     if mesh.positions.is_empty() {
         return Ok(());
     }

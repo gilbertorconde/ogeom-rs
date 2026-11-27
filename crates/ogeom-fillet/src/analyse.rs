@@ -255,7 +255,12 @@ pub fn face_curvature_samples(
     if density == 0 {
         ogeom_bail!(Construction, "a face sampled on no grid is not sampled");
     }
-    let rings = ogeom_mesh::face_boundary(model, face, ogeom_mesh::Deflection::default(), tol)?;
+    let rings = ogeom_mesh::face_boundary(
+        model,
+        face,
+        ogeom_mesh::Deflection::for_tolerances(tol),
+        tol,
+    )?;
     let Some(NodeData::Face(data)) = model.node(face).map(|n| n.data()) else {
         ogeom_bail!(Construction, "expected a face");
     };
@@ -399,8 +404,12 @@ pub fn face_curvature_at(
         foot = near;
     }
 
-    let trim =
-        ogeom_algo::classify::FaceTrim::of(model, face, ogeom_mesh::Deflection::default(), tol)?;
+    let trim = ogeom_algo::classify::FaceTrim::of(
+        model,
+        face,
+        ogeom_mesh::Deflection::for_tolerances(tol),
+        tol,
+    )?;
     let reach = tol.confusion().max(data.tolerance.get());
     if trim.holds(model, foot.parameters, reach, tol)? == ogeom_algo::Containment::Out {
         ogeom_bail!(

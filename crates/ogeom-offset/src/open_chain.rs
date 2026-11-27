@@ -762,7 +762,7 @@ pub fn make_rib(
             volume += ogeom_algo::volume_properties(
                 model,
                 piece,
-                ogeom_mesh::Deflection::default(),
+                ogeom_mesh::Deflection::for_tolerances(tol),
                 tol,
             )?
             .mass;

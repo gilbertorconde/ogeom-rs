@@ -344,7 +344,7 @@ fn void_between(
         return Ok(false);
     }
     let across = across / m;
-    let deflection = ogeom_mesh::Deflection::default();
+    let deflection = ogeom_mesh::Deflection::for_tolerances(tol);
     for step in [1e-1, 1e-2, 1e-3] {
         for side in [1.0, -1.0] {
             let Ok(foot) =

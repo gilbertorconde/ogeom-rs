@@ -57,15 +57,32 @@ pub struct Deflection {
     pub max_segments: usize,
 }
 
+/// The defaults for a model in millimetres:
+/// [`Deflection::for_tolerances`] at one millimetre per unit, a chord of
+/// `0.1`. A model in another unit wants `for_tolerances` with its own
+/// tolerances.
 impl Default for Deflection {
     fn default() -> Self {
+        Self::for_tolerances(Tolerances::millimetres())
+    }
+}
+
+impl Deflection {
+    /// The default deflection for a model in `tol`'s unit: a chord of a
+    /// tenth of a millimetre (`0.1 / tol.scale()` model units), half a
+    /// radian, and the default segment bounds.
+    ///
+    /// At one millimetre per unit it is [`Deflection::default`], bit for
+    /// bit.
+    #[must_use]
+    pub fn for_tolerances(tol: Tolerances) -> Self {
         Self {
-            // A tenth of a millimetre at unit scale: invisible on screen. On
-            // a small curved part the angular limit below rules instead, and
-            // a mesh at this default can be a part in a hundred off in
-            // volume. Mass properties integrate a face on its exact surface
+            // A tenth of a millimetre: invisible on screen. On a small
+            // curved part the angular limit below rules instead, and a mesh
+            // at this default can be a part in a hundred off in volume.
+            // Mass properties integrate a face on its exact surface
             // wherever its pcurves allow, and mesh only what they cannot.
-            chord: 1e-1,
+            chord: 1e-1 / tol.scale(),
             // Half a radian (twenty-eight degrees, a circle in thirteen
             // segments): coarse enough for a viewer that lets the user
             // tighten it. The interior of a face is held to it as its edges
@@ -75,9 +92,7 @@ impl Default for Deflection {
             max_segments: 4096,
         }
     }
-}
 
-impl Deflection {
     /// A deflection with a given chord tolerance and the default angular one.
     ///
     /// # Errors

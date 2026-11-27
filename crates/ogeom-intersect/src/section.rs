@@ -42,11 +42,28 @@ pub struct IntersectOptions {
     pub marching: Marching,
 }
 
+/// The options for a model in millimetres:
+/// [`IntersectOptions::for_tolerances`] at one millimetre per unit, a
+/// tolerance of `1e-6` and a marching chord of `1e-4`. A model in another
+/// unit wants `for_tolerances` with its own tolerances.
 impl Default for IntersectOptions {
     fn default() -> Self {
+        Self::for_tolerances(Tolerances::millimetres())
+    }
+}
+
+impl IntersectOptions {
+    /// The default options for a model in `tol`'s unit: fitted curves held to
+    /// a millionth of a millimetre (`1e-6 / tol.scale()` model units), and
+    /// [`Marching::for_tolerances`].
+    ///
+    /// At one millimetre per unit it is [`IntersectOptions::default`], bit
+    /// for bit.
+    #[must_use]
+    pub fn for_tolerances(tol: Tolerances) -> Self {
         Self {
-            tolerance: 1e-6,
-            marching: Marching::default(),
+            tolerance: 1e-6 / tol.scale(),
+            marching: Marching::for_tolerances(tol),
         }
     }
 }

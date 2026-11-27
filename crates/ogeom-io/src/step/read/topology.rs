@@ -1522,7 +1522,7 @@ impl<'a> Reader<'a> {
                     let encloses = ogeom_mesh::triangulate(
                         &self.model,
                         &void,
-                        ogeom_mesh::Deflection::default(),
+                        ogeom_mesh::Deflection::for_tolerances(self.tol),
                         self.tol,
                     )
                     .ok()

@@ -357,7 +357,7 @@ pub(crate) fn planar_seat(
         let eps = start.distance(end) * scale;
         let deflection = ogeom_mesh::Deflection {
             chord: eps * 0.1,
-            ..ogeom_mesh::Deflection::default()
+            ..ogeom_mesh::Deflection::for_tolerances(tol)
         };
         for dir in [raw, -raw] {
             if crate::support::on_face_side(
@@ -691,7 +691,7 @@ pub(crate) fn revolved_seat(
         };
         let deflection = ogeom_mesh::Deflection {
             chord: eps * 0.1,
-            ..ogeom_mesh::Deflection::default()
+            ..ogeom_mesh::Deflection::for_tolerances(tol)
         };
         let stands = |p: Point| -> OgeomResult<bool> {
             Ok(
@@ -916,7 +916,7 @@ pub(crate) fn runs_whole_turn(
     let probe = seat.centre + dir * seat.radius_at(-seat.tau * eps) - seat.up * (seat.tau * eps);
     let deflection = ogeom_mesh::Deflection {
         chord: eps * 0.1,
-        ..ogeom_mesh::Deflection::default()
+        ..ogeom_mesh::Deflection::for_tolerances(tol)
     };
     if ogeom_algo::classify_on_face(model, &seat.wall_face, probe, deflection, tol)?
         != ogeom_algo::Containment::In
@@ -2574,7 +2574,7 @@ pub(crate) fn face_mesh(
     let mesh = std::rc::Rc::new(ogeom_mesh::triangulate_face(
         model,
         face,
-        ogeom_mesh::Deflection::default(),
+        ogeom_mesh::Deflection::for_tolerances(tol),
         tol,
     )?);
     FACE_MESHES.with(|held| {

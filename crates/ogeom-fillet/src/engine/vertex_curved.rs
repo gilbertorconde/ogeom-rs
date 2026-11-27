@@ -86,7 +86,7 @@ pub(super) fn round(
     // cannot say.
     let deflection = ogeom_mesh::Deflection {
         chord: (radius * 1e-3).max(tol.confusion() * 1e2),
-        ..ogeom_mesh::Deflection::default()
+        ..ogeom_mesh::Deflection::for_tolerances(tol)
     };
     let mut touches: Vec<Point> = Vec::with_capacity(3);
     for host in &hosts {

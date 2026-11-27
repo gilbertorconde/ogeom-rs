@@ -96,7 +96,7 @@ fn crossings(
     tol: Tolerances,
 ) -> OgeomResult<Option<Through>> {
     let eps = tol.confusion() * 10.0;
-    let deflection = ogeom_mesh::Deflection::default();
+    let deflection = ogeom_mesh::Deflection::for_tolerances(tol);
     let mut asked = Vec::new();
     for (edge, size) in edges {
         let Some((curve, range)) = ogeom_algo::placed_edge_curve(model, edge, tol)? else {
@@ -261,7 +261,7 @@ fn changes_others(
     tol: Tolerances,
 ) -> OgeomResult<bool> {
     let eps = tol.confusion() * 10.0;
-    let deflection = ogeom_mesh::Deflection::default();
+    let deflection = ogeom_mesh::Deflection::for_tolerances(tol);
     let mut own: Vec<Shape> = Vec::new();
     for edge in edges {
         own.extend(ancestors_of(model, solid, edge, ShapeType::Face)?);

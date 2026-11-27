@@ -165,7 +165,7 @@ pub fn volume_difference(
         shape,
         Deflection {
             chord,
-            ..Deflection::default()
+            ..Deflection::for_tolerances(tol)
         },
         tol,
     )?;

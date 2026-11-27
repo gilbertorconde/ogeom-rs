@@ -137,7 +137,7 @@ pub(crate) fn guard(
                             model,
                             &face,
                             p,
-                            ogeom_mesh::Deflection::default(),
+                            ogeom_mesh::Deflection::for_tolerances(tol),
                             tol,
                         )?
                         .is_inside_or_on()

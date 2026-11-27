@@ -117,11 +117,27 @@ pub struct CurveCurveOptions {
     pub gap: f64,
 }
 
+/// The options for a model in millimetres:
+/// [`CurveCurveOptions::for_tolerances`] at one millimetre per unit, a gap of
+/// `1e-7`. A model in another unit wants `for_tolerances` with its own
+/// tolerances.
 impl Default for CurveCurveOptions {
     fn default() -> Self {
+        Self::for_tolerances(Tolerances::millimetres())
+    }
+}
+
+impl CurveCurveOptions {
+    /// The default options for a model in `tol`'s unit: a gap of the
+    /// confusion distance, [`Tolerances::confusion`], and the default
+    /// sampling.
+    ///
+    /// At one millimetre per unit it is [`CurveCurveOptions::default`], bit for bit.
+    #[must_use]
+    pub fn for_tolerances(tol: Tolerances) -> Self {
         Self {
             samples: 128,
-            gap: 1e-7,
+            gap: tol.confusion(),
         }
     }
 }

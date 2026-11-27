@@ -509,7 +509,12 @@ fn read_side(
 /// relative to the face: `1` where it points off it, `-1` where onto it.
 /// Read at the edge's middle by stepping either way across its trim.
 fn off_sign(model: &Model, face: &Shape, side: &Side, tol: Tolerances) -> OgeomResult<f64> {
-    let rings = ogeom_mesh::face_boundary(model, face, ogeom_mesh::Deflection::default(), tol)?;
+    let rings = ogeom_mesh::face_boundary(
+        model,
+        face,
+        ogeom_mesh::Deflection::for_tolerances(tol),
+        tol,
+    )?;
     let (mut lo, mut hi) = (
         Point2::new(f64::INFINITY, f64::INFINITY),
         Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY),

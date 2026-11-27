@@ -274,7 +274,7 @@ pub(crate) fn sphere_seat(
     let eps = rim_radius * 1e-2;
     let deflection = ogeom_mesh::Deflection {
         chord: eps * 0.1,
-        ..ogeom_mesh::Deflection::default()
+        ..ogeom_mesh::Deflection::for_tolerances(tol)
     };
     let probe = |latitude: f64| {
         let (rho, h) = seat.wall_at(latitude);

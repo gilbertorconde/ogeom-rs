@@ -832,7 +832,7 @@ pub(crate) fn built(
     narrow: &Narrow,
     tol: Tolerances,
 ) -> OgeomResult<Option<Built>> {
-    let deflection = ogeom_mesh::Deflection::default();
+    let deflection = ogeom_mesh::Deflection::for_tolerances(tol);
     let shape_of = |e: Id| {
         narrow
             .shapes
